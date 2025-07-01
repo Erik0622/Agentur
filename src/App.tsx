@@ -136,8 +136,12 @@ function App() {
 
   // Audio Visualizer
   const startAudioVisualization = (stream: MediaStream) => {
-    if (audioContextRef.current) {
+    // Cleanup vorheriger AudioContext
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close();
+    }
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
     }
 
     audioContextRef.current = new AudioContext();
@@ -150,11 +154,19 @@ function App() {
     const dataArray = new Uint8Array(bufferLength);
 
     const updateAudioLevel = () => {
-      if (analyserRef.current && isRecording) {
-        analyserRef.current.getByteFrequencyData(dataArray);
-        const average = dataArray.reduce((a, b) => a + b) / bufferLength;
-        setAudioLevel(average / 255 * 100);
-        animationRef.current = requestAnimationFrame(updateAudioLevel);
+      // Sicherheitsprüfung: Nur fortfahren wenn Recording läuft und Analyser existiert
+      if (analyserRef.current && isRecording && audioContextRef.current?.state === 'running') {
+        try {
+          analyserRef.current.getByteFrequencyData(dataArray);
+          const average = dataArray.reduce((a, b) => a + b) / bufferLength;
+          setAudioLevel(average / 255 * 100);
+          animationRef.current = requestAnimationFrame(updateAudioLevel);
+        } catch (error) {
+          console.error('Audio level update error:', error);
+          setAudioLevel(0);
+        }
+      } else {
+        setAudioLevel(0);
       }
     };
 
@@ -162,12 +174,17 @@ function App() {
   };
 
   const stopAudioVisualization = () => {
+    // Animation stoppen
     if (animationRef.current) {
       cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
     }
-    if (audioContextRef.current) {
+    
+    // AudioContext sicher schließen
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close();
     }
+    
     setAudioLevel(0);
   };
 

@@ -52,13 +52,17 @@ export default async function handler(req, res) {
 // Kompletter Voice-to-Voice Pipeline
 async function handleCompleteVoice(req, res, audioBase64) {
   try {
+    console.log('=== Voice Pipeline Started ===');
     const startTime = Date.now();
 
     // 1. Speech-to-Text mit Deepgram
+    console.log('Step 1: Starting Deepgram transcription...');
     const transcript = await transcribeAudio(audioBase64);
     const transcribeTime = Date.now() - startTime;
+    console.log(`Step 1 Complete: Transcript="${transcript}" (${transcribeTime}ms)`);
 
     if (!transcript || transcript.trim().length === 0) {
+      console.log('No speech detected, returning error');
       return res.json({
         success: false,
         error: 'Keine Sprache erkannt'
@@ -66,22 +70,33 @@ async function handleCompleteVoice(req, res, audioBase64) {
     }
 
     // 2. KI-Antwort mit Gemini
+    console.log('Step 2: Starting Gemini chat generation...');
     const chatStart = Date.now();
     const aiResponse = await generateChatResponse(transcript);
     const chatTime = Date.now() - chatStart;
+    console.log(`Step 2 Complete: Response="${aiResponse}" (${chatTime}ms)`);
 
     // 3. Text-to-Speech mit Smallest.ai
+    console.log('Step 3: Starting Lightning V2 TTS...');
     const ttsStart = Date.now();
-    const audioResponse = await generateSpeech(aiResponse);
+    let audioResponse = null;
+    try {
+      audioResponse = await generateSpeech(aiResponse);
+      console.log(`Step 3 Complete: Audio generated successfully (${Date.now() - ttsStart}ms)`);
+    } catch (ttsError) {
+      console.error('TTS failed, continuing without audio:', ttsError);
+      // Fortfahren ohne Audio, wenn TTS fehlschlägt
+    }
     const ttsTime = Date.now() - ttsStart;
 
     const totalTime = Date.now() - startTime;
+    console.log(`=== Voice Pipeline Complete: ${totalTime}ms total ===`);
 
     return res.json({
       success: true,
       transcript: transcript,
       response: aiResponse,
-      audio: audioResponse,
+      audio: audioResponse, // Kann null sein wenn TTS fehlschlägt
       metrics: {
         transcribe_time: transcribeTime,
         chat_time: chatTime,
@@ -91,11 +106,12 @@ async function handleCompleteVoice(req, res, audioBase64) {
     });
 
   } catch (error) {
-    console.error('Complete Voice Error:', error);
+    console.error('=== Voice Pipeline Error ===', error);
     return res.status(500).json({
       success: false,
       error: 'Voice processing failed',
-      message: error.message
+      message: error.message,
+      stack: error.stack
     });
   }
 }
@@ -180,6 +196,8 @@ async function generateSpeech(text) {
   try {
     const fetch = (await import('node-fetch')).default;
     
+    console.log('TTS Request to Lightning V2:', { text, voice: 'de-DE-Standard-A' });
+    
     const response = await fetch('https://waves-api.smallest.ai/api/v1/lightning-v2/get_speech', {
       method: 'POST',
       headers: {
@@ -194,17 +212,40 @@ async function generateSpeech(text) {
       })
     });
 
+    console.log('TTS Response Status:', response.status);
+
     if (response.ok) {
-      const audioBuffer = await response.arrayBuffer();
-      return Buffer.from(audioBuffer).toString('base64');
+      const contentType = response.headers.get('content-type');
+      console.log('TTS Content-Type:', contentType);
+      
+      if (contentType && contentType.includes('application/json')) {
+        // Fallback: JSON Response mit URL oder direktem Audio
+        const jsonResponse = await response.json();
+        console.log('TTS JSON Response:', jsonResponse);
+        
+        if (jsonResponse.audio_url) {
+          // URL-basierte Response
+          const audioResponse = await fetch(jsonResponse.audio_url);
+          const audioBuffer = await audioResponse.arrayBuffer();
+          return Buffer.from(audioBuffer).toString('base64');
+        } else if (jsonResponse.audio) {
+          // Direkte Base64 Response
+          return jsonResponse.audio;
+        }
+      } else {
+        // Direkte Audio-Datei Response
+        const audioBuffer = await response.arrayBuffer();
+        return Buffer.from(audioBuffer).toString('base64');
+      }
     } else {
-      console.error('TTS Error:', response.status, await response.text());
-      return null;
+      const errorText = await response.text();
+      console.error('TTS Error:', response.status, errorText);
+      throw new Error(`TTS API Error: ${response.status} - ${errorText}`);
     }
 
   } catch (error) {
     console.error('TTS generation error:', error);
-    return null;
+    throw error; // Werfen statt null zurückgeben für bessere Fehlerbehandlung
   }
 }
 
