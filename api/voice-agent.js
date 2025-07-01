@@ -1,11 +1,11 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// API Keys aus Umgebungsvariablen oder Fallback
-const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || '3e69806feb52b90f01f2e47f9e778fc87b6d811a';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyDCqBRhKqrwXGfIbfmQVj3nRbQLDFsGqEI';
-const SMALLEST_API_KEY = process.env.SMALLEST_API_KEY || 'sk-2ad79c9f-cf37-44b3-87dd-0b0b8eb66e5b';
-
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+// Log to check if the module and env vars are loaded at all. This is the first thing that should appear.
+console.log('--- api/voice-agent module loading ---');
+console.log('GEMINI_API_KEY available:', !!process.env.GEMINI_API_KEY);
+console.log('DEEPGRAM_API_KEY available:', !!process.env.DEEPGRAM_API_KEY);
+console.log('SMALLEST_API_KEY available:', !!process.env.SMALLEST_API_KEY);
+console.log('------------------------------------');
 
 export default async function handler(req, res) {
   // CORS Headers für Frontend
@@ -16,6 +16,8 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
+    
+  console.log(`[${new Date().toISOString()}] Received request:`, req.method, req.url);
 
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -23,17 +25,9 @@ export default async function handler(req, res) {
 
   try {
     const { type, audio, text } = req.body;
+    console.log('Request body type:', type);
 
     switch (type) {
-      case 'transcribe':
-        return await handleTranscription(req, res, audio);
-      
-      case 'chat':
-        return await handleChat(req, res, text);
-      
-      case 'text_to_speech':
-        return await handleTTS(req, res, text);
-      
       case 'voice_complete':
         return await handleCompleteVoice(req, res, audio);
       
@@ -41,9 +35,9 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: 'Invalid request type' });
     }
   } catch (error) {
-    console.error('Voice Agent Error:', error);
+    console.error('!!! Top-level handler error !!!', error);
     return res.status(500).json({ 
-      error: 'Internal server error', 
+      error: 'Internal server error in handler', 
       message: error.message 
     });
   }
@@ -85,7 +79,6 @@ async function handleCompleteVoice(req, res, audioBase64) {
       console.log(`Step 3 Complete: Audio generated successfully (${Date.now() - ttsStart}ms)`);
     } catch (ttsError) {
       console.error('TTS failed, continuing without audio:', ttsError);
-      // Fortfahren ohne Audio, wenn TTS fehlschlägt
     }
     const ttsTime = Date.now() - ttsStart;
 
@@ -96,7 +89,7 @@ async function handleCompleteVoice(req, res, audioBase64) {
       success: true,
       transcript: transcript,
       response: aiResponse,
-      audio: audioResponse, // Kann null sein wenn TTS fehlschlägt
+      audio: audioResponse,
       metrics: {
         transcribe_time: transcribeTime,
         chat_time: chatTime,
@@ -106,7 +99,7 @@ async function handleCompleteVoice(req, res, audioBase64) {
     });
 
   } catch (error) {
-    console.error('=== Voice Pipeline Error ===', error);
+    console.error('=== Voice Pipeline FAILED ===', error);
     return res.status(500).json({
       success: false,
       error: 'Voice processing failed',
@@ -118,85 +111,68 @@ async function handleCompleteVoice(req, res, audioBase64) {
 
 // Deepgram Speech-to-Text
 async function transcribeAudio(audioBase64) {
-  try {
-    const fetch = (await import('node-fetch')).default;
-    
-    const audioBuffer = Buffer.from(audioBase64, 'base64');
-    
-    const response = await fetch('https://api.deepgram.com/v1/listen?language=de&model=nova-3&punctuate=true&smart_format=true&tier=enhanced', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Token ${DEEPGRAM_API_KEY}`,
-        'Content-Type': 'audio/webm'
-      },
-      body: audioBuffer
-    });
-
-    if (!response.ok) {
-      throw new Error(`Deepgram error: ${response.status}`);
-    }
-
-    const result = await response.json();
-    
-    if (result.results?.channels?.[0]?.alternatives?.[0]?.transcript) {
-      return result.results.channels[0].alternatives[0].transcript;
-    }
-    
-    return '';
-
-  } catch (error) {
-    console.error('Transcription error:', error);
-    throw error;
+  const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
+  if (!DEEPGRAM_API_KEY) {
+    throw new Error('DEEPGRAM_API_KEY environment variable not set');
   }
+    
+  const fetch = (await import('node-fetch')).default;
+  const audioBuffer = Buffer.from(audioBase64, 'base64');
+  
+  const response = await fetch('https://api.deepgram.com/v1/listen?language=de&model=nova-3&punctuate=true&smart_format=true&tier=enhanced', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Token ${DEEPGRAM_API_KEY}`,
+      'Content-Type': 'audio/webm'
+    },
+    body: audioBuffer
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Deepgram error: ${response.status} - ${errorBody}`);
+  }
+
+  const result = await response.json();
+  return result.results?.channels?.[0]?.alternatives?.[0]?.transcript || '';
 }
 
 // Gemini Chat Response
 async function generateChatResponse(transcript) {
-  try {
-    const systemPrompt = `Du bist ein freundlicher Telefonassistent für das Restaurant "Bella Vista". 
-
-Deine Hauptaufgaben:
-- Tischreservierungen entgegennehmen 
-- Informationen über Öffnungszeiten geben
-- Fragen zur Speisekarte beantworten
-- Bei Reservierungen: Name, Datum, Uhrzeit, Personenzahl erfragen
-
-Öffnungszeiten:
-• Montag-Freitag: 17:00-23:00 Uhr
-• Samstag: 17:00-24:00 Uhr  
-• Sonntag: 17:00-22:00 Uhr
-
-WICHTIG: Antworte SEHR KURZ und natürlich (max. 25 Wörter). Sei freundlich aber effizient.`;
-
-    const model = genAI.getGenerativeModel({ 
-      model: "models/gemini-2.5-flash-lite-preview-0617", // Neuestes & schnellstes Modell!
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: 60, // Noch kürzer für maximale Speed
-        topP: 0.8,
-        topK: 40
-      }
-    });
-
-    const prompt = `${systemPrompt}\n\nKunde: ${transcript}\n\nAssistant:`;
-    
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    
-    return response.text() || 'Entschuldigung, ich habe Sie nicht verstanden.';
-
-  } catch (error) {
-    console.error('Chat generation error:', error);
-    return 'Entschuldigung, es gab ein technisches Problem.';
+  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+  if (!GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY environment variable not set');
   }
+
+  const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+
+  const systemPrompt = `Du bist ein freundlicher Telefonassistent für das Restaurant "Bella Vista". Antworte SEHR KURZ und natürlich (max. 25 Wörter).
+Öffnungszeiten: Mo-Fr 17-23h, Sa 17-24h, So 17-22h.`;
+
+  const model = genAI.getGenerativeModel({ 
+    model: "models/gemini-2.5-flash-lite-preview-0617",
+    generationConfig: {
+      temperature: 0.3,
+      maxOutputTokens: 60,
+      topP: 0.8,
+      topK: 40
+    }
+  });
+
+  const prompt = `${systemPrompt}\n\nKunde: ${transcript}\n\nAssistant:`;
+  const result = await model.generateContent(prompt);
+  const response = await result.response;
+  return response.text() || 'Entschuldigung, ich habe Sie nicht verstanden.';
 }
 
 // Smallest.ai Text-to-Speech
 async function generateSpeech(text) {
-  try {
+    const SMALLEST_API_KEY = process.env.SMALLEST_API_KEY;
+    if (!SMALLEST_API_KEY) {
+        throw new Error('SMALLEST_API_KEY environment variable not set');
+    }
+
     const fetch = (await import('node-fetch')).default;
-    
-    console.log('TTS Request to Lightning V2:', { text, voice: 'de-DE-Standard-A' });
     
     const response = await fetch('https://waves-api.smallest.ai/api/v1/lightning-v2/get_speech', {
       method: 'POST',
@@ -206,61 +182,17 @@ async function generateSpeech(text) {
       },
       body: JSON.stringify({
         text: text,
-        voice: 'de-DE-Standard-A', // Deutsche Lightning V2 Stimme
+        voice: 'de-DE-Standard-A',
         format: 'mp3',
-        speed: 1.2 // Leicht beschleunigt
+        speed: 1.2
       })
     });
 
-    console.log('TTS Response Status:', response.status);
-
-    if (response.ok) {
-      const contentType = response.headers.get('content-type');
-      console.log('TTS Content-Type:', contentType);
-      
-      if (contentType && contentType.includes('application/json')) {
-        // Fallback: JSON Response mit URL oder direktem Audio
-        const jsonResponse = await response.json();
-        console.log('TTS JSON Response:', jsonResponse);
-        
-        if (jsonResponse.audio_url) {
-          // URL-basierte Response
-          const audioResponse = await fetch(jsonResponse.audio_url);
-          const audioBuffer = await audioResponse.arrayBuffer();
-          return Buffer.from(audioBuffer).toString('base64');
-        } else if (jsonResponse.audio) {
-          // Direkte Base64 Response
-          return jsonResponse.audio;
-        }
-      } else {
-        // Direkte Audio-Datei Response
-        const audioBuffer = await response.arrayBuffer();
-        return Buffer.from(audioBuffer).toString('base64');
-      }
-    } else {
-      const errorText = await response.text();
-      console.error('TTS Error:', response.status, errorText);
-      throw new Error(`TTS API Error: ${response.status} - ${errorText}`);
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`TTS API Error: ${response.status} - ${errorBody}`);
     }
 
-  } catch (error) {
-    console.error('TTS generation error:', error);
-    throw error; // Werfen statt null zurückgeben für bessere Fehlerbehandlung
-  }
-}
-
-// Einzelne Handler für spezifische Anfragen
-async function handleTranscription(req, res, audio) {
-  const transcript = await transcribeAudio(audio);
-  return res.json({ transcript });
-}
-
-async function handleChat(req, res, text) {
-  const response = await generateChatResponse(text);
-  return res.json({ response });
-}
-
-async function handleTTS(req, res, text) {
-  const audio = await generateSpeech(text);
-  return res.json({ audio });
+    const audioBuffer = await response.arrayBuffer();
+    return Buffer.from(audioBuffer).toString('base64');
 } 
