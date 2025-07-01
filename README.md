@@ -1,3 +1,64 @@
+# KI-Service Pro - Automatisierter Kundenservice für Restaurants
+
+Eine moderne, professionelle Website für eine KI-Agentur, die telefonischen Kundenservice für Restaurants automatisiert.
+
+## 🎯 Features
+
+- **Modernes, minimalistisches Design** mit cleanen Animationen
+- **Überzeugende Verkaufsargumente** basierend auf echten Problemen der Gastronomie
+- **Responsive Design** für alle Geräte
+- **Smooth Animationen** mit Framer Motion
+- **Performance-optimiert** mit Vite und React
+- **Integriertes Buchungssystem** mit intelligenter Terminverwaltung
+  - Mo-Fr: 7:00-15:00 Uhr verfügbar
+  - Sa: 7:00-13:00 Uhr verfügbar
+  - So: Geschlossen
+  - Automatische Speicherung gebuchter Termine
+  - Verhindert Doppelbuchungen
+
+## 📊 Hauptargumente der Website
+
+### Das Problem:
+- **30% verlorene Kunden** durch Nichterreichbarkeit
+- Überlastete Telefonleitungen
+- Lange Wartezeiten
+- Gestresstes Personal
+
+### Die Lösung:
+- **85% Kosteneinsparung** im Kundenservice
+- **24/7 Verfügbarkeit** ohne Unterbrechung
+- Automatische Buchungsabwicklung
+- Mehrsprachiger Support
+- Intelligente Anrufweiterleitung
+- **Integriertes Buchungssystem** für Beratungstermine
+
+## 🚀 Technologie-Stack
+
+- **Frontend:** React 18 + TypeScript
+- **Styling:** Tailwind CSS
+- **Animationen:** Framer Motion
+- **Icons:** Lucide React
+- **Build Tool:** Vite
+- **Deployment-ready:** Optimiert für Produktion
+
+## 🛠 Installation & Entwicklung
+
+```bash
+# Dependencies installieren
+npm install
+
+# Entwicklungsserver starten
+npm run dev
+
+# Für Produktion bauen
+npm run build
+
+# Produktion-Preview
+npm run preview
+```
+
+---
+
 # KI-Agentur Voice Agent Backend
 
 Ein hochperformanter Voice-Agent für Restaurants mit End-to-End-Sprachverarbeitung.
@@ -135,4 +196,4 @@ docker run -p 3001:3001 voice-agent
 - **Deepgram:** Beste deutsche STT, niedrige Latenz
 - **Gemini Flash:** Extrem schnell, günstig, Streaming
 - **smallest.ai:** Spezialisiert auf niedrige Latenz TTS
-- **Gesamt:** Professionell für Restaurant-Use-Case 
+- **Gesamt:** Professionell für Restaurant-Use-Case
