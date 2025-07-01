@@ -54,7 +54,20 @@ function App() {
   // WebSocket Verbindung für Voice Agent
   useEffect(() => {
     const connectWebSocket = () => {
-      const ws = new WebSocket('ws://localhost:3001');
+      // Production erkennen
+      const isProduction = window.location.hostname !== 'localhost';
+      
+      if (isProduction) {
+        // In Production: REST API verwenden statt WebSocket
+        console.log('🌐 Production-Modus: REST API wird verwendet');
+        setWsConnected(true); // Simuliere Verbindung für UI
+        return;
+      }
+      
+      // Development: WebSocket verwenden
+      const wsUrl = 'ws://localhost:3001';
+      console.log('🔗 Verbinde zu Voice Agent:', wsUrl);
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -228,6 +241,14 @@ function App() {
   };
 
   const processVoiceInput = async (audioBlob: Blob) => {
+    const isProduction = window.location.hostname !== 'localhost';
+    
+    if (isProduction) {
+      // Production: REST API verwenden
+      return await processVoiceInputREST(audioBlob);
+    }
+    
+    // Development: WebSocket verwenden
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       alert('Voice Agent nicht verbunden. Bitte warten Sie einen Moment.');
       setIsProcessing(false);
@@ -248,6 +269,56 @@ function App() {
       console.error('Audio-Verarbeitung fehlgeschlagen:', error);
       setIsProcessing(false);
       alert('Audio-Verarbeitung fehlgeschlagen.');
+    }
+  };
+
+  // REST API Version für Production
+  const processVoiceInputREST = async (audioBlob: Blob) => {
+    try {
+      setTranscript('Verarbeite Audio...');
+      setAiResponse('');
+      
+      // Audio zu Base64 konvertieren
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+
+      // REST API Call
+      const response = await fetch('/api/voice-agent', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          type: 'voice_complete',
+          audio: base64Audio
+        })
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setTranscript(result.transcript);
+        setAiResponse(result.response);
+        setVoiceMetrics(result.metrics);
+        
+        // Audio abspielen
+        if (result.audio) {
+          setIsPlayingResponse(true);
+          const audio = new Audio(`data:audio/mp3;base64,${result.audio}`);
+          audio.onended = () => setIsPlayingResponse(false);
+          audio.play().catch(e => console.error('Audio playback failed:', e));
+        }
+      } else {
+        throw new Error(result.error || 'Voice processing failed');
+      }
+      
+    } catch (error) {
+      console.error('Voice API Error:', error);
+      setTranscript('');
+      setAiResponse('Fehler bei der Sprachverarbeitung.');
+      alert('Sprachverarbeitung fehlgeschlagen: ' + error.message);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
