@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Phone, Clock, TrendingDown, Users, Bot, Star, CheckCircle, ArrowRight, Calendar, X, ChevronLeft, ChevronRight, Video, Monitor, Mic, Volume2, Loader } from 'lucide-react'
+import { Phone, Clock, TrendingDown, Users, Bot, Star, CheckCircle, ArrowRight, Calendar, X, ChevronLeft, ChevronRight, Video, Monitor, Mic, Volume2, Loader, MessageCircle } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import AudioVisualizer from './components/AudioVisualizer'
 
@@ -29,12 +29,17 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPlayingResponse, setIsPlayingResponse] = useState(false);
+  const [isListening, setIsListening] = useState(false); // Kontinuierliches Zuhören
+  const [conversationMode, setConversationMode] = useState(true); // Standard: Gespräch-Modus
   const [, setAudioBlob] = useState<Blob | null>(null);
   const [transcript, setTranscript] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
   const [voiceMetrics, setVoiceMetrics] = useState<any>(null);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [conversationHistory, setConversationHistory] = useState<Array<{user: string, ai: string, timestamp: Date}>>([]);
+  const [isSpeechDetected, setIsSpeechDetected] = useState(false);
+  const [silenceCount, setSilenceCount] = useState(0);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -42,6 +47,13 @@ function App() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationRef = useRef<number | null>(null);
+  
+  // Kontinuierliche Voice Detection Refs
+  const continuousStreamRef = useRef<MediaStream | null>(null);
+  const continuousRecorderRef = useRef<MediaRecorder | null>(null);
+  const vadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const speechDetectionRef = useRef<boolean>(false);
+  const currentAudioChunksRef = useRef<Blob[]>([]);
 
   // Lade gespeicherte Termine aus localStorage
   useEffect(() => {
@@ -134,8 +146,8 @@ function App() {
     };
   }, []);
 
-  // Audio Visualizer
-  const startAudioVisualization = (stream: MediaStream) => {
+  // Audio Visualizer & Voice Activity Detection
+  const startAudioVisualization = (stream: MediaStream, isForVAD = false) => {
     // Cleanup vorheriger AudioContext
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close();
@@ -153,13 +165,44 @@ function App() {
     const bufferLength = analyserRef.current.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
 
+    const SPEECH_THRESHOLD = 25; // Anpassen je nach Umgebung
+    const SILENCE_FRAMES_NEEDED = 30; // ~0.5 Sekunden bei 60fps
+
     const updateAudioLevel = () => {
-      // Sicherheitsprüfung: Nur fortfahren wenn Recording läuft und Analyser existiert
-      if (analyserRef.current && isRecording && audioContextRef.current?.state === 'running') {
+      const isActive = isForVAD ? isListening : isRecording;
+      
+      if (analyserRef.current && isActive && audioContextRef.current?.state === 'running') {
         try {
           analyserRef.current.getByteFrequencyData(dataArray);
           const average = dataArray.reduce((a, b) => a + b) / bufferLength;
-          setAudioLevel(average / 255 * 100);
+          const audioLevel = average / 255 * 100;
+          setAudioLevel(audioLevel);
+
+          // Voice Activity Detection für kontinuierliches Gespräch
+          if (isForVAD && isListening) {
+            const wasSpeaking = speechDetectionRef.current;
+            const isSpeaking = audioLevel > SPEECH_THRESHOLD;
+            
+            if (isSpeaking && !wasSpeaking) {
+              // Sprache erkannt - beginne Aufnahme
+              console.log('🎤 Sprache erkannt - starte Aufnahme');
+              speechDetectionRef.current = true;
+              setIsSpeechDetected(true);
+              setSilenceCount(0);
+              startContinuousRecording();
+            } else if (!isSpeaking && wasSpeaking) {
+              // Stille erkannt - zähle Frames
+              setSilenceCount(prev => prev + 1);
+            } else if (!isSpeaking && wasSpeaking && silenceCount >= SILENCE_FRAMES_NEEDED) {
+              // Genug Stille - beende Aufnahme
+              console.log('🔇 Stille erkannt - beende Aufnahme');
+              speechDetectionRef.current = false;
+              setIsSpeechDetected(false);
+              setSilenceCount(0);
+              stopContinuousRecording();
+            }
+          }
+
           animationRef.current = requestAnimationFrame(updateAudioLevel);
         } catch (error) {
           console.error('Audio level update error:', error);
@@ -188,7 +231,115 @@ function App() {
     setAudioLevel(0);
   };
 
-  // Voice Recording Functions
+  // Kontinuierliche Gespräch-Funktionen
+  const startConversationMode = async () => {
+    try {
+      console.log('🎯 Starte Gesprächsmodus');
+      
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 16000,
+          channelCount: 1
+        } 
+      });
+      
+      continuousStreamRef.current = stream;
+      setIsListening(true);
+      setTranscript('');
+      setAiResponse('');
+      
+      // Voice Activity Detection starten
+      startAudioVisualization(stream, true);
+      
+    } catch (error) {
+      console.error('Gesprächsmodus-Start fehlgeschlagen:', error);
+      alert('Mikrofonzugriff fehlgeschlagen. Bitte überprüfen Sie Ihre Browser-Einstellungen.');
+    }
+  };
+
+  const stopConversationMode = () => {
+    console.log('⏹️ Stoppe Gesprächsmodus');
+    
+    setIsListening(false);
+    setIsSpeechDetected(false);
+    setSilenceCount(0);
+    speechDetectionRef.current = false;
+    
+    // Aktuelle Aufnahme stoppen falls läuft
+    if (continuousRecorderRef.current && continuousRecorderRef.current.state === 'recording') {
+      continuousRecorderRef.current.stop();
+    }
+    
+    // Stream stoppen
+    if (continuousStreamRef.current) {
+      continuousStreamRef.current.getTracks().forEach(track => track.stop());
+      continuousStreamRef.current = null;
+    }
+    
+    stopAudioVisualization();
+  };
+
+  const startContinuousRecording = () => {
+    if (!continuousStreamRef.current) return;
+    
+    try {
+      const mediaRecorder = new MediaRecorder(continuousStreamRef.current, {
+        mimeType: 'audio/webm;codecs=opus'
+      });
+      
+      continuousRecorderRef.current = mediaRecorder;
+      currentAudioChunksRef.current = [];
+      
+      mediaRecorder.ondataavailable = (event) => {
+        currentAudioChunksRef.current.push(event.data);
+      };
+      
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(currentAudioChunksRef.current, { type: 'audio/webm' });
+        processContinuousVoiceInput(audioBlob);
+      };
+      
+      mediaRecorder.start(100);
+      
+    } catch (error) {
+      console.error('Kontinuierliche Aufnahme-Start fehlgeschlagen:', error);
+    }
+  };
+
+  const stopContinuousRecording = () => {
+    if (continuousRecorderRef.current && continuousRecorderRef.current.state === 'recording') {
+      continuousRecorderRef.current.stop();
+    }
+  };
+
+  const processContinuousVoiceInput = async (audioBlob: Blob) => {
+    if (isProcessing || isPlayingResponse) return; // Verhindere Überlappung
+    
+    setIsProcessing(true);
+    
+    // Aktuelle Werte speichern vor processVoiceInputREST
+    const currentTranscript = transcript;
+    const currentResponse = aiResponse;
+    
+    await processVoiceInputREST(audioBlob);
+    
+    // Nach Verarbeitung: Zur Konversations-Historie hinzufügen
+    // Warte kurz bis die States aktualisiert sind
+    setTimeout(() => {
+      if (transcript && transcript !== currentTranscript && aiResponse && aiResponse !== currentResponse) {
+        setConversationHistory(prev => [...prev, {
+          user: transcript,
+          ai: aiResponse,
+          timestamp: new Date()
+        }]);
+      }
+    }, 500); // 500ms Delay für State-Updates
+  };
+
+  // Voice Recording Functions (Original)
   const startRecording = async () => {
     try {
       // Start-Signal an Server senden
@@ -338,8 +489,6 @@ function App() {
       setIsProcessing(false);
     }
   };
-
-
 
   const isSlotAvailable = (date: string, time: string) => {
     return !bookings.some(booking => 
@@ -953,9 +1102,9 @@ function App() {
                   </div>
 
                   {/* Status Text */}
-                  <div className="mt-4 text-center">
-                    <div className={`text-lg font-medium ${
-                      isRecording 
+                  <div className="text-center mb-8">
+                    <div className={`text-2xl font-bold mb-2 ${
+                      isRecording || isListening
                         ? 'text-red-600' 
                         : isProcessing 
                         ? 'text-orange-600'
@@ -965,65 +1114,158 @@ function App() {
                         ? 'text-primary-600'
                         : 'text-gray-500'
                     }`}>
-                      {isRecording 
-                        ? '🎤 Hört zu...' 
-                        : isProcessing 
-                        ? '🧠 Denkt nach...'
-                        : isPlayingResponse
-                        ? '🔊 Spricht...'
-                        : !wsConnected
-                        ? '🔄 Verbinde...'
-                        : '🤖 Bereit zum Sprechen'
-                      }
+                      {conversationMode ? (
+                        // Gespräch-Modus Status
+                        isListening
+                          ? isSpeechDetected
+                            ? '🎤 Nehme auf...'
+                            : '👂 Höre zu...'
+                          : isProcessing 
+                            ? '🧠 Denkt nach...'
+                            : isPlayingResponse
+                              ? '🔊 Spricht...'
+                              : '💬 Bereit für Gespräch'
+                      ) : (
+                        // Klassischer Modus Status
+                        isRecording 
+                          ? '🎤 Hört zu...' 
+                          : isProcessing 
+                          ? '🧠 Denkt nach...'
+                          : isPlayingResponse
+                          ? '🔊 Spricht...'
+                          : !wsConnected
+                          ? '🔄 Verbinde...'
+                          : '🤖 Bereit zum Sprechen'
+                      )}
                     </div>
                     <div className="text-sm text-gray-500 mt-1">
-                      {isRecording 
-                        ? 'Sprechen Sie deutlich ins Mikrofon' 
-                        : isProcessing 
-                        ? 'KI verarbeitet Ihre Anfrage...'
-                        : isPlayingResponse
-                        ? 'KI-Agent antwortet...'
-                        : !wsConnected
-                        ? 'Verbindung wird hergestellt...'
-                        : 'Klicken Sie den Button, um zu sprechen'
-                      }
+                      {conversationMode ? (
+                        // Gespräch-Modus Beschreibung
+                        isListening
+                          ? isSpeechDetected
+                            ? 'Ihre Worte werden aufgenommen...'
+                            : 'Sprechen Sie einfach - ich höre automatisch zu'
+                          : isProcessing 
+                            ? 'KI verarbeitet Ihre Anfrage...'
+                            : isPlayingResponse
+                              ? 'KI-Agent antwortet...'
+                              : 'Klicken Sie "Gespräch starten" für natürliche Unterhaltung'
+                      ) : (
+                        // Klassischer Modus Beschreibung
+                        isRecording 
+                          ? 'Sprechen Sie deutlich ins Mikrofon' 
+                          : isProcessing 
+                          ? 'KI verarbeitet Ihre Anfrage...'
+                          : isPlayingResponse
+                          ? 'KI-Agent antwortet...'
+                          : !wsConnected
+                          ? 'Verbindung wird hergestellt...'
+                          : 'Klicken Sie den Button, um zu sprechen'
+                      )}
                     </div>
                   </div>
                 </div>
                 
-                {/* Voice Control Button */}
+                {/* Voice Control Buttons */}
                 <div className="text-center">
-                  <motion.button 
-                    onClick={isRecording ? stopRecording : startRecording}
-                    disabled={isProcessing || !wsConnected}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    className={`px-12 py-4 rounded-2xl font-bold text-xl transition-all shadow-xl ${
-                      isRecording 
-                        ? 'bg-gradient-to-r from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800' 
+                  {/* Mode Selection */}
+                  <div className="mb-6">
+                    <div className="flex justify-center gap-2 mb-4">
+                      <button 
+                        onClick={() => setConversationMode(false)}
+                        className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                          !conversationMode 
+                            ? 'bg-primary-100 text-primary-700 border-2 border-primary-300' 
+                            : 'bg-gray-100 text-gray-600 border-2 border-gray-200'
+                        }`}
+                      >
+                        📝 Klassisch
+                      </button>
+                      <button 
+                        onClick={() => setConversationMode(true)}
+                        className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                          conversationMode 
+                            ? 'bg-green-100 text-green-700 border-2 border-green-300' 
+                            : 'bg-gray-100 text-gray-600 border-2 border-gray-200'
+                        }`}
+                      >
+                        💬 Gespräch
+                      </button>
+                    </div>
+                    <div className="text-sm text-gray-600">
+                      {conversationMode 
+                        ? 'Kontinuierliches Gespräch wie am Telefon' 
+                        : 'Aufnehmen → Stoppen → Antwort'
+                      }
+                    </div>
+                  </div>
+
+                  {/* Voice Control Button(s) */}
+                  {conversationMode ? (
+                    // Kontinuierlicher Gesprächsmodus
+                    <motion.button 
+                      onClick={isListening ? stopConversationMode : startConversationMode}
+                      disabled={isProcessing}
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      className={`px-12 py-4 rounded-2xl font-bold text-xl transition-all shadow-xl ${
+                        isListening 
+                          ? 'bg-gradient-to-r from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800' 
+                          : 'bg-gradient-to-r from-green-600 to-green-700 text-white hover:from-green-700 hover:to-green-800'
+                      }`}
+                    >
+                      {isListening 
+                        ? '🔴 Gespräch beenden' 
+                        : '🎯 Gespräch starten'
+                      }
+                    </motion.button>
+                  ) : (
+                    // Klassischer Aufnahme-Modus
+                    <motion.button 
+                      onClick={isRecording ? stopRecording : startRecording}
+                      disabled={isProcessing || !wsConnected}
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      className={`px-12 py-4 rounded-2xl font-bold text-xl transition-all shadow-xl ${
+                        isRecording 
+                          ? 'bg-gradient-to-r from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800' 
+                          : isProcessing
+                          ? 'bg-gradient-to-r from-gray-400 to-gray-500 text-white cursor-not-allowed'
+                          : !wsConnected
+                          ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white cursor-not-allowed'
+                          : 'bg-gradient-to-r from-primary-600 to-accent-600 text-white hover:from-primary-700 hover:to-accent-700'
+                      }`}
+                    >
+                      {isRecording 
+                        ? '🛑 Stoppen' 
                         : isProcessing
-                        ? 'bg-gradient-to-r from-gray-400 to-gray-500 text-white cursor-not-allowed'
+                        ? 'Verarbeite...'
                         : !wsConnected
-                        ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white cursor-not-allowed'
-                        : 'bg-gradient-to-r from-primary-600 to-accent-600 text-white hover:from-primary-700 hover:to-accent-700'
-                    }`}
-                  >
-                    {isRecording 
-                      ? '🛑 Stoppen' 
-                      : isProcessing
-                      ? 'Verarbeite...'
-                      : !wsConnected
-                      ? 'Verbinde...'
-                      : '🎤 Sprechen'
-                    }
-                  </motion.button>
+                        ? 'Verbinde...'
+                        : '🎤 Sprechen'
+                      }
+                    </motion.button>
+                  )}
                   
-                  {/* Connection Status */}
-                  <div className="mt-3 flex items-center justify-center text-sm">
-                    <div className={`w-2 h-2 rounded-full mr-2 ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                    <span className={wsConnected ? 'text-green-600' : 'text-red-600'}>
-                      {wsConnected ? 'KI-Agent verbunden' : 'Verbindung unterbrochen'}
-                    </span>
+                  {/* Status Indicators */}
+                  <div className="mt-4 space-y-2">
+                    {/* Voice Activity Indicator */}
+                    {isListening && (
+                      <div className="flex justify-center items-center space-x-2">
+                        <div className={`w-3 h-3 rounded-full ${isSpeechDetected ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}></div>
+                        <span className={`text-sm font-medium ${isSpeechDetected ? 'text-red-600' : 'text-green-600'}`}>
+                          {isSpeechDetected ? '🎤 Nehme auf...' : '👂 Höre zu...'}
+                        </span>
+                      </div>
+                    )}
+                    
+                    {/* Connection Status */}
+                    <div className="flex items-center justify-center text-sm">
+                      <div className={`w-2 h-2 rounded-full mr-2 ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                      <span className={wsConnected ? 'text-green-600' : 'text-red-600'}>
+                        {wsConnected ? 'KI-Agent verbunden' : 'Verbindung unterbrochen'}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1049,10 +1291,11 @@ function App() {
                   <div className="mt-8 p-6 bg-gray-50 rounded-xl">
                     <h4 className="font-semibold text-gray-900 mb-4 flex items-center">
                       <Volume2 className="h-5 w-5 mr-2" />
-                      Live Demo Gespräch
+                      {conversationMode ? 'Live Gespräch' : 'Live Demo Chat'}
                     </h4>
                     
                     <div className="space-y-4">
+                      {/* Aktuelle Interaktion */}
                       {transcript && (
                         <div className="bg-blue-100 p-3 rounded-lg">
                           <div className="text-sm font-medium text-blue-800 mb-1">Sie:</div>
@@ -1081,6 +1324,48 @@ function App() {
                         </div>
                       )}
                     </div>
+                  </div>
+                )}
+
+                {/* Konversations-Historie (nur im Gespräch-Modus) */}
+                {conversationMode && conversationHistory.length > 0 && (
+                  <div className="mt-8 p-6 bg-white border-2 border-green-200 rounded-xl">
+                    <h4 className="font-semibold text-gray-900 mb-4 flex items-center">
+                      <MessageCircle className="h-5 w-5 mr-2 text-green-600" />
+                      Gesprächsverlauf ({conversationHistory.length} Nachrichten)
+                    </h4>
+                    
+                    <div className="space-y-3 max-h-60 overflow-y-auto">
+                      {conversationHistory.map((exchange, index) => (
+                        <div key={index} className="border-l-4 border-gray-200 pl-4">
+                          <div className="text-xs text-gray-500 mb-1">
+                            {exchange.timestamp.toLocaleTimeString()}
+                          </div>
+                          <div className="bg-blue-50 p-2 rounded mb-2">
+                            <div className="text-sm font-medium text-blue-800">Sie:</div>
+                            <div className="text-blue-700 text-sm">{exchange.user}</div>
+                          </div>
+                          <div className="bg-green-50 p-2 rounded">
+                            <div className="text-sm font-medium text-green-800 flex items-center">
+                              <Bot className="h-3 w-3 mr-1" />
+                              KI-Agent:
+                            </div>
+                            <div className="text-green-700 text-sm">{exchange.ai}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    
+                    {conversationHistory.length > 0 && (
+                      <div className="mt-4 pt-4 border-t border-gray-200">
+                        <button 
+                          onClick={() => setConversationHistory([])}
+                          className="text-sm text-red-600 hover:text-red-700 transition-colors"
+                        >
+                          🗑️ Verlauf löschen
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

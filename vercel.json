@@ -10,10 +10,5 @@
       "src": "/api/voice-agent",
       "dest": "/api/voice-agent.js"
     }
-  ],
-  "env": {
-    "DEEPGRAM_API_KEY": "3e69806feb52b90f01f2e47f9e778fc87b6d811a",
-    "GEMINI_API_KEY": "AIzaSyDCqBRhKqrwXGfIbfmQVj3nRbQLDFsGqEI",
-    "SMALLEST_API_KEY": "sk-2ad79c9f-cf37-44b3-87dd-0b0b8eb66e5b"
-  }
+  ]
 } 
