@@ -316,7 +316,7 @@ function App() {
       console.error('Voice API Error:', error);
       setTranscript('');
       setAiResponse('Fehler bei der Sprachverarbeitung.');
-      alert('Sprachverarbeitung fehlgeschlagen: ' + error.message);
+      alert('Sprachverarbeitung fehlgeschlagen: ' + (error instanceof Error ? error.message : String(error)));
     } finally {
       setIsProcessing(false);
     }
