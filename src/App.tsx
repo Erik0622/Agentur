@@ -51,7 +51,6 @@ function App() {
   // Kontinuierliche Voice Detection Refs
   const continuousStreamRef = useRef<MediaStream | null>(null);
   const continuousRecorderRef = useRef<MediaRecorder | null>(null);
-  const vadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const speechDetectionRef = useRef<boolean>(false);
   const currentAudioChunksRef = useRef<Blob[]>([]);
 
