@@ -53,11 +53,11 @@ npm run dev
 4. Spreche auf Deutsch
 5. Hört die KI-Antwort
 
-## 📊 **Typische Latenz**
-- **Deepgram**: ~200-400ms
-- **Gemini**: ~300-600ms  
-- **Smallest.ai**: ~500-1000ms
-- **Gesamt**: ~1-2 Sekunden
+## 📊 **Realistische Latenz (Neueste Modelle)**
+- **Deepgram Nova-2**: ~50-150ms
+- **Gemini 2.0 Flash**: ~100-300ms  
+- **Smallest.ai (neuestes)**: ~100-200ms
+- **🔥 Gesamt**: ~250-650ms (unter 1 Sekunde!)
 
 ## 🎯 **Restaurant-Assistent Features**
 

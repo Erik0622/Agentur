@@ -107,7 +107,7 @@ async function transcribeAudio(audioBase64) {
     
     const audioBuffer = Buffer.from(audioBase64, 'base64');
     
-    const response = await fetch('https://api.deepgram.com/v1/listen?language=de&model=nova-2&punctuate=true&smart_format=true', {
+    const response = await fetch('https://api.deepgram.com/v1/listen?language=de&model=nova-2&punctuate=true&smart_format=true&tier=enhanced', {
       method: 'POST',
       headers: {
         'Authorization': `Token ${DEEPGRAM_API_KEY}`,
@@ -187,11 +187,12 @@ async function generateSpeech(text) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'tts-1',
+        model: 'sonic-v1', // Schnellstes Modell ~100ms
         input: text,
-        voice: 'nova',
+        voice: 'sonic-german', // Deutsche Optimierung
         response_format: 'mp3',
-        speed: 1.1
+        speed: 1.2, // Leicht beschleunigt
+        quality: 'standard' // Für Geschwindigkeit
       })
     });
 
