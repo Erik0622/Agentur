@@ -161,11 +161,20 @@ function App() {
   // Voice Recording Functions
   const startRecording = async () => {
     try {
+      // Start-Signal an Server senden
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'start_recording'
+        }));
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true
+          autoGainControl: true,
+          sampleRate: 16000, // Optimiert für Deepgram
+          channelCount: 1 // Mono
         } 
       });
       
@@ -192,7 +201,7 @@ function App() {
         stopAudioVisualization();
       };
 
-      mediaRecorder.start(100); // Sammle Daten alle 100ms
+      mediaRecorder.start(100); // Sammle Daten alle 100ms für Live-Streaming
       setIsRecording(true);
       setTranscript('');
       setAiResponse('');
@@ -205,6 +214,13 @@ function App() {
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
+      // Stop-Signal an Server senden
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'stop_recording'
+        }));
+      }
+
       mediaRecorderRef.current.stop();
       setIsRecording(false);
       setIsProcessing(true);
@@ -223,9 +239,9 @@ function App() {
       const arrayBuffer = await audioBlob.arrayBuffer();
       const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
 
-      // An Backend senden
+      // An Backend senden mit korrektem Message-Type
       wsRef.current.send(JSON.stringify({
-        type: 'voice_input',
+        type: 'audio_data',
         audio: base64Audio
       }));
     } catch (error) {
