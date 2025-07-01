@@ -9,10 +9,6 @@
     {
       "src": "/api/voice-agent",
       "dest": "/api/voice-agent.js"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
     }
   ],
   "env": {
