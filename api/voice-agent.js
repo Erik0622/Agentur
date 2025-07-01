@@ -153,10 +153,10 @@ Deine Hauptaufgaben:
 WICHTIG: Antworte SEHR KURZ und natürlich (max. 25 Wörter). Sei freundlich aber effizient.`;
 
     const model = genAI.getGenerativeModel({ 
-      model: "gemini-2.0-flash-exp",
+      model: "models/gemini-2.5-flash-lite-preview-0617", // Neuestes & schnellstes Modell!
       generationConfig: {
         temperature: 0.3,
-        maxOutputTokens: 80,
+        maxOutputTokens: 60, // Noch kürzer für maximale Speed
         topP: 0.8,
         topK: 40
       }

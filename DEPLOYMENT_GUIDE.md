@@ -69,15 +69,15 @@ Nach dem Deployment:
 
 ## ⚡ **Performance in Production**
 
-### **Latenz-Vergleich (Realistisch):**
+### **Latenz-Vergleich (Realistisch mit neuesten Modellen):**
 | Component | Development | Production |
 |-----------|-------------|------------|
 | STT (Deepgram Nova-2) | ~50-150ms | ~80-200ms |
-| Chat (Gemini 2.0 Flash) | ~100-300ms | ~150-400ms |
-| TTS (Smallest.ai neuestes) | ~100-200ms | ~150-300ms |
-| **Total** | **~250-650ms** | **~380-900ms** |
+| Chat (Gemini 2.5 Flash-Lite) | ~80-250ms | ~120-350ms |
+| TTS (Smallest.ai Sonic-V1) | ~100-200ms | ~150-300ms |
+| **Total** | **~230-600ms** | **~350-850ms** |
 
-*Mit den neuesten Modellen erreichen wir **unter 1 Sekunde Gesamt-Latenz**!*
+*Mit den neuesten Modellen erreichen wir **unter 1 Sekunde Gesamt-Latenz** auch in Production!*
 
 ## 🔑 **API Keys**
 
