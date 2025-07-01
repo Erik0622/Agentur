@@ -7,7 +7,7 @@
   "devCommand": "npm run dev",
   "functions": {
     "api/voice-agent.js": {
-      "runtime": "nodejs18.x"
+      "runtime": "nodejs20.x"
     }
   },
   "routes": [

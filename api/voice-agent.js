@@ -107,7 +107,7 @@ async function transcribeAudio(audioBase64) {
     
     const audioBuffer = Buffer.from(audioBase64, 'base64');
     
-    const response = await fetch('https://api.deepgram.com/v1/listen?language=de&model=nova-2&punctuate=true&smart_format=true&tier=enhanced', {
+    const response = await fetch('https://api.deepgram.com/v1/listen?language=de&model=nova-3&punctuate=true&smart_format=true&tier=enhanced', {
       method: 'POST',
       headers: {
         'Authorization': `Token ${DEEPGRAM_API_KEY}`,
@@ -180,19 +180,17 @@ async function generateSpeech(text) {
   try {
     const fetch = (await import('node-fetch')).default;
     
-    const response = await fetch('https://api.smallest.ai/v1/audio/speech', {
+    const response = await fetch('https://waves-api.smallest.ai/api/v1/lightning-v2/get_speech', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${SMALLEST_API_KEY}`,
+        'X-API-KEY': SMALLEST_API_KEY,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'sonic-v1', // Schnellstes Modell ~100ms
-        input: text,
-        voice: 'sonic-german', // Deutsche Optimierung
-        response_format: 'mp3',
-        speed: 1.2, // Leicht beschleunigt
-        quality: 'standard' // Für Geschwindigkeit
+        text: text,
+        voice: 'de-DE-Standard-A', // Deutsche Lightning V2 Stimme
+        format: 'mp3',
+        speed: 1.2 // Leicht beschleunigt
       })
     });
 
