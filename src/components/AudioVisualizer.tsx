@@ -10,7 +10,7 @@ interface AudioVisualizerProps {
 
 const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
   isRecording,
-  isProcessing,
+  isProcessing: _,
   isPlayingResponse,
   audioLevel
 }) => {

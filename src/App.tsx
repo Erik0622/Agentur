@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Phone, Clock, TrendingDown, Users, Bot, Star, CheckCircle, ArrowRight, Calendar, X, ChevronLeft, ChevronRight, Video, Monitor, Mic, MicOff, Volume2, Loader } from 'lucide-react'
+import { Phone, Clock, TrendingDown, Users, Bot, Star, CheckCircle, ArrowRight, Calendar, X, ChevronLeft, ChevronRight, Video, Monitor, Mic, Volume2, Loader } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import AudioVisualizer from './components/AudioVisualizer'
 
@@ -29,7 +29,7 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPlayingResponse, setIsPlayingResponse] = useState(false);
-  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [, setAudioBlob] = useState<Blob | null>(null);
   const [transcript, setTranscript] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
@@ -235,24 +235,7 @@ function App() {
     }
   };
 
-  const generateTimeSlots = (date: string) => {
-    const dayDate = new Date(date);
-    const dayOfWeek = dayDate.getDay();
-    
-    // Sonntag (0) = frei
-    if (dayOfWeek === 0) return [];
-    
-    const slots = [];
-    let startHour = 7;
-    let endHour = dayOfWeek === 6 ? 13 : 15; // Samstag bis 13, Rest bis 15
-    
-    for (let hour = startHour; hour < endHour; hour++) {
-      const timeString = `${hour.toString().padStart(2, '0')}:00`;
-      slots.push(timeString);
-    }
-    
-    return slots;
-  };
+
 
   const isSlotAvailable = (date: string, time: string) => {
     return !bookings.some(booking => 
@@ -401,7 +384,7 @@ function App() {
                 <div className="p-2 text-center text-sm font-medium text-gray-600 bg-gray-50 rounded">
                   {hour.toString().padStart(2, '0')}:00
                 </div>
-                {weekDays.map((day, dayIndex) => {
+                {weekDays.map((day) => {
                   const dateString = `${day.getFullYear()}-${(day.getMonth() + 1).toString().padStart(2, '0')}-${day.getDate().toString().padStart(2, '0')}`;
                   const timeString = `${hour.toString().padStart(2, '0')}:00`;
                   const isPast = day < today || (day.toDateString() === today.toDateString() && hour <= new Date().getHours());
