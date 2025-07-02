@@ -172,8 +172,8 @@ function App() {
       
       if (analyserRef.current && isActive && audioContextRef.current?.state === 'running') {
         try {
-          analyserRef.current.getByteFrequencyData(dataArray);
-          const average = dataArray.reduce((a, b) => a + b) / bufferLength;
+        analyserRef.current.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b) / bufferLength;
           const audioLevel = average / 255 * 100;
           setAudioLevel(audioLevel);
 
@@ -202,7 +202,7 @@ function App() {
             }
           }
 
-          animationRef.current = requestAnimationFrame(updateAudioLevel);
+        animationRef.current = requestAnimationFrame(updateAudioLevel);
         } catch (error) {
           console.error('Audio level update error:', error);
           setAudioLevel(0);
@@ -448,7 +448,7 @@ function App() {
       // Audio zu Base64 konvertieren
       const arrayBuffer = await audioBlob.arrayBuffer();
       const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-
+    
       // REST API Call
       const response = await fetch('/api/voice-agent', {
         method: 'POST',
@@ -460,7 +460,7 @@ function App() {
           audio: base64Audio
         })
       });
-
+    
       const result = await response.json();
 
       if (result.success) {
@@ -1127,14 +1127,14 @@ function App() {
                       ) : (
                         // Klassischer Modus Status
                         isRecording 
-                          ? '🎤 Hört zu...' 
-                          : isProcessing 
-                          ? '🧠 Denkt nach...'
-                          : isPlayingResponse
-                          ? '🔊 Spricht...'
-                          : !wsConnected
-                          ? '🔄 Verbinde...'
-                          : '🤖 Bereit zum Sprechen'
+                        ? '🎤 Hört zu...' 
+                        : isProcessing 
+                        ? '🧠 Denkt nach...'
+                        : isPlayingResponse
+                        ? '🔊 Spricht...'
+                        : !wsConnected
+                        ? '🔄 Verbinde...'
+                        : '🤖 Bereit zum Sprechen'
                       )}
                     </div>
                     <div className="text-sm text-gray-500 mt-1">
@@ -1152,14 +1152,14 @@ function App() {
                       ) : (
                         // Klassischer Modus Beschreibung
                         isRecording 
-                          ? 'Sprechen Sie deutlich ins Mikrofon' 
-                          : isProcessing 
-                          ? 'KI verarbeitet Ihre Anfrage...'
-                          : isPlayingResponse
-                          ? 'KI-Agent antwortet...'
-                          : !wsConnected
-                          ? 'Verbindung wird hergestellt...'
-                          : 'Klicken Sie den Button, um zu sprechen'
+                        ? 'Sprechen Sie deutlich ins Mikrofon' 
+                        : isProcessing 
+                        ? 'KI verarbeitet Ihre Anfrage...'
+                        : isPlayingResponse
+                        ? 'KI-Agent antwortet...'
+                        : !wsConnected
+                        ? 'Verbindung wird hergestellt...'
+                        : 'Klicken Sie den Button, um zu sprechen'
                       )}
                     </div>
                   </div>
@@ -1220,30 +1220,30 @@ function App() {
                     </motion.button>
                   ) : (
                     // Klassischer Aufnahme-Modus
-                    <motion.button 
-                      onClick={isRecording ? stopRecording : startRecording}
-                      disabled={isProcessing || !wsConnected}
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      className={`px-12 py-4 rounded-2xl font-bold text-xl transition-all shadow-xl ${
-                        isRecording 
-                          ? 'bg-gradient-to-r from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800' 
-                          : isProcessing
-                          ? 'bg-gradient-to-r from-gray-400 to-gray-500 text-white cursor-not-allowed'
-                          : !wsConnected
-                          ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white cursor-not-allowed'
-                          : 'bg-gradient-to-r from-primary-600 to-accent-600 text-white hover:from-primary-700 hover:to-accent-700'
-                      }`}
-                    >
-                      {isRecording 
-                        ? '🛑 Stoppen' 
+                  <motion.button 
+                    onClick={isRecording ? stopRecording : startRecording}
+                    disabled={isProcessing || !wsConnected}
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    className={`px-12 py-4 rounded-2xl font-bold text-xl transition-all shadow-xl ${
+                      isRecording 
+                        ? 'bg-gradient-to-r from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800' 
                         : isProcessing
-                        ? 'Verarbeite...'
+                        ? 'bg-gradient-to-r from-gray-400 to-gray-500 text-white cursor-not-allowed'
                         : !wsConnected
-                        ? 'Verbinde...'
-                        : '🎤 Sprechen'
-                      }
-                    </motion.button>
+                        ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white cursor-not-allowed'
+                        : 'bg-gradient-to-r from-primary-600 to-accent-600 text-white hover:from-primary-700 hover:to-accent-700'
+                    }`}
+                  >
+                    {isRecording 
+                      ? '🛑 Stoppen' 
+                      : isProcessing
+                      ? 'Verarbeite...'
+                      : !wsConnected
+                      ? 'Verbinde...'
+                      : '🎤 Sprechen'
+                    }
+                  </motion.button>
                   )}
                   
                   {/* Status Indicators */}
@@ -1257,13 +1257,13 @@ function App() {
                         </span>
                       </div>
                     )}
-                    
-                    {/* Connection Status */}
+                  
+                  {/* Connection Status */}
                     <div className="flex items-center justify-center text-sm">
-                      <div className={`w-2 h-2 rounded-full mr-2 ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                      <span className={wsConnected ? 'text-green-600' : 'text-red-600'}>
-                        {wsConnected ? 'KI-Agent verbunden' : 'Verbindung unterbrochen'}
-                      </span>
+                    <div className={`w-2 h-2 rounded-full mr-2 ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                    <span className={wsConnected ? 'text-green-600' : 'text-red-600'}>
+                      {wsConnected ? 'KI-Agent verbunden' : 'Verbindung unterbrochen'}
+                    </span>
                     </div>
                   </div>
                 </div>
