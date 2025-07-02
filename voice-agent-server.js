@@ -49,9 +49,9 @@ class VoiceAgent {
       console.log('🎤 Starte Deepgram Stream für Client:', this.clientId);
       
       // Optimierte Deepgram-Konfiguration für niedrige Latenz
-      const deepgramUrl = `wss://api.deepgram.com/v1/listen?` + new URLSearchParams({
-        language: 'de',
-        model: 'nova-2',
+          const deepgramUrl = `wss://api.deepgram.com/v1/listen?` + new URLSearchParams({
+      language: 'multi',
+      model: 'nova-3',
         punctuate: 'true',
         interim_results: 'true',
         endpointing: '300', // Schnelle Erkennung von Satzende

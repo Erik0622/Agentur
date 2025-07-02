@@ -41,7 +41,7 @@ class VoiceAgent {
 
   async startDeepgramStream() {
     try {
-      const deepgramUrl = `wss://api.deepgram.com/v1/listen?language=de&model=nova-2&punctuate=true&interim_results=true&endpointing=300&vad_events=true&smart_format=true`;
+      const deepgramUrl = `wss://api.deepgram.com/v1/listen?language=multi&model=nova-3&punctuate=true&interim_results=true&endpointing=300&vad_events=true&smart_format=true`;
       const headers = { Authorization: `Token ${DEEPGRAM_API_KEY}` };
       
       const WebSocketDG = (await import('ws')).WebSocket;

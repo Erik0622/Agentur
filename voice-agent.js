@@ -48,9 +48,9 @@ class VoiceAgent {
     try {
       console.log('🎤 Starte Deepgram Stream für Client:', this.clientId);
       
-      const deepgramUrl = `wss://api.deepgram.com/v1/listen?` + new URLSearchParams({
-        language: 'de',
-        model: 'nova-3',
+          const deepgramUrl = `wss://api.deepgram.com/v1/listen?` + new URLSearchParams({
+      language: 'multi',
+      model: 'nova-3',
         punctuate: 'true',
         interim_results: 'true',
         endpointing: '300',
