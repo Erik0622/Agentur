@@ -231,7 +231,7 @@ async function generateAccessToken() {
 // Gemini Chat Response mit korrekter Vertex AI Implementation
 async function generateChatResponse(transcript) {
   const PROJECT_ID = "gen-lang-client-0449145483";
-  const LOCATION = "us-central1"; 
+  const LOCATION = "global"; 
   const MODEL_ID = "gemini-2.5-flash-lite-preview-06-17";
   
   console.log('Using Vertex AI model:', MODEL_ID);
@@ -248,8 +248,8 @@ async function generateChatResponse(transcript) {
     
     const fetch = (await import('node-fetch')).default;
     
-    // KORREKTUR: v1beta für Preview-Modelle statt v1
-    const endpoint = `https://${LOCATION}-aiplatform.googleapis.com/v1beta/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${MODEL_ID}:generateContent`;
+    // KORREKTUR: Vertex AI global endpoint für Preview-Modelle
+    const endpoint = `https://aiplatform.googleapis.com/v1beta/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${MODEL_ID}:generateContent`;
     
     console.log('Sending request to Vertex AI endpoint:', endpoint);
     
