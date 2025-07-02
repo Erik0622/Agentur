@@ -162,9 +162,10 @@ async function transcribeAudio(audioBase64) {
   }
 }
 
-// Korrigierte JWT Token Generation für Service Account
+// Korrigierte JWT Token Generation für Service Account (ES-Modul kompatibel)
 async function generateAccessToken() {
-  const crypto = require('crypto');
+  // ES-Modul Import für crypto
+  const { createSign } = await import('crypto');
   
   const now = Math.floor(Date.now() / 1000);
   
@@ -195,9 +196,9 @@ async function generateAccessToken() {
   const encodedHeader = base64UrlEncode(JSON.stringify(header));
   const encodedPayload = base64UrlEncode(JSON.stringify(payload));
   
-  // Signatur mit korrekter crypto.createSign API
+  // Signatur mit korrekter ES-Modul crypto API
   const signThis = `${encodedHeader}.${encodedPayload}`;
-  const sign = crypto.createSign('RSA-SHA256');
+  const sign = createSign('RSA-SHA256');
   sign.update(signThis);
   const signature = sign.sign(SERVICE_ACCOUNT_JSON.private_key);
   const encodedSignature = base64UrlEncode(signature);
