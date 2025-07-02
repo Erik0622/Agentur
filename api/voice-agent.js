@@ -140,56 +140,53 @@ async function transcribeAudio(audioBase64) {
   }
 }
 
-// Gemini Chat Response mit Fallback-Modellen
+// Gemini Chat Response mit API Key Debugging
 async function generateChatResponse(transcript) {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_API_KEY) {
     throw new Error('GEMINI_API_KEY environment variable not set');
   }
 
-  // Debug API Key (nur erste/letzte Zeichen)
-  console.log('Gemini API Key format:', `${GEMINI_API_KEY.substring(0, 6)}...${GEMINI_API_KEY.substring(GEMINI_API_KEY.length - 6)}`);
+  // Debug API Key Format (sicher)
+  console.log('Gemini API Key length:', GEMINI_API_KEY.length);
+  console.log('Gemini API Key prefix:', GEMINI_API_KEY.substring(0, 10));
+  console.log('Gemini API Key contains expected chars:', /^AIza[A-Za-z0-9_-]+$/.test(GEMINI_API_KEY));
 
   const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
   const systemPrompt = `Du bist ein freundlicher Telefonassistent für das Restaurant "Bella Vista". Antworte SEHR KURZ und natürlich (max. 25 Wörter).
 Öffnungszeiten: Mo-Fr 17-23h, Sa 17-24h, So 17-22h.`;
 
-  // Versuche verschiedene Gemini-Modelle in Reihenfolge
-  const models = [
-    "gemini-1.5-flash",
-    "gemini-1.5-pro", 
-    "gemini-pro"
-  ];
+  try {
+    console.log('Using original model: gemini-2.5-flash-lite-preview-0617');
+    
+    const model = genAI.getGenerativeModel({ 
+      model: "gemini-2.5-flash-lite-preview-0617",
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 60,
+        topP: 0.8,
+        topK: 40
+      }
+    });
 
-  for (const modelName of models) {
-    try {
-      console.log(`Trying Gemini model: ${modelName}`);
-      
-      const model = genAI.getGenerativeModel({ 
-        model: modelName,
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 60,
-          topP: 0.8,
-          topK: 40
-        }
-      });
-
-      const prompt = `${systemPrompt}\n\nKunde: ${transcript}\n\nAssistant:`;
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      
-      console.log(`Gemini model ${modelName} successful`);
-      return response.text() || 'Entschuldigung, ich habe Sie nicht verstanden.';
-      
-    } catch (error) {
-      console.log(`Gemini model ${modelName} failed:`, error.message);
-      // Weiter zum nächsten Modell
-    }
+    const prompt = `${systemPrompt}\n\nKunde: ${transcript}\n\nAssistant:`;
+    
+    console.log('Sending request to Gemini API...');
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    
+    console.log('Gemini API response successful');
+    return response.text() || 'Entschuldigung, ich habe Sie nicht verstanden.';
+    
+  } catch (error) {
+    console.error('Gemini API detailed error:');
+    console.error('- Error name:', error.name);
+    console.error('- Error message:', error.message);
+    console.error('- Error status:', error.status);
+    console.error('- Full error:', JSON.stringify(error, null, 2));
+    throw error;
   }
-  
-  throw new Error('All Gemini models failed');
 }
 
 // Smallest.ai Text-to-Speech
