@@ -162,7 +162,7 @@ async function transcribeAudio(audioBase64) {
   }
 }
 
-// Generiere JWT Token für Service Account
+// Korrigierte JWT Token Generation für Service Account
 async function generateAccessToken() {
   const crypto = require('crypto');
   
@@ -183,16 +183,28 @@ async function generateAccessToken() {
     iat: now
   };
   
-  // Base64 encode
-  const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
-  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  // Base64URL encode (kompatibel mit allen Node.js Versionen)
+  function base64UrlEncode(str) {
+    return Buffer.from(str)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
   
-  // Signatur erstellen
+  const encodedHeader = base64UrlEncode(JSON.stringify(header));
+  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+  
+  // Signatur mit korrekter crypto.createSign API
   const signThis = `${encodedHeader}.${encodedPayload}`;
-  const signature = crypto.sign('RSA-SHA256', Buffer.from(signThis), SERVICE_ACCOUNT_JSON.private_key);
-  const encodedSignature = signature.toString('base64url');
+  const sign = crypto.createSign('RSA-SHA256');
+  sign.update(signThis);
+  const signature = sign.sign(SERVICE_ACCOUNT_JSON.private_key);
+  const encodedSignature = base64UrlEncode(signature);
   
   const jwt = `${signThis}.${encodedSignature}`;
+  
+  console.log('JWT token created, length:', jwt.length);
   
   // JWT gegen Access Token tauschen
   const fetch = (await import('node-fetch')).default;
@@ -205,10 +217,13 @@ async function generateAccessToken() {
   });
   
   if (!response.ok) {
-    throw new Error(`Token exchange failed: ${response.status}`);
+    const errorText = await response.text();
+    console.error('Token exchange error:', response.status, errorText);
+    throw new Error(`Token exchange failed: ${response.status} - ${errorText}`);
   }
   
   const tokenData = await response.json();
+  console.log('Access token received, expires in:', tokenData.expires_in, 'seconds');
   return tokenData.access_token;
 }
 
