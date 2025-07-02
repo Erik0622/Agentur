@@ -109,7 +109,7 @@ async function handleCompleteVoice(req, res, audioBase64) {
   }
 }
 
-// Deepgram Speech-to-Text
+// Deepgram Speech-to-Text mit Fallback-Strategie
 async function transcribeAudio(audioBase64) {
   const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
   if (!DEEPGRAM_API_KEY) {
@@ -119,7 +119,8 @@ async function transcribeAudio(audioBase64) {
   const fetch = (await import('node-fetch')).default;
   const audioBuffer = Buffer.from(audioBase64, 'base64');
   
-  const response = await fetch('https://api.deepgram.com/v1/listen?language=multi&model=nova-3&punctuate=true&smart_format=true&tier=enhanced', {
+  // Einfacher Test nur mit nova-3 (ohne tier=enhanced)
+  const response = await fetch('https://api.deepgram.com/v1/listen?language=multi&model=nova-3&punctuate=true&smart_format=true', {
     method: 'POST',
     headers: {
       'Authorization': `Token ${DEEPGRAM_API_KEY}`,
@@ -128,13 +129,15 @@ async function transcribeAudio(audioBase64) {
     body: audioBuffer
   });
 
-  if (!response.ok) {
+  if (response.ok) {
+    const result = await response.json();
+    console.log('nova-3 successful');
+    return result.results?.channels?.[0]?.alternatives?.[0]?.transcript || '';
+  } else {
     const errorBody = await response.text();
-    throw new Error(`Deepgram error: ${response.status} - ${errorBody}`);
+    console.log('nova-3 failed:', response.status, errorBody);
+    throw new Error(`Nova-3 not available: ${response.status}`);
   }
-
-  const result = await response.json();
-  return result.results?.channels?.[0]?.alternatives?.[0]?.transcript || '';
 }
 
 // Gemini Chat Response
