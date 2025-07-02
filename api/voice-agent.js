@@ -147,9 +147,13 @@ async function transcribeAudio(audioBase64) {
   }
 }
 
-// Gemini Chat Response mit direkten Keys
+// Gemini Chat Response mit Vertex AI API
 async function generateChatResponse(transcript) {
   const GEMINI_API_KEY = API_KEYS.GEMINI;
+  const PROJECT_ID = "gen-lang-client-0449145483";
+  const LOCATION = "us-central1";
+  const MODEL_ID = "gemini-2.5-flash-lite-preview-06-17";
+  
   if (!GEMINI_API_KEY) {
     throw new Error('GEMINI_API_KEY not set');
   }
@@ -157,41 +161,64 @@ async function generateChatResponse(transcript) {
   // Debug API Key Format (sicher)
   console.log('Gemini API Key length:', GEMINI_API_KEY.length);
   console.log('Gemini API Key prefix:', GEMINI_API_KEY.substring(0, 10));
-  console.log('Gemini API Key contains expected chars:', /^AIza[A-Za-z0-9_-]+$/.test(GEMINI_API_KEY));
-
-  const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+  console.log('Using Vertex AI model:', MODEL_ID);
 
   const systemPrompt = `Du bist ein freundlicher Telefonassistent für das Restaurant "Bella Vista". Antworte SEHR KURZ und natürlich (max. 25 Wörter).
 Öffnungszeiten: Mo-Fr 17-23h, Sa 17-24h, So 17-22h.`;
 
   try {
-    console.log('Using original model: gemini-2.5-flash-lite-preview-0617');
+    const fetch = (await import('node-fetch')).default;
     
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-2.5-flash-lite-preview-0617",
+    // Vertex AI REST API Endpoint
+    const endpoint = `https://${LOCATION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${MODEL_ID}:generateContent`;
+    
+    console.log('Sending request to Vertex AI endpoint:', endpoint);
+    
+    const requestBody = {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `${systemPrompt}\n\nKunde: ${transcript}\n\nAssistant:`
+            }
+          ]
+        }
+      ],
       generationConfig: {
         temperature: 0.3,
         maxOutputTokens: 60,
         topP: 0.8,
         topK: 40
       }
+    };
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GEMINI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(requestBody)
     });
 
-    const prompt = `${systemPrompt}\n\nKunde: ${transcript}\n\nAssistant:`;
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error('Vertex AI error response:', response.status, errorBody);
+      throw new Error(`Vertex AI API error: ${response.status} - ${errorBody}`);
+    }
+
+    const result = await response.json();
+    console.log('Vertex AI response successful');
     
-    console.log('Sending request to Gemini API...');
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    
-    console.log('Gemini API response successful');
-    return response.text() || 'Entschuldigung, ich habe Sie nicht verstanden.';
+    const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+    return text || 'Entschuldigung, ich habe Sie nicht verstanden.';
     
   } catch (error) {
-    console.error('Gemini API detailed error:');
+    console.error('Vertex AI detailed error:');
     console.error('- Error name:', error.name);
     console.error('- Error message:', error.message);
-    console.error('- Error status:', error.status);
-    console.error('- Full error:', JSON.stringify(error, null, 2));
+    console.error('- Error stack:', error.stack);
     throw error;
   }
 }
