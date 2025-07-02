@@ -248,8 +248,8 @@ async function generateChatResponse(transcript) {
     
     const fetch = (await import('node-fetch')).default;
     
-    // KORREKTUR: Vertex AI global endpoint für Preview-Modelle
-    const endpoint = `https://aiplatform.googleapis.com/v1beta/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${MODEL_ID}:generateContent`;
+    // KORREKTUR: Korrekter Vertex AI global Endpoint für Publisher-Modelle
+    const endpoint = `https://aiplatform.googleapis.com/v1beta/projects/${PROJECT_ID}/locations/global/publishers/google/models/${MODEL_ID}:streamGenerateContent`;
     
     console.log('Sending request to Vertex AI endpoint:', endpoint);
     
