@@ -1,10 +1,17 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// Log to check if the module and env vars are loaded at all. This is the first thing that should appear.
+// DIREKTIVE API KEYS - NUR SICHER FÜR PRIVATE REPOSITORIES!
+const API_KEYS = {
+  DEEPGRAM: "ac6a04eb0684c7bd7c61e8faab45ea6b1ee47681",
+  GEMINI: "AIzaSyDMfirI46wtNLlmV2moDRjnxmSzhAWIMZQ", 
+  SMALLEST: "sk-2ad79c9f-cf37-44b3-87dd-0b0b8eb66e5b"
+};
+
+// Log to check if the module and api keys are loaded
 console.log('--- api/voice-agent module loading ---');
-console.log('GEMINI_API_KEY available:', !!process.env.GEMINI_API_KEY);
-console.log('DEEPGRAM_API_KEY available:', !!process.env.DEEPGRAM_API_KEY);
-console.log('SMALLEST_API_KEY available:', !!process.env.SMALLEST_API_KEY);
+console.log('GEMINI_API_KEY:', API_KEYS.GEMINI ? '✅ Direct Key' : '❌ Missing');
+console.log('DEEPGRAM_API_KEY:', API_KEYS.DEEPGRAM ? '✅ Direct Key' : '❌ Missing');
+console.log('SMALLEST_API_KEY:', API_KEYS.SMALLEST ? '✅ Direct Key' : '❌ Missing');
 console.log('------------------------------------');
 
 export default async function handler(req, res) {
@@ -109,11 +116,11 @@ async function handleCompleteVoice(req, res, audioBase64) {
   }
 }
 
-// Deepgram Speech-to-Text mit Fallback-Strategie
+// Deepgram Speech-to-Text mit direkten Keys
 async function transcribeAudio(audioBase64) {
-  const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
+  const DEEPGRAM_API_KEY = API_KEYS.DEEPGRAM;
   if (!DEEPGRAM_API_KEY) {
-    throw new Error('DEEPGRAM_API_KEY environment variable not set');
+    throw new Error('DEEPGRAM_API_KEY not set');
   }
     
   const fetch = (await import('node-fetch')).default;
@@ -140,11 +147,11 @@ async function transcribeAudio(audioBase64) {
   }
 }
 
-// Gemini Chat Response mit API Key Debugging
+// Gemini Chat Response mit direkten Keys
 async function generateChatResponse(transcript) {
-  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+  const GEMINI_API_KEY = API_KEYS.GEMINI;
   if (!GEMINI_API_KEY) {
-    throw new Error('GEMINI_API_KEY environment variable not set');
+    throw new Error('GEMINI_API_KEY not set');
   }
 
   // Debug API Key Format (sicher)
@@ -189,11 +196,11 @@ async function generateChatResponse(transcript) {
   }
 }
 
-// Smallest.ai Text-to-Speech
+// Smallest.ai Text-to-Speech mit direkten Keys
 async function generateSpeech(text) {
-    const SMALLEST_API_KEY = process.env.SMALLEST_API_KEY;
+    const SMALLEST_API_KEY = API_KEYS.SMALLEST;
     if (!SMALLEST_API_KEY) {
-        throw new Error('SMALLEST_API_KEY environment variable not set');
+        throw new Error('SMALLEST_API_KEY not set');
     }
 
     const fetch = (await import('node-fetch')).default;
