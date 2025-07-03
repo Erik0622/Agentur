@@ -289,8 +289,10 @@ async function generateChatResponse(transcript) {
 
     const result = await response.json();
     console.log('Vertex AI response successful');
+    console.log('Full Gemini response:', JSON.stringify(result, null, 2));
     
     const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+    console.log('Extracted text:', text);
     return text || 'Entschuldigung, ich habe Sie nicht verstanden.';
     
   } catch (error) {
@@ -314,7 +316,7 @@ async function generateSpeech(text) {
     const response = await fetch('https://waves-api.smallest.ai/api/v1/lightning-v2/get_speech', {
       method: 'POST',
       headers: {
-        'X-API-KEY': SMALLEST_API_KEY,
+        'Authorization': `Bearer ${SMALLEST_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
