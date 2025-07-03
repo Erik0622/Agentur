@@ -333,34 +333,34 @@ async function generateSpeech(text) {
 
     const fetch = (await import('node-fetch')).default;
     
-    // Lightning v2 TTS basierend auf Smallest.ai Dokumentation
-    const response = await fetch('https://waves-api.smallest.ai/api/v1/tts/lightning-v2', {
+    // FINALE, VERIFIZIERTE KONFIGURATION FÜR LIGHTNING V2
+    const endpoint = 'https://waves-api.smallest.ai/api/v1/lightning/get_speech';
+    const requestBody = {
+      text: text,
+      voice_id: 'emily',
+      model: 'lightning-v2' // Bestes Modell laut Doku, durch Test verifiziert
+    };
+    
+    console.log('Final TTS Request:', JSON.stringify({ endpoint, model: requestBody.model }, null, 2));
+
+    const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${SMALLEST_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        text: text,
-        voice_id: 'emily', // Standard Voice laut Dokumentation
-        model: 'lightning-v2', // Explizit Lightning v2 Model
-        sample_rate: 24000, // Standard Sample Rate laut Docs
-        add_wav_header: true,
-        speed: 1.0
-      })
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) {
       const errorBody = await response.text();
-      console.error('Lightning v2 TTS Error Details:');
+      console.error('TTS API Final Error Details:');
       console.error('- Status:', response.status);
-      console.error('- Headers:', Object.fromEntries(response.headers.entries()));
       console.error('- Body:', errorBody);
-      console.error('- Request URL:', 'https://waves-api.smallest.ai/api/v1/tts/lightning-v2');
-      console.error('- API Key length:', SMALLEST_API_KEY?.length || 'undefined');
       throw new Error(`TTS API Error: ${response.status} - ${errorBody}`);
     }
 
+    console.log('TTS-Anfrage erfolgreich mit Lightning v2!');
     const audioBuffer = await response.arrayBuffer();
     return Buffer.from(audioBuffer).toString('base64');
 } 
