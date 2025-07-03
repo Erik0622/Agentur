@@ -338,7 +338,8 @@ async function generateSpeech(text) {
     const requestBody = {
       text: text,
       voice_id: 'emily',
-      model: 'lightning-v2' // Bestes Modell laut Doku, durch Test verifiziert
+      model: 'lightning-v2', // Bestes Modell laut Doku, durch Test verifiziert
+      add_wav_header: true // KRITISCH: Fügt WAV-Header hinzu für Browser-Kompatibilität
     };
     
     console.log('Final TTS Request:', JSON.stringify({ endpoint, model: requestBody.model }, null, 2));
