@@ -65,11 +65,15 @@ export default async function handler(req, res) {
   }
 }
 
-// Kompletter Voice-to-Voice Pipeline
+// Kompletter Voice-to-Voice Pipeline mit deutscher Stimmenauswahl
 async function handleCompleteVoice(req, res, audioBase64) {
   try {
     console.log('=== Voice Pipeline Started ===');
     const startTime = Date.now();
+
+    // Stimmenauswahl aus Request-Body extrahieren
+    const selectedVoice = req.body?.voice || 'clara'; // Standard: Clara
+    console.log(`Using German voice: ${selectedVoice}`);
 
     // 1. Speech-to-Text mit Deepgram
     console.log('Step 1: Starting Deepgram transcription...');
@@ -92,13 +96,13 @@ async function handleCompleteVoice(req, res, audioBase64) {
     const chatTime = Date.now() - chatStart;
     console.log(`Step 2 Complete: Response="${aiResponse}" (${chatTime}ms)`);
 
-    // 3. Text-to-Speech mit Smallest.ai
-    console.log('Step 3: Starting Lightning V2 TTS...');
+    // 3. Text-to-Speech mit Smallest.ai - Deutsche Stimme
+    console.log(`Step 3: Starting Lightning V2 TTS with voice: ${selectedVoice}...`);
     const ttsStart = Date.now();
     let audioResponse = null;
     try {
-      audioResponse = await generateSpeech(aiResponse);
-      console.log(`Step 3 Complete: Audio generated successfully (${Date.now() - ttsStart}ms)`);
+      audioResponse = await generateSpeech(aiResponse, selectedVoice);
+      console.log(`Step 3 Complete: Audio generated successfully with ${selectedVoice} (${Date.now() - ttsStart}ms)`);
     } catch (ttsError) {
       console.error('TTS failed, continuing without audio:', ttsError);
     }
@@ -112,6 +116,7 @@ async function handleCompleteVoice(req, res, audioBase64) {
       transcript: transcript,
       response: aiResponse,
       audio: audioResponse,
+      voiceUsed: selectedVoice, // Rückmeldung welche Stimme verwendet wurde
       metrics: {
         transcribe_time: transcribeTime,
         chat_time: chatTime,
@@ -324,8 +329,8 @@ async function generateChatResponse(transcript) {
   }
 }
 
-// Smallest.ai Text-to-Speech mit direkten Keys
-async function generateSpeech(text) {
+// Smallest.ai Text-to-Speech mit direkten Keys und Stimmenauswahl
+async function generateSpeech(text, voiceId = null) {
     const SMALLEST_API_KEY = API_KEYS.SMALLEST;
     if (!SMALLEST_API_KEY) {
         throw new Error('SMALLEST_API_KEY not set');
@@ -333,12 +338,27 @@ async function generateSpeech(text) {
 
     const fetch = (await import('node-fetch')).default;
     
-    // FINALE, VERIFIZIERTE KONFIGURATION FÜR LIGHTNING V2
+    // FINALE, VERIFIZIERTE KONFIGURATION FÜR LIGHTNING V2 - DEUTSCHE STIMMEN
     const endpoint = 'https://waves-api.smallest.ai/api/v1/lightning/get_speech';
+    
+    // Deutsche Stimmen für Bella Vista Restaurant
+    const germanVoices = {
+        'clara': 'de-female-1',    // Clara (Standard-A) - Weiblich, Hochdeutsch
+        'lena': 'de-female-2',     // Lena (Standard-B) - Weiblich, Hochdeutsch  
+        'leon': 'de-male-1',       // Leon (Standard-C) - Männlich, Hochdeutsch
+        'henrik': 'de-male-2'      // Henrik (Standard-D) - Männlich, Hochdeutsch
+    };
+    
+    // Standardstimme oder gewählte Stimme verwenden
+    const selectedVoiceId = voiceId && germanVoices[voiceId] 
+        ? germanVoices[voiceId] 
+        : 'de-female-1'; // Clara als Standard für freundlichen Restaurantservice
+    
     const requestBody = {
       text: text,
-      voice_id: 'emily',
+      voice_id: selectedVoiceId,
       model: 'lightning-v2', // Bestes Modell laut Doku, durch Test verifiziert
+      language: 'de-DE', // Explizit Deutsch
       add_wav_header: true // KRITISCH: Fügt WAV-Header hinzu für Browser-Kompatibilität
     };
     

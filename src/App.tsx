@@ -41,6 +41,15 @@ function App() {
   const [isSpeechDetected, setIsSpeechDetected] = useState(false);
   const [silenceCount, setSilenceCount] = useState(0);
   
+  // Deutsche Stimmenauswahl für Bella Vista
+  const [selectedVoice, setSelectedVoice] = useState('clara');
+  const germanVoices = {
+    'clara': { name: 'Clara', gender: 'Weiblich', description: 'Freundlich & professionell' },
+    'lena': { name: 'Lena', gender: 'Weiblich', description: 'Warm & einladend' },
+    'leon': { name: 'Leon', gender: 'Männlich', description: 'Souverän & kompetent' },
+    'henrik': { name: 'Henrik', gender: 'Männlich', description: 'Sympathisch & zugänglich' }
+  };
+  
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
@@ -449,7 +458,7 @@ function App() {
       const arrayBuffer = await audioBlob.arrayBuffer();
       const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
     
-      // REST API Call
+      // REST API Call mit gewählter deutscher Stimme
       const response = await fetch('/api/voice-agent', {
         method: 'POST',
         headers: {
@@ -457,7 +466,8 @@ function App() {
         },
         body: JSON.stringify({
           type: 'voice_complete',
-          audio: base64Audio
+          audio: base64Audio,
+          voice: selectedVoice // Deutsche Stimmenauswahl übertragen
         })
       });
     
@@ -1165,6 +1175,35 @@ function App() {
                   </div>
                 </div>
                 
+                {/* Deutsche Stimmenauswahl für Bella Vista */}
+                <div className="mb-6">
+                  <h4 className="text-lg font-semibold text-gray-700 mb-3 text-center">
+                    🗣️ Wählen Sie eine deutsche Stimme
+                  </h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    {Object.entries(germanVoices).map(([voiceKey, voice]) => (
+                      <button
+                        key={voiceKey}
+                        onClick={() => setSelectedVoice(voiceKey)}
+                        className={`p-3 rounded-lg border-2 transition-all text-left ${
+                          selectedVoice === voiceKey
+                            ? 'bg-primary-50 border-primary-300 text-primary-700'
+                            : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
+                        }`}
+                      >
+                        <div className="font-medium">{voice.name}</div>
+                        <div className="text-xs opacity-75">{voice.gender}</div>
+                        <div className="text-xs opacity-60">{voice.description}</div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="text-center mt-2">
+                    <span className="text-sm text-gray-500">
+                      Aktuell: <strong>{germanVoices[selectedVoice].name}</strong> ({germanVoices[selectedVoice].gender})
+                    </span>
+                  </div>
+                </div>
+
                 {/* Voice Control Buttons */}
                 <div className="text-center">
                   {/* Mode Selection */}
