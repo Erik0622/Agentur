@@ -291,7 +291,27 @@ async function generateChatResponse(transcript) {
     console.log('Vertex AI response successful');
     console.log('Full Gemini response:', JSON.stringify(result, null, 2));
     
-    const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+    // Gemini Streaming Response ist ein Array - nehme den letzten vollständigen Chunk
+    let text = '';
+    if (Array.isArray(result)) {
+      // Suche nach dem letzten Chunk mit finishReason: "STOP" 
+      const finalChunk = result.find(chunk => 
+        chunk.candidates?.[0]?.finishReason === "STOP"
+      );
+      if (finalChunk) {
+        text = finalChunk.candidates[0].content.parts[0].text;
+      } else {
+        // Fallback: Sammle alle Textteile
+        text = result
+          .map(chunk => chunk.candidates?.[0]?.content?.parts?.[0]?.text)
+          .filter(Boolean)
+          .join('');
+      }
+    } else {
+      // Einzelnes Objekt (nicht-streaming)
+      text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+    }
+    
     console.log('Extracted text:', text);
     return text || 'Entschuldigung, ich habe Sie nicht verstanden.';
     
@@ -313,17 +333,18 @@ async function generateSpeech(text) {
 
     const fetch = (await import('node-fetch')).default;
     
-    const response = await fetch('https://waves-api.smallest.ai/api/v1/lightning-v2/get_speech', {
+    // Korrigierter Smallest.ai API Call basierend auf Dokumentation
+    const response = await fetch('https://waves-api.smallest.ai/api/v1/lightning/get_speech', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${SMALLEST_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
+        voice_id: 'de-DE-Standard-A',
         text: text,
-        voice: 'de-DE-Standard-A',
-        format: 'mp3',
-        speed: 1.2
+        sample_rate: 22050,
+        add_wav_header: true
       })
     });
 
