@@ -333,15 +333,15 @@ async function generateSpeech(text) {
 
     const fetch = (await import('node-fetch')).default;
     
-    // Korrigierter Smallest.ai API Call basierend auf Dokumentation
-    const response = await fetch('https://waves-api.smallest.ai/api/v1/lightning/get_speech', {
+    // Upgrade auf Lightning v2 - bessere Qualität und 16 Sprachen
+    const response = await fetch('https://waves-api.smallest.ai/api/v1/lightning-v2/get_speech', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${SMALLEST_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        voice_id: 'de-DE-Standard-A',
+        voice_id: 'german-male', // Lightning v2 unterstützt deutsche Stimmen
         text: text,
         sample_rate: 22050,
         add_wav_header: true
