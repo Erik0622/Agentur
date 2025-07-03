@@ -471,7 +471,7 @@ function App() {
         // Audio abspielen
         if (result.audio) {
           setIsPlayingResponse(true);
-          const audio = new Audio(`data:audio/mp3;base64,${result.audio}`);
+          const audio = new Audio(`data:audio/wav;base64,${result.audio}`);
           audio.onended = () => setIsPlayingResponse(false);
           audio.play().catch(e => console.error('Audio playback failed:', e));
         }
