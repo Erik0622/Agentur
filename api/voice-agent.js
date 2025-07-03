@@ -333,23 +333,31 @@ async function generateSpeech(text) {
 
     const fetch = (await import('node-fetch')).default;
     
-    // Upgrade auf Lightning v2 - bessere Qualität und 16 Sprachen
-    const response = await fetch('https://waves-api.smallest.ai/api/v1/lightning-v2/get_speech', {
+    // Lightning v2 TTS basierend auf Smallest.ai Dokumentation
+    const response = await fetch('https://waves-api.smallest.ai/api/v1/tts/lightning-v2', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${SMALLEST_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        voice_id: 'german-male', // Lightning v2 unterstützt deutsche Stimmen
         text: text,
-        sample_rate: 22050,
-        add_wav_header: true
+        voice_id: 'emily', // Standard Voice laut Dokumentation
+        model: 'lightning-v2', // Explizit Lightning v2 Model
+        sample_rate: 24000, // Standard Sample Rate laut Docs
+        add_wav_header: true,
+        speed: 1.0
       })
     });
 
     if (!response.ok) {
       const errorBody = await response.text();
+      console.error('Lightning v2 TTS Error Details:');
+      console.error('- Status:', response.status);
+      console.error('- Headers:', Object.fromEntries(response.headers.entries()));
+      console.error('- Body:', errorBody);
+      console.error('- Request URL:', 'https://waves-api.smallest.ai/api/v1/tts/lightning-v2');
+      console.error('- API Key length:', SMALLEST_API_KEY?.length || 'undefined');
       throw new Error(`TTS API Error: ${response.status} - ${errorBody}`);
     }
 
