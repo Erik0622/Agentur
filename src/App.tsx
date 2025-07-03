@@ -42,13 +42,13 @@ function App() {
   const [silenceCount, setSilenceCount] = useState(0);
   
   // Deutsche Stimmenauswahl für Bella Vista
-  const [selectedVoice, setSelectedVoice] = useState('clara');
+  const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('clara');
   const germanVoices = {
     'clara': { name: 'Clara', gender: 'Weiblich', description: 'Freundlich & professionell' },
     'lena': { name: 'Lena', gender: 'Weiblich', description: 'Warm & einladend' },
     'leon': { name: 'Leon', gender: 'Männlich', description: 'Souverän & kompetent' },
     'henrik': { name: 'Henrik', gender: 'Männlich', description: 'Sympathisch & zugänglich' }
-  };
+  } as const;
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -1046,39 +1046,39 @@ function App() {
       </section>
 
       {/* Demo Section */}
-      <section className="py-20 bg-gradient-to-br from-primary-50 to-accent-50">
+      <section className="py-12 sm:py-16 lg:py-20 bg-gradient-to-br from-primary-50 to-accent-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <motion.div
             initial={{ opacity: 0 }}
             whileInView={{ opacity: 1 }}
             transition={{ duration: 0.8 }}
             viewport={{ once: true }}
-            className="text-center mb-16"
+            className="text-center mb-8 sm:mb-12 lg:mb-16"
           >
-            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
+            <h2 className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-4 sm:mb-6">
               Erleben Sie unsere <span className="gradient-text">KI live</span>
             </h2>
-            <p className="text-xl text-gray-600 max-w-3xl mx-auto">
+            <p className="text-base sm:text-lg lg:text-xl text-gray-600 max-w-3xl mx-auto">
               Testen Sie jetzt unseren Voice-Agent und erleben Sie, wie natürlich und effizient KI-basierter Kundenservice funktioniert
             </p>
           </motion.div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-12 items-center">
             <motion.div
               initial={{ opacity: 0, x: -50 }}
               whileInView={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.8 }}
               viewport={{ once: true }}
-              className="bg-white p-8 rounded-2xl shadow-xl"
+              className="bg-white p-4 sm:p-6 lg:p-8 rounded-2xl shadow-xl"
             >
-              <h3 className="text-2xl font-bold text-gray-900 mb-6 text-center">
+              <h3 className="text-xl sm:text-2xl font-bold text-gray-900 mb-4 sm:mb-6 text-center">
                 🎙️ Voice-Agent Demo
               </h3>
               
-              <div className="space-y-6">
+              <div className="space-y-4 sm:space-y-6">
                 {/* Audio Visualizer */}
                 <div className="flex flex-col items-center">
-                  <div className={`w-40 h-40 rounded-full flex items-center justify-center shadow-lg transition-all duration-300 ${
+                  <div className={`w-28 h-28 sm:w-36 sm:h-36 lg:w-40 lg:h-40 rounded-full flex items-center justify-center shadow-lg transition-all duration-300 ${
                     isRecording 
                       ? 'bg-gradient-to-br from-red-500 to-red-600 animate-pulse' 
                       : isProcessing
@@ -1090,18 +1090,18 @@ function App() {
                       : 'bg-gradient-to-br from-gray-400 to-gray-500'
                   }`}>
                     {isProcessing ? (
-                      <Loader className="h-20 w-20 text-white animate-spin" />
+                      <Loader className="h-12 w-12 sm:h-16 sm:w-16 lg:h-20 lg:w-20 text-white animate-spin" />
                     ) : isRecording ? (
-                      <Mic className="h-20 w-20 text-white animate-pulse" />
+                      <Mic className="h-12 w-12 sm:h-16 sm:w-16 lg:h-20 lg:w-20 text-white animate-pulse" />
                     ) : isPlayingResponse ? (
-                      <Volume2 className="h-20 w-20 text-white animate-pulse" />
+                      <Volume2 className="h-12 w-12 sm:h-16 sm:w-16 lg:h-20 lg:w-20 text-white animate-pulse" />
                     ) : (
-                      <Bot className="h-20 w-20 text-white" />
+                      <Bot className="h-12 w-12 sm:h-16 sm:w-16 lg:h-20 lg:w-20 text-white" />
                     )}
                   </div>
                   
                   {/* Audio Wellen Visualisierung */}
-                  <div className="mt-6 w-full">
+                  <div className="mt-4 sm:mt-6 w-full">
                     <AudioVisualizer 
                       isRecording={isRecording}
                       isProcessing={isProcessing}
@@ -1111,8 +1111,8 @@ function App() {
                   </div>
 
                   {/* Status Text */}
-                  <div className="text-center mb-8">
-                    <div className={`text-2xl font-bold mb-2 ${
+                  <div className="text-center mb-4 sm:mb-6 lg:mb-8">
+                    <div className={`text-lg sm:text-xl lg:text-2xl font-bold mb-2 ${
                       isRecording || isListening
                         ? 'text-red-600' 
                         : isProcessing 
@@ -1176,29 +1176,29 @@ function App() {
                 </div>
                 
                 {/* Deutsche Stimmenauswahl für Bella Vista */}
-                <div className="mb-6">
-                  <h4 className="text-lg font-semibold text-gray-700 mb-3 text-center">
-                    🗣️ Wählen Sie eine deutsche Stimme
+                <div className="mb-4 sm:mb-6">
+                  <h4 className="text-base sm:text-lg font-semibold text-gray-700 mb-2 sm:mb-3 text-center">
+                    🗣️ Deutsche Stimme wählen
                   </h4>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-2 gap-1.5 sm:gap-2">
                     {Object.entries(germanVoices).map(([voiceKey, voice]) => (
                       <button
                         key={voiceKey}
-                        onClick={() => setSelectedVoice(voiceKey)}
-                        className={`p-3 rounded-lg border-2 transition-all text-left ${
+                        onClick={() => setSelectedVoice(voiceKey as 'clara' | 'lena' | 'leon' | 'henrik')}
+                        className={`p-2 sm:p-3 rounded-lg border-2 transition-all text-left ${
                           selectedVoice === voiceKey
                             ? 'bg-primary-50 border-primary-300 text-primary-700'
                             : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
                         }`}
                       >
-                        <div className="font-medium">{voice.name}</div>
+                        <div className="font-medium text-sm sm:text-base">{voice.name}</div>
                         <div className="text-xs opacity-75">{voice.gender}</div>
-                        <div className="text-xs opacity-60">{voice.description}</div>
+                        <div className="text-xs opacity-60 hidden sm:block">{voice.description}</div>
                       </button>
                     ))}
                   </div>
-                  <div className="text-center mt-2">
-                    <span className="text-sm text-gray-500">
+                  <div className="text-center mt-1 sm:mt-2">
+                    <span className="text-xs sm:text-sm text-gray-500">
                       Aktuell: <strong>{germanVoices[selectedVoice].name}</strong> ({germanVoices[selectedVoice].gender})
                     </span>
                   </div>
@@ -1207,11 +1207,11 @@ function App() {
                 {/* Voice Control Buttons */}
                 <div className="text-center">
                   {/* Mode Selection */}
-                  <div className="mb-6">
-                    <div className="flex justify-center gap-2 mb-4">
+                  <div className="mb-4 sm:mb-6">
+                    <div className="flex justify-center gap-1.5 sm:gap-2 mb-3 sm:mb-4">
                       <button 
                         onClick={() => setConversationMode(false)}
-                        className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                        className={`px-3 sm:px-4 py-2 rounded-lg font-medium transition-all text-sm sm:text-base ${
                           !conversationMode 
                             ? 'bg-primary-100 text-primary-700 border-2 border-primary-300' 
                             : 'bg-gray-100 text-gray-600 border-2 border-gray-200'
@@ -1221,7 +1221,7 @@ function App() {
                       </button>
                       <button 
                         onClick={() => setConversationMode(true)}
-                        className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                        className={`px-3 sm:px-4 py-2 rounded-lg font-medium transition-all text-sm sm:text-base ${
                           conversationMode 
                             ? 'bg-green-100 text-green-700 border-2 border-green-300' 
                             : 'bg-gray-100 text-gray-600 border-2 border-gray-200'
@@ -1230,7 +1230,7 @@ function App() {
                         💬 Gespräch
                       </button>
                     </div>
-                    <div className="text-sm text-gray-600">
+                    <div className="text-xs sm:text-sm text-gray-600 text-center">
                       {conversationMode 
                         ? 'Kontinuierliches Gespräch wie am Telefon' 
                         : 'Aufnehmen → Stoppen → Antwort'
@@ -1246,7 +1246,7 @@ function App() {
                       disabled={isProcessing}
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
-                      className={`px-12 py-4 rounded-2xl font-bold text-xl transition-all shadow-xl ${
+                      className={`px-6 sm:px-8 lg:px-12 py-3 sm:py-4 rounded-xl sm:rounded-2xl font-bold text-base sm:text-lg lg:text-xl transition-all shadow-xl ${
                         isListening 
                           ? 'bg-gradient-to-r from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800' 
                           : 'bg-gradient-to-r from-green-600 to-green-700 text-white hover:from-green-700 hover:to-green-800'
@@ -1264,7 +1264,7 @@ function App() {
                     disabled={isProcessing || !wsConnected}
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
-                    className={`px-12 py-4 rounded-2xl font-bold text-xl transition-all shadow-xl ${
+                    className={`px-6 sm:px-8 lg:px-12 py-3 sm:py-4 rounded-xl sm:rounded-2xl font-bold text-base sm:text-lg lg:text-xl transition-all shadow-xl ${
                       isRecording 
                         ? 'bg-gradient-to-r from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800' 
                         : isProcessing
@@ -1286,19 +1286,19 @@ function App() {
                   )}
                   
                   {/* Status Indicators */}
-                  <div className="mt-4 space-y-2">
+                  <div className="mt-3 sm:mt-4 space-y-2">
                     {/* Voice Activity Indicator */}
                     {isListening && (
                       <div className="flex justify-center items-center space-x-2">
                         <div className={`w-3 h-3 rounded-full ${isSpeechDetected ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}></div>
-                        <span className={`text-sm font-medium ${isSpeechDetected ? 'text-red-600' : 'text-green-600'}`}>
+                        <span className={`text-xs sm:text-sm font-medium ${isSpeechDetected ? 'text-red-600' : 'text-green-600'}`}>
                           {isSpeechDetected ? '🎤 Nehme auf...' : '👂 Höre zu...'}
                         </span>
                       </div>
                     )}
                   
                   {/* Connection Status */}
-                    <div className="flex items-center justify-center text-sm">
+                    <div className="flex items-center justify-center text-xs sm:text-sm">
                     <div className={`w-2 h-2 rounded-full mr-2 ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
                     <span className={wsConnected ? 'text-green-600' : 'text-red-600'}>
                       {wsConnected ? 'KI-Agent verbunden' : 'Verbindung unterbrochen'}
@@ -1308,8 +1308,8 @@ function App() {
                 </div>
               </div>
               
-              <div className="mt-8 space-y-4">
-                <h4 className="font-semibold text-gray-900">Demo-Szenarien:</h4>
+              <div className="mt-6 sm:mt-8 space-y-3 sm:space-y-4">
+                <h4 className="font-semibold text-gray-900 text-sm sm:text-base">Demo-Szenarien:</h4>
                 <div className="grid grid-cols-1 gap-2">
                   {[
                     "Tischreservierung für 4 Personen",
@@ -1317,9 +1317,9 @@ function App() {
                     "Öffnungszeiten und Anfahrt",
                     "Stornierung einer Reservierung"
                   ].map((scenario, index) => (
-                    <div key={index} className="flex items-center p-3 bg-gray-50 rounded-lg">
-                      <CheckCircle className="h-5 w-5 text-green-500 mr-3 flex-shrink-0" />
-                      <span className="text-sm text-gray-700">{scenario}</span>
+                    <div key={index} className="flex items-center p-2 sm:p-3 bg-gray-50 rounded-lg">
+                      <CheckCircle className="h-4 w-4 sm:h-5 sm:w-5 text-green-500 mr-2 sm:mr-3 flex-shrink-0" />
+                      <span className="text-xs sm:text-sm text-gray-700">{scenario}</span>
                     </div>
                   ))}
                 </div>
@@ -1414,48 +1414,48 @@ function App() {
               whileInView={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.8 }}
               viewport={{ once: true }}
-              className="space-y-8"
+              className="space-y-6 lg:space-y-8"
             >
-              <div className="bg-white p-6 rounded-xl shadow-lg">
-                <h4 className="text-xl font-bold text-gray-900 mb-4">
+              <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg">
+                <h4 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 sm:mb-4">
                   🚀 Unsere Technologie
                 </h4>
-                <div className="space-y-4">
+                <div className="space-y-3 sm:space-y-4">
                   <div className="flex items-center">
                     <div className="w-3 h-3 bg-blue-500 rounded-full mr-3"></div>
-                    <span className="text-gray-700"><strong>Deepgram:</strong> Präzise Spracherkennung</span>
+                    <span className="text-sm sm:text-base text-gray-700"><strong>Deepgram:</strong> Präzise Spracherkennung</span>
                   </div>
                   <div className="flex items-center">
                     <div className="w-3 h-3 bg-green-500 rounded-full mr-3"></div>
-                    <span className="text-gray-700"><strong>Gemini Flash:</strong> Blitzschnelle KI-Antworten</span>
+                    <span className="text-sm sm:text-base text-gray-700"><strong>Gemini Flash:</strong> Blitzschnelle KI-Antworten</span>
                   </div>
                   <div className="flex items-center">
                     <div className="w-3 h-3 bg-purple-500 rounded-full mr-3"></div>
-                    <span className="text-gray-700"><strong>smallest.ai:</strong> Natürliche Sprachsynthese</span>
+                    <span className="text-sm sm:text-base text-gray-700"><strong>smallest.ai:</strong> Natürliche Sprachsynthese</span>
                   </div>
                 </div>
               </div>
 
-              <div className="bg-white p-6 rounded-xl shadow-lg">
-                <h4 className="text-xl font-bold text-gray-900 mb-4">
+              <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg">
+                <h4 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 sm:mb-4">
                   ⚡ Performance
                 </h4>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-2 gap-3 sm:gap-4">
                   <div className="text-center">
-                    <div className="text-2xl font-bold text-green-600">~500ms</div>
-                    <div className="text-sm text-gray-600">Antwortzeit</div>
+                    <div className="text-xl sm:text-2xl font-bold text-green-600">~500ms</div>
+                    <div className="text-xs sm:text-sm text-gray-600">Antwortzeit</div>
                   </div>
                   <div className="text-center">
-                    <div className="text-2xl font-bold text-blue-600">99.9%</div>
-                    <div className="text-sm text-gray-600">Verfügbarkeit</div>
+                    <div className="text-xl sm:text-2xl font-bold text-blue-600">99.9%</div>
+                    <div className="text-xs sm:text-sm text-gray-600">Verfügbarkeit</div>
                   </div>
                   <div className="text-center">
-                    <div className="text-2xl font-bold text-purple-600">~€0.02</div>
-                    <div className="text-sm text-gray-600">pro Gespräch</div>
+                    <div className="text-xl sm:text-2xl font-bold text-purple-600">~€0.02</div>
+                    <div className="text-xs sm:text-sm text-gray-600">pro Gespräch</div>
                   </div>
                   <div className="text-center">
-                    <div className="text-2xl font-bold text-orange-600">24/7</div>
-                    <div className="text-sm text-gray-600">Betrieb</div>
+                    <div className="text-xl sm:text-2xl font-bold text-orange-600">24/7</div>
+                    <div className="text-xs sm:text-sm text-gray-600">Betrieb</div>
                   </div>
                 </div>
               </div>
