@@ -4,7 +4,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 const API_KEYS = {
   DEEPGRAM: "ac6a04eb0684c7bd7c61e8faab45ea6b1ee47681",
   GEMINI: "AIzaSyDMfirI46wtNLlmV2moDRjnxmSzhAWIMZQ", 
-  SMALLEST: "sk-2ad79c9f-cf37-44b3-87dd-0b0b8eb66e5b"
+  SMALLEST: "sk_2e04c125a92baf9d289788d555855f80"
 };
 
 // Vertex AI Service Account - ECHTE CREDENTIALS
