@@ -330,7 +330,7 @@ async function generateChatResponse(transcript) {
 }
 
 // Smallest.ai Text-to-Speech mit direkten Keys und Stimmenauswahl
-async function generateSpeech(text, voiceId = null) {
+async function generateSpeech(text, voiceId = 'clara') { // Standard: 'clara'
     const SMALLEST_API_KEY = API_KEYS.SMALLEST;
     if (!SMALLEST_API_KEY) {
         throw new Error('SMALLEST_API_KEY not set');
@@ -338,31 +338,20 @@ async function generateSpeech(text, voiceId = null) {
 
     const fetch = (await import('node-fetch')).default;
     
-    // FINALE, VERIFIZIERTE KONFIGURATION FÜR LIGHTNING V2 - DEUTSCHE STIMMEN
+    // KORREKTUR: Die voiceId aus dem Frontend ('clara', 'leon' etc.) ist direkt die gültige ID.
+    // Die Map ist nicht mehr notwendig.
     const endpoint = 'https://waves-api.smallest.ai/api/v1/lightning/get_speech';
-    
-    // Deutsche Stimmen für Bella Vista Restaurant
-    const germanVoices = {
-        'clara': 'de-female-1',    // Clara (Standard-A) - Weiblich, Hochdeutsch
-        'lena': 'de-female-2',     // Lena (Standard-B) - Weiblich, Hochdeutsch  
-        'leon': 'de-male-1',       // Leon (Standard-C) - Männlich, Hochdeutsch
-        'henrik': 'de-male-2'      // Henrik (Standard-D) - Männlich, Hochdeutsch
-    };
-    
-    // Standardstimme oder gewählte Stimme verwenden
-    const selectedVoiceId = voiceId && germanVoices[voiceId] 
-        ? germanVoices[voiceId] 
-        : 'de-female-1'; // Clara als Standard für freundlichen Restaurantservice
     
     const requestBody = {
       text: text,
-      voice_id: selectedVoiceId,
-      model: 'lightning-v2', // Bestes Modell laut Doku, durch Test verifiziert
-      language: 'de-DE', // Explizit Deutsch
-      add_wav_header: true // KRITISCH: Fügt WAV-Header hinzu für Browser-Kompatibilität
+      voice_id: voiceId, // voiceId direkt verwenden
+      model: 'lightning-v2',
+      language: 'de-DE', 
+      add_wav_header: true
     };
     
-    console.log('Final TTS Request:', JSON.stringify({ endpoint, model: requestBody.model }, null, 2));
+    // Verbessertes Logging, um den vollen Request-Body zu sehen
+    console.log('Final TTS Request:', JSON.stringify({ endpoint, ...requestBody }, null, 2));
 
     const response = await fetch(endpoint, {
       method: 'POST',
