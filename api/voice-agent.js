@@ -72,8 +72,8 @@ async function handleCompleteVoice(req, res, audioBase64) {
     const startTime = Date.now();
 
     // Stimmenauswahl aus Request-Body extrahieren
-    const selectedVoice = req.body?.voice || 'clara'; // Standard: Clara
-    console.log(`Using German voice: ${selectedVoice}`);
+    const selectedVoice = req.body?.voice || 'voice_P6itXm4qbI'; // Standard: Geklonte deutsche Stimme
+    console.log(`Using cloned German voice: ${selectedVoice}`);
 
     // 1. Speech-to-Text mit Deepgram
     console.log('Step 1: Starting Deepgram transcription...');
@@ -329,8 +329,8 @@ async function generateChatResponse(transcript) {
   }
 }
 
-// Smallest.ai Text-to-Speech mit direkten Keys und Stimmenauswahl
-async function generateSpeech(text, voiceId = 'clara') { // Standard: 'clara'
+// Smallest.ai Text-to-Speech mit geklonter deutscher Stimme
+async function generateSpeech(text, voiceId = 'voice_P6itXm4qbI') { // Standard: Geklonte deutsche Stimme
     const SMALLEST_API_KEY = API_KEYS.SMALLEST;
     if (!SMALLEST_API_KEY) {
         throw new Error('SMALLEST_API_KEY not set');
@@ -338,20 +338,17 @@ async function generateSpeech(text, voiceId = 'clara') { // Standard: 'clara'
 
     const fetch = (await import('node-fetch')).default;
     
-    // KORREKTUR: Die voiceId aus dem Frontend ('clara', 'leon' etc.) ist direkt die gültige ID.
-    // Die Map ist nicht mehr notwendig.
-    const endpoint = 'https://waves-api.smallest.ai/api/v1/lightning/get_speech';
+    // WICHTIG: lightning-large Endpunkt für geklonte Stimmen verwenden
+    const endpoint = 'https://waves-api.smallest.ai/api/v1/lightning-large/get_speech';
     
     const requestBody = {
       text: text,
-      voice_id: voiceId, // voiceId direkt verwenden
-      model: 'lightning-v2',
-      language: 'de-DE', 
+      voice_id: voiceId, // Geklonte deutsche Stimme: voice_P6itXm4qbI
+      model: "lightning-large", // KRITISCH: lightning-large für Clones
       add_wav_header: true
     };
     
-    // Verbessertes Logging, um den vollen Request-Body zu sehen
-    console.log('Final TTS Request:', JSON.stringify({ endpoint, ...requestBody }, null, 2));
+    console.log(`TTS Request with cloned German voice: ${voiceId}`, JSON.stringify({ endpoint, ...requestBody }, null, 2));
 
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -364,13 +361,15 @@ async function generateSpeech(text, voiceId = 'clara') { // Standard: 'clara'
 
     if (!response.ok) {
       const errorBody = await response.text();
-      console.error('TTS API Final Error Details:');
+      console.error('TTS API Error Details:');
       console.error('- Status:', response.status);
+      console.error('- Voice ID:', voiceId);
+      console.error('- Model:', requestBody.model);
       console.error('- Body:', errorBody);
       throw new Error(`TTS API Error: ${response.status} - ${errorBody}`);
     }
 
-    console.log('TTS-Anfrage erfolgreich mit Lightning v2!');
+    console.log(`TTS erfolgreich mit geklonter deutscher Stimme '${voiceId}'!`);
     const audioBuffer = await response.arrayBuffer();
     return Buffer.from(audioBuffer).toString('base64');
 } 

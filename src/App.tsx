@@ -41,13 +41,14 @@ function App() {
   const [isSpeechDetected, setIsSpeechDetected] = useState(false);
   const [silenceCount, setSilenceCount] = useState(0);
   
-  // Deutsche Stimmenauswahl für Bella Vista
-  const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('clara');
+  // Deutsche Stimmenauswahl für Bella Vista (inklusive geklonte Stimme)
+  const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('bella_vista_clone');
   const germanVoices = {
-    'clara': { name: 'Clara', gender: 'Weiblich', description: 'Freundlich & professionell' },
-    'lena': { name: 'Lena', gender: 'Weiblich', description: 'Warm & einladend' },
-    'leon': { name: 'Leon', gender: 'Männlich', description: 'Souverän & kompetent' },
-    'henrik': { name: 'Henrik', gender: 'Männlich', description: 'Sympathisch & zugänglich' }
+    'bella_vista_clone': { name: 'Bella Vista Clone', gender: 'Weiblich', description: 'Echte deutsche Stimme (geklont, Standard)' },
+    'leon': { name: 'Leon', gender: 'Männlich', description: 'Englische Stimme (spricht Deutsch)' },
+    'clara': { name: 'Clara', gender: 'Weiblich', description: 'Englische Stimme (spricht Deutsch)' },
+    'lena': { name: 'Lena', gender: 'Weiblich', description: 'Englische Stimme (spricht Deutsch)' },
+    'henrik': { name: 'Henrik', gender: 'Männlich', description: 'Englische Stimme (spricht Deutsch)' }
   } as const;
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -448,6 +449,18 @@ function App() {
     }
   };
 
+  // Voice-Mapping: Frontend-Namen zu API-Voice-IDs
+  const getApiVoiceId = (frontendVoiceKey: string): string => {
+    const voiceMapping = {
+      'bella_vista_clone': 'voice_P6itXm4qbI', // Geklonte deutsche Stimme
+      'leon': 'leon',
+      'clara': 'clara', 
+      'lena': 'lena',
+      'henrik': 'henrik'
+    };
+    return voiceMapping[frontendVoiceKey as keyof typeof voiceMapping] || 'voice_P6itXm4qbI';
+  };
+
   // REST API Version für Production
   const processVoiceInputREST = async (audioBlob: Blob) => {
     try {
@@ -458,7 +471,11 @@ function App() {
       const arrayBuffer = await audioBlob.arrayBuffer();
       const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
     
-      // REST API Call mit gewählter deutscher Stimme
+      // Frontend-Voice-Name zu API-Voice-ID konvertieren
+      const apiVoiceId = getApiVoiceId(selectedVoice);
+      console.log(`Frontend Voice: ${selectedVoice} -> API Voice ID: ${apiVoiceId}`);
+    
+      // REST API Call mit konvertierter Voice-ID
       const response = await fetch('/api/voice-agent', {
         method: 'POST',
         headers: {
@@ -467,7 +484,7 @@ function App() {
         body: JSON.stringify({
           type: 'voice_complete',
           audio: base64Audio,
-          voice: selectedVoice // Deutsche Stimmenauswahl übertragen
+          voice: apiVoiceId // Konvertierte API-Voice-ID übertragen
         })
       });
     
@@ -1184,7 +1201,7 @@ function App() {
                     {Object.entries(germanVoices).map(([voiceKey, voice]) => (
                       <button
                         key={voiceKey}
-                        onClick={() => setSelectedVoice(voiceKey as 'clara' | 'lena' | 'leon' | 'henrik')}
+                        onClick={() => setSelectedVoice(voiceKey as 'bella_vista_clone' | 'leon' | 'clara' | 'lena' | 'henrik')}
                         className={`p-2 sm:p-3 rounded-lg border-2 transition-all text-left ${
                           selectedVoice === voiceKey
                             ? 'bg-primary-50 border-primary-300 text-primary-700'
