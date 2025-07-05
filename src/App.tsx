@@ -41,14 +41,10 @@ function App() {
   const [isSpeechDetected, setIsSpeechDetected] = useState(false);
   const [silenceCount, setSilenceCount] = useState(0);
   
-  // Deutsche Stimmenauswahl für Bella Vista (inklusive geklonte Stimme)
-  const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('bella_vista_clone');
+  // Deutsche Stimmenauswahl für Bella Vista (nur geklonte deutsche Stimmen)
+  const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('bella_vista_german_voice');
   const germanVoices = {
-    'bella_vista_clone': { name: 'Bella Vista Clone', gender: 'Weiblich', description: 'Echte deutsche Stimme (geklont, Standard)' },
-    'leon': { name: 'Leon', gender: 'Männlich', description: 'Englische Stimme (spricht Deutsch)' },
-    'clara': { name: 'Clara', gender: 'Weiblich', description: 'Englische Stimme (spricht Deutsch)' },
-    'lena': { name: 'Lena', gender: 'Weiblich', description: 'Englische Stimme (spricht Deutsch)' },
-    'henrik': { name: 'Henrik', gender: 'Männlich', description: 'Englische Stimme (spricht Deutsch)' }
+    'bella_vista_german_voice': { name: 'Bella Vista Original', gender: 'Weiblich', description: 'Authentische deutsche Stimme (geklont, Standard)' }
   } as const;
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -449,14 +445,10 @@ function App() {
     }
   };
 
-  // Voice-Mapping: Frontend-Namen zu API-Voice-IDs
+  // Voice-Mapping: Frontend-Namen zu API-Voice-IDs (nur deutsche geklonte Stimmen)
   const getApiVoiceId = (frontendVoiceKey: string): string => {
     const voiceMapping = {
-      'bella_vista_clone': 'voice_P6itXm4qbI', // Geklonte deutsche Stimme
-      'leon': 'leon',
-      'clara': 'clara', 
-      'lena': 'lena',
-      'henrik': 'henrik'
+      'bella_vista_german_voice': 'voice_P6itXm4qbI' // Authentische geklonte deutsche Stimme
     };
     return voiceMapping[frontendVoiceKey as keyof typeof voiceMapping] || 'voice_P6itXm4qbI';
   };
@@ -621,22 +613,27 @@ function App() {
 
     return (
       <div className="bg-white rounded-xl shadow-lg p-6">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-2xl font-bold text-gray-900">
-            {weekStart.getDate()}. {monthNames[weekStart.getMonth()]} - {weekDays[6].getDate()}. {monthNames[weekDays[6].getMonth()]} {weekStart.getFullYear()}
+        <div className="flex items-center justify-between mb-4 sm:mb-6">
+          <h3 className="text-lg sm:text-2xl font-bold text-gray-900">
+            <span className="hidden sm:inline">
+              {weekStart.getDate()}. {monthNames[weekStart.getMonth()]} - {weekDays[6].getDate()}. {monthNames[weekDays[6].getMonth()]} {weekStart.getFullYear()}
+            </span>
+            <span className="sm:hidden">
+              {weekStart.getDate()}.{(weekStart.getMonth() + 1).toString().padStart(2, '0')} - {weekDays[6].getDate()}.{(weekDays[6].getMonth() + 1).toString().padStart(2, '0')}.{weekStart.getFullYear()}
+            </span>
           </h3>
           <div className="flex space-x-2">
             <button
               onClick={previousWeek}
               className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
             >
-              <ChevronLeft className="h-5 w-5" />
+              <ChevronLeft className="h-4 w-4 sm:h-5 sm:w-5" />
             </button>
             <button
               onClick={nextWeek}
               className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
             >
-              <ChevronRight className="h-5 w-5" />
+              <ChevronRight className="h-4 w-4 sm:h-5 sm:w-5" />
             </button>
           </div>
         </div>
@@ -645,12 +642,12 @@ function App() {
           <div className="min-w-full">
             {/* Header mit Wochentagen */}
             <div className="grid grid-cols-8 gap-1 mb-2">
-              <div className="p-2 text-center text-sm font-medium text-gray-500">Zeit</div>
+              <div className="p-1 sm:p-2 text-center text-xs sm:text-sm font-medium text-gray-500">Zeit</div>
               {weekDays.map((day, index) => {
                 const isToday = day.toDateString() === today.toDateString();
                 return (
-                  <div key={index} className={`p-2 text-center text-sm font-medium ${isToday ? 'text-primary-600 bg-primary-50' : 'text-gray-500'} rounded`}>
-                    <div>{dayNames[index]}</div>
+                  <div key={index} className={`p-1 sm:p-2 text-center text-xs sm:text-sm font-medium ${isToday ? 'text-primary-600 bg-primary-50' : 'text-gray-500'} rounded`}>
+                    <div className="text-xs sm:text-sm">{dayNames[index]}</div>
                     <div className="text-xs">{day.getDate()}.{(day.getMonth() + 1).toString().padStart(2, '0')}</div>
                   </div>
                 );
@@ -660,7 +657,7 @@ function App() {
             {/* Stunden-Grid */}
             {timeHours.map(hour => (
               <div key={hour} className="grid grid-cols-8 gap-1 mb-1">
-                <div className="p-2 text-center text-sm font-medium text-gray-600 bg-gray-50 rounded">
+                <div className="p-1 sm:p-2 text-center text-xs sm:text-sm font-medium text-gray-600 bg-gray-50 rounded">
                   {hour.toString().padStart(2, '0')}:00
                 </div>
                 {weekDays.map((day) => {
@@ -680,12 +677,12 @@ function App() {
                   );
 
                   return (
-                    <div key={`${dateString}-${timeString}`} className="p-1">
+                    <div key={`${dateString}-${timeString}`} className="p-0.5 sm:p-1">
                       {isOpen ? (
                         <button
                           onClick={() => isAvailable ? handleSlotClick(dateString, timeString) : undefined}
                           disabled={!isAvailable}
-                          className={`w-full h-10 rounded text-xs font-medium transition-colors
+                          className={`w-full h-8 sm:h-10 rounded text-xs font-medium transition-colors leading-tight
                             ${isAvailable 
                               ? 'bg-green-100 text-green-700 hover:bg-green-200 cursor-pointer' 
                               : isBooked 
@@ -693,11 +690,15 @@ function App() {
                                 : 'bg-gray-100 text-gray-400 cursor-not-allowed'
                             }`}
                         >
-                          {isAvailable ? 'Frei' : isBooked ? 'Belegt' : 'Vorbei'}
+                          <span className="text-xs sm:text-sm">
+                            {isAvailable ? 'Frei' : isBooked ? 'Belegt' : 'Vorbei'}
+                          </span>
                         </button>
                       ) : (
-                        <div className="w-full h-10 bg-gray-50 rounded flex items-center justify-center text-xs text-gray-400">
-                          {dayOfWeek === 0 ? 'Geschlossen' : 'Geschlossen'}
+                        <div className="w-full h-8 sm:h-10 bg-gray-50 rounded flex items-center justify-center text-xs text-gray-400">
+                          <span className="text-xs leading-tight text-center">
+                            {dayOfWeek === 0 ? 'Geschl.' : 'Geschl.'}
+                          </span>
                         </div>
                       )}
                     </div>
@@ -1201,7 +1202,7 @@ function App() {
                     {Object.entries(germanVoices).map(([voiceKey, voice]) => (
                       <button
                         key={voiceKey}
-                        onClick={() => setSelectedVoice(voiceKey as 'bella_vista_clone' | 'leon' | 'clara' | 'lena' | 'henrik')}
+                        onClick={() => setSelectedVoice(voiceKey as keyof typeof germanVoices)}
                         className={`p-2 sm:p-3 rounded-lg border-2 transition-all text-left ${
                           selectedVoice === voiceKey
                             ? 'bg-primary-50 border-primary-300 text-primary-700'

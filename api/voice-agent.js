@@ -345,10 +345,11 @@ async function generateSpeech(text, voiceId = 'voice_P6itXm4qbI') { // Standard:
       text: text,
       voice_id: voiceId, // Geklonte deutsche Stimme: voice_P6itXm4qbI
       model: "lightning-large", // KRITISCH: lightning-large für Clones
+      language: "de", // KRITISCH: Deutsche Aussprache für geklonte Stimme
       add_wav_header: true
     };
     
-    console.log(`TTS Request with cloned German voice: ${voiceId}`, JSON.stringify({ endpoint, ...requestBody }, null, 2));
+    console.log(`TTS Request with cloned German voice: ${voiceId} + German language`, JSON.stringify({ endpoint, ...requestBody }, null, 2));
 
     const response = await fetch(endpoint, {
       method: 'POST',
