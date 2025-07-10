@@ -616,7 +616,7 @@ function App() {
         <div className="flex items-center justify-between mb-4 sm:mb-6">
           <h3 className="text-lg sm:text-2xl font-bold text-gray-900">
             <span className="hidden sm:inline">
-              {weekStart.getDate()}. {monthNames[weekStart.getMonth()]} - {weekDays[6].getDate()}. {monthNames[weekDays[6].getMonth()]} {weekStart.getFullYear()}
+            {weekStart.getDate()}. {monthNames[weekStart.getMonth()]} - {weekDays[6].getDate()}. {monthNames[weekDays[6].getMonth()]} {weekStart.getFullYear()}
             </span>
             <span className="sm:hidden">
               {weekStart.getDate()}.{(weekStart.getMonth() + 1).toString().padStart(2, '0')} - {weekDays[6].getDate()}.{(weekDays[6].getMonth() + 1).toString().padStart(2, '0')}.{weekStart.getFullYear()}
@@ -691,7 +691,7 @@ function App() {
                             }`}
                         >
                           <span className="text-xs sm:text-sm">
-                            {isAvailable ? 'Frei' : isBooked ? 'Belegt' : 'Vorbei'}
+                          {isAvailable ? 'Frei' : isBooked ? 'Belegt' : 'Vorbei'}
                           </span>
                         </button>
                       ) : (
@@ -1221,7 +1221,7 @@ function App() {
                     </span>
                   </div>
                 </div>
-
+                
                 {/* Voice Control Buttons */}
                 <div className="text-center">
                   {/* Mode Selection */}
