@@ -133,7 +133,14 @@ export default async function handler(req, res) {
 
 function streamResponse(res, type, data) {
   if (!res.finished) {
-    res.write(JSON.stringify({ type, data }) + '\n');
+    try {
+      const jsonData = JSON.stringify({ type, data });
+      res.write(jsonData + '\n');
+    } catch (error) {
+      console.error('JSON stringify error:', error);
+      // Send safe fallback response
+      res.write(JSON.stringify({ type: 'error', data: { message: 'JSON serialization error' } }) + '\n');
+    }
   }
 }
 
@@ -243,11 +250,27 @@ async function* getGeminiStream(transcript) {
 
   for await (const chunk of body) {
     try {
-        const jsonResponse = JSON.parse(chunk.toString().startsWith('[') ? chunk.toString().slice(1) : chunk.toString());
+        let chunkString = chunk.toString();
+        
+        // Handle different chunk formats from Gemini streaming
+        if (chunkString.startsWith('data: ')) {
+          chunkString = chunkString.slice(6); // Remove 'data: ' prefix
+        }
+        
+        if (chunkString.startsWith('[')) {
+          chunkString = chunkString.slice(1); // Remove leading bracket
+        }
+        
+        if (chunkString.trim() === '' || chunkString.includes('event:') || chunkString.includes('[DONE]')) {
+          continue; // Skip empty chunks or SSE control messages
+        }
+        
+        const jsonResponse = JSON.parse(chunkString);
         const content = jsonResponse.candidates?.[0]?.content?.parts?.[0]?.text;
         if (content) yield content;
     } catch (e) {
-        console.warn('Could not parse LLM chunk:', chunk.toString());
+        console.warn('Could not parse LLM chunk:', chunk.toString().substring(0, 100));
+        // Continue without throwing to prevent pipeline failure
     }
   }
 }
