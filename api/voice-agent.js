@@ -195,7 +195,7 @@ function getTranscriptViaWebSocket(audioBuffer) {
   });
 }
 
-export async function processAndStreamLLMResponse(transcript, voice, res) {
+async function processAndStreamLLMResponse(transcript, voice, res) {
   // TEMPORARILY DISABLED: XTTS Pod management for testing
   // await ensurePodRunning();
   
