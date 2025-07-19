@@ -528,7 +528,15 @@ function App() {
                 }
                 break;
               case 'error':
-                throw new Error(event.data.message || 'Voice processing error');
+                // Spezielle Behandlung für "No speech detected" - das ist kein echter Fehler
+                if (event.data.message === 'No speech detected.') {
+                  console.log('🔇 Keine Sprache erkannt - bitte sprechen Sie lauter');
+                  setTranscript('Keine Sprache erkannt. Bitte sprechen Sie lauter.');
+                  setAiResponse('');
+                } else {
+                  throw new Error(event.data.message || 'Voice processing error');
+                }
+                break;
               case 'end':
                 console.log('✅ Stream beendet');
                 break;
