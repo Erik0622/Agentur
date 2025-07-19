@@ -351,7 +351,7 @@ function App() {
       
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
-          sampleRate: 48000,        // 48kHz für bessere Qualität
+          sampleRate: 48000,        // 48kHz für Opus-Codec optimal
           channelCount: 1,          // Mono für bessere Erkennung
           echoCancellation: true,   // Echo-Cancellation aktivieren
           noiseSuppression: true,   // Rauschunterdrückung

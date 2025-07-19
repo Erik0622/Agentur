@@ -43,40 +43,7 @@ let currentPodEndpoint = null;
 let podStartTime = null;
 let podStopTimer = null;
 
-// ---------------- Audio Conversion ----------------
-async function convertWebMToPCM(webmBuffer) {
-  console.log('🔄 Konvertiere WebM zu PCM...');
-  
-  // WebM Buffer zu PCM konvertieren
-  // Da wir keine Audio-Library haben, verwenden wir einen einfachen Ansatz
-  // WebM hat normalerweise einen Header, den wir überspringen müssen
-  
-  try {
-    // Prüfe ob es ein WebM-Header ist
-    const header = webmBuffer.toString('ascii', 0, 4);
-    console.log('📦 Audio Header:', header);
-    
-    if (header === 'RIFF') {
-      // Bereits WAV-Format
-      console.log('✅ Bereits WAV-Format erkannt');
-      return webmBuffer;
-    }
-    
-    // Für WebM: Versuche den Header zu entfernen und als PCM zu behandeln
-    // WebM hat variable Header-Größe, daher nehmen wir einen sicheren Wert
-    const pcmStart = 1000; // WebM Header ist normalerweise < 1KB
-    const pcmData = webmBuffer.subarray(pcmStart);
-    
-    console.log(`🔄 WebM zu PCM: ${webmBuffer.length} -> ${pcmData.length} bytes`);
-    console.log('📦 PCM Preview:', pcmData.toString('hex').substring(0, 100) + '...');
-    
-    return pcmData;
-  } catch (error) {
-    console.error('❌ WebM Konvertierung fehlgeschlagen:', error);
-    // Fallback: Verwende rohe Daten
-    return webmBuffer;
-  }
-}
+
 
 // ---------------- API Handler ----------------
 export default async function handler(req, res) {
@@ -110,16 +77,13 @@ export default async function handler(req, res) {
       transcript = req.headers['x-simulated-transcript'];
       streamResponse(res, 'transcript', { text: transcript });
     } else {
-      // DEBUG: Audio-Buffer prüfen
+      // Audio-Buffer direkt verwenden (keine falsche Konvertierung!)
       const audioBuffer = Buffer.from(audio, 'base64');
       console.log('🎤 Audio Buffer Debug:');
       console.log('  - Buffer Size:', audioBuffer.length, 'bytes');
       console.log('  - Buffer Preview:', audioBuffer.toString('hex').substring(0, 100) + '...');
       
-      // WebM zu PCM konvertieren
-      const pcmBuffer = await convertWebMToPCM(audioBuffer);
-      
-      transcript = await getTranscriptViaWebSocket(pcmBuffer);
+      transcript = await getTranscriptViaWebSocket(audioBuffer);
       console.log('📝 Transkript erhalten:', transcript);
       
       if (transcript) streamResponse(res, 'transcript', { text: transcript });
@@ -158,8 +122,8 @@ function streamResponse(res, type, data) {
 // ---------------- Deepgram WebSocket ----------------
 function getTranscriptViaWebSocket(audioBuffer) {
   return new Promise((resolve, reject) => {
-    // Angepasste Parameter für WebM-Audio (48kHz statt 16kHz)
-    const deepgramUrl = 'wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&encoding=linear16&sample_rate=48000&punctuate=true&interim_results=true&endpointing=300';
+    // KORREKTE Parameter für WebM/Opus Audio
+    const deepgramUrl = 'wss://api.deepgram.com/v1/listen?model=nova-3&encoding=opus&sample_rate=48000&channels=1&language=de&punctuate=true&interim_results=true&endpointing=300';
     console.log('🔗 Deepgram WebSocket Verbindung:', deepgramUrl);
     
     const ws = new WebSocket(deepgramUrl, {
@@ -168,33 +132,38 @@ function getTranscriptViaWebSocket(audioBuffer) {
     });
 
     let finalTranscript = '';
+    let hasReceivedAnyData = false;
 
     ws.on('open', () => {
       console.log('✅ Deepgram WebSocket geöffnet');
-      let pcmData;
-      if (audioBuffer.toString('ascii', 0, 4) === 'RIFF') {
-        pcmData = audioBuffer.subarray(44);
-        console.log('📦 WAV-Header entfernt, PCM-Daten:', pcmData.length, 'bytes');
-      } else {
-        pcmData = audioBuffer;
-        console.log('📦 Rohe PCM-Daten:', pcmData.length, 'bytes');
-      }
       
-      const chunkSize = 4800; // Angepasst für 48kHz (1600 * 3)
-      const numChunks = Math.ceil(pcmData.length / chunkSize);
-      console.log(`📤 Sende ${pcmData.length} Bytes in ${numChunks} Chunks`);
+      // Audio-Daten direkt senden (keine Manipulation!)
+      console.log(`📤 Sende ${audioBuffer.length} Bytes WebM/Opus-Daten direkt an Deepgram`);
       
-      for (let i = 0; i < pcmData.length; i += chunkSize) {
-        if (ws.readyState === WebSocket.OPEN) ws.send(pcmData.subarray(i, i + chunkSize));
+      // Sende die kompletten Audio-Daten in einem Chunk
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(audioBuffer);
+        ws.send(JSON.stringify({ type: 'CloseStream' }));
       }
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'CloseStream' }));
       console.log('📤 Audio-Daten gesendet, Stream geschlossen');
     });
 
     ws.on('message', data => {
       try {
         const msg = JSON.parse(data.toString());
+        hasReceivedAnyData = true;
         console.log('📨 Deepgram Message:', msg.type || 'data', msg);
+        
+        // Logge alle verfügbaren Informationen für Debugging
+        if (msg.channel?.alternatives?.[0]) {
+          const alternative = msg.channel.alternatives[0];
+          console.log('🎤 Alternative Details:', {
+            transcript: alternative.transcript,
+            confidence: alternative.confidence,
+            is_final: msg.is_final,
+            words: alternative.words?.length || 0
+          });
+        }
         
         const transcript = msg.channel?.alternatives?.[0]?.transcript;
         if (transcript) {
@@ -208,6 +177,9 @@ function getTranscriptViaWebSocket(audioBuffer) {
 
     ws.on('close', () => {
       console.log('🔌 Deepgram WebSocket geschlossen, Final Transcript:', finalTranscript.trim());
+      if (!hasReceivedAnyData) {
+        console.warn('⚠️ Keine Daten von Deepgram erhalten - möglicherweise Audio-Format Problem');
+      }
       resolve(finalTranscript.trim());
     });
     
@@ -222,7 +194,7 @@ function getTranscriptViaWebSocket(audioBuffer) {
         ws.terminate();
         reject(new Error('Deepgram timeout'));
       }
-    }, 10000);
+    }, 15000); // Längerer Timeout
   });
 }
 
@@ -365,7 +337,7 @@ async function startPod() {
     method: 'POST',
     headers: { Authorization: RUNPOD_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      query: `mutation { podResume(input: {podId: "${RUNPOD_POD_ID}", gpuCount: 1}) { id desiredStatus } }`
+      query: `mutation { podResume(input: {podId: "${RUNPOD_POD_ID}"}) { id desiredStatus } }`
     }),
     dispatcher: runpodAgent
   });
