@@ -453,7 +453,7 @@ function App() {
     return voiceMapping[frontendVoiceKey as keyof typeof voiceMapping] || 'voice_P6itXm4qbI';
   };
 
-  // REST API Version für Production
+  // REST API Version für Production - KORRIGIERT für NDJSON-Streaming
   const processVoiceInputREST = async (audioBlob: Blob) => {
     try {
       setTranscript('Verarbeite Audio...');
@@ -479,30 +479,69 @@ function App() {
         })
       });
 
-      // Fehlerbehandlung für nicht-JSON-Antworten
-      let result;
-      try {
-        result = await response.json();
-      } catch (jsonErr) {
-        const text = await response.text();
-        console.error('Antwort ist kein JSON:', text);
-        throw new Error('Antwort der Voice-Agent-API ist kein gültiges JSON!');
+      // KORRIGIERT: NDJSON-Stream verarbeiten (nur EINMAL lesen!)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      if (result.success) {
-        setTranscript(result.transcript);
-        setAiResponse(result.response);
-        setVoiceMetrics(result.metrics);
+      if (!response.body) {
+        throw new Error('Kein Response-Body erhalten');
+      }
+
+      // NDJSON-Stream verarbeiten
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
         
-        // Audio abspielen
-        if (result.audio) {
-          setIsPlayingResponse(true);
-          const audio = new Audio(`data:audio/wav;base64,${result.audio}`);
-          audio.onended = () => setIsPlayingResponse(false);
-          audio.play().catch(e => console.error('Audio playback failed:', e));
+        // Zeilenweise verarbeiten
+        let newlineIndex;
+        while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newlineIndex).trim();
+          buffer = buffer.slice(newlineIndex + 1);
+          
+          if (!line) continue;
+          
+          try {
+            const event = JSON.parse(line);
+            console.log('📨 Stream Event:', event.type, event.data);
+            
+            switch (event.type) {
+              case 'transcript':
+                setTranscript(event.data.text);
+                break;
+              case 'llm_chunk':
+                setAiResponse(prev => prev + event.data.text);
+                break;
+              case 'audio_chunk':
+                // Audio abspielen
+                if (event.data.base64) {
+                  setIsPlayingResponse(true);
+                  const audio = new Audio(`data:audio/${event.data.format};base64,${event.data.base64}`);
+                  audio.onended = () => setIsPlayingResponse(false);
+                  audio.play().catch(e => console.error('Audio playback failed:', e));
+                }
+                break;
+              case 'error':
+                throw new Error(event.data.message || 'Voice processing error');
+              case 'end':
+                console.log('✅ Stream beendet');
+                break;
+              case 'debug_sentence':
+                console.log('🎵 Debug Sentence:', event.data.text);
+                break;
+              default:
+                console.log('📨 Unbekanntes Event:', event.type);
+            }
+          } catch (parseError) {
+            console.warn('JSON Parse Error für Zeile:', line, parseError);
+          }
         }
-      } else {
-        throw new Error(result.error || 'Voice processing failed');
       }
       
     } catch (error) {
