@@ -1,23 +1,20 @@
+// /api/voice.js  (überarbeitete Version)
+
 import { request, Agent } from 'undici';
 import WebSocket from 'ws';
 import { createSign } from 'crypto';
 
-// --- Configuration with fallback to environment variables ---
-// For production: use environment variables or external config
-// For development: create config.js based on config.example.js
-
+// ---------------- Configuration (Keys unverändert – BITTE in Produktion rotieren!) ----------------
 let config;
 try {
-  // Try to import config.js (not in git)
   config = await import('../config.js').then(m => m.config);
 } catch {
-  // Fallback to environment variables
   config = {
     DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY || "ac6a04eb0684c7bd7c61e8faab45ea6b1ee47681",
     RUNPOD_API_KEY: process.env.RUNPOD_API_KEY || "rpa_6BJIJQF8T0JDF8CV2PMGDDM3NMU4EQFGY5FQJYEGcd95ru",
     RUNPOD_POD_ID: process.env.RUNPOD_POD_ID || "e3nohugxevf9s6",
-    SERVICE_ACCOUNT_JSON: process.env.GOOGLE_SERVICE_ACCOUNT_JSON ? 
-      JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON) : 
+    SERVICE_ACCOUNT_JSON: process.env.GOOGLE_SERVICE_ACCOUNT_JSON ?
+      JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON) :
       {
         "type": "service_account",
         "project_id": "gen-lang-client-0449145483",
@@ -36,528 +33,396 @@ try {
 
 const { DEEPGRAM_API_KEY, RUNPOD_API_KEY, RUNPOD_POD_ID, SERVICE_ACCOUNT_JSON } = config;
 
-// --- Optimized HTTP/2 Keep-Alive Agents for undici ---
-const geminiAgent = new Agent({
-  keepAliveTimeout: 30 * 1000,
-  keepAliveMaxTimeout: 120 * 1000,
-  keepAliveTimeoutThreshold: 1000,
-  connections: 10,
-  pipelining: 1
-});
+// ---------------- HTTP Agents ----------------
+const geminiAgent = new Agent({ keepAliveTimeout: 30_000, keepAliveMaxTimeout: 120_000, keepAliveTimeoutThreshold: 1000, connections: 10, pipelining: 1 });
+const runpodAgent = new Agent({ keepAliveTimeout: 15_000, keepAliveMaxTimeout: 60_000, connections: 5, pipelining: 1 });
+const tokenAgent  = new Agent({ keepAliveTimeout: 60_000, keepAliveMaxTimeout: 300_000, connections: 2, pipelining: 1 });
 
-const runpodAgent = new Agent({
-  keepAliveTimeout: 15 * 1000,
-  keepAliveMaxTimeout: 60 * 1000,
-  connections: 5,
-  pipelining: 1
-});
-
-const tokenAgent = new Agent({
-  keepAliveTimeout: 60 * 1000,
-  keepAliveMaxTimeout: 300 * 1000,
-  connections: 2,
-  pipelining: 1
-});
-
-// --- Global Variables for Pod Management ---
+// ---------------- Pod State ----------------
 let currentPodEndpoint = null;
 let podStartTime = null;
+let podStopTimer = null;
 
-// --- Main Handler ---
+// ---------------- API Handler ----------------
 export default async function handler(req, res) {
-  // CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Bypass-Stt, X-Simulated-Transcript');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-    
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { audio, voice = 'german_m2' } = req.body; // FIXED: Gültiger XTTS Speaker
-  if (!audio) {
-    return res.status(400).json({ error: 'Missing audio data' });
-  }
+  const { audio, voice = 'german_m2' } = req.body || {};
+  if (!audio) return res.status(400).json({ error: 'Missing audio data' });
 
   try {
     res.writeHead(200, {
-      'Content-Type': 'application/x-ndjson',
-      'Transfer-Encoding': 'chunked',
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Transfer-Encoding': 'chunked'
     });
 
-    // BYPASS für Testing: Verwende simuliertes Transkript wenn Header gesetzt
     let transcript;
-    
     if (req.headers['x-bypass-stt'] === 'true' && req.headers['x-simulated-transcript']) {
       transcript = req.headers['x-simulated-transcript'];
-      console.log('🎯 STT BYPASS: Verwende simuliertes Transkript:', transcript);
       streamResponse(res, 'transcript', { text: transcript });
     } else {
-      // FINAL & FASTEST: WebSocket with nova-3 and language=multi
       transcript = await getTranscriptViaWebSocket(Buffer.from(audio, 'base64'));
-      streamResponse(res, 'transcript', { text: transcript });
-      
-      if (!transcript) {
-          streamResponse(res, 'error', { message: 'No speech detected.' });
-          return res.end();
-      }
+      if (transcript) streamResponse(res, 'transcript', { text: transcript });
     }
-    
-    // Prüfe nochmal auf leeres Transkript
+
     if (!transcript || transcript.trim().length === 0) {
       streamResponse(res, 'error', { message: 'No speech detected.' });
+      streamResponse(res, 'end', {});
       return res.end();
     }
 
-    // Optimized Gemini -> XTTS Streaming
     await processAndStreamLLMResponse(transcript, voice, res);
 
-    // Schedule Pod Stop after conversation ends (cost optimization)
     schedulePodStop();
-
-  } catch (error) {
-    console.error('!!! Pipeline Error !!!', error);
-    streamResponse(res, 'error', { message: error.message || 'An internal error occurred.' });
+    streamResponse(res, 'end', {});
+  } catch (e) {
+    console.error('Pipeline Error', e);
+    streamResponse(res, 'error', { message: e.message || 'Internal error' });
+    streamResponse(res, 'end', {});
   } finally {
-    if (!res.finished) {
-      res.end();
-    }
+    if (!res.finished) res.end();
   }
 }
 
-// --- Helper Functions ---
-
+// ---------------- Streaming Helpers ----------------
 function streamResponse(res, type, data) {
-  if (!res.finished) {
-    try {
-      const jsonData = JSON.stringify({ type, data });
-      res.write(jsonData + '\n');
-    } catch (error) {
-      console.error('JSON stringify error:', error);
-      // Send safe fallback response
-      res.write(JSON.stringify({ type: 'error', data: { message: 'JSON serialization error' } }) + '\n');
-    }
+  if (res.finished) return;
+  try {
+    res.write(JSON.stringify({ type, data }) + '\n');
+  } catch (err) {
+    res.write(JSON.stringify({ type: 'error', data: { message: 'serialization' } }) + '\n');
   }
 }
 
-// OPTIMIZED: WebSocket with nova-3, 50ms chunks for ultra-low latency
+// ---------------- Deepgram WebSocket ----------------
 function getTranscriptViaWebSocket(audioBuffer) {
   return new Promise((resolve, reject) => {
     const deepgramUrl = 'wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&encoding=linear16&sample_rate=16000&punctuate=true&interim_results=true&endpointing=300';
-    const ws = new WebSocket(deepgramUrl, { 
+    const ws = new WebSocket(deepgramUrl, {
       headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
-      perMessageDeflate: false // Disable compression for lower latency
+      perMessageDeflate: false
     });
+
     let finalTranscript = '';
 
     ws.on('open', () => {
-      // FIXED: Deepgram WebSocket erwartet NUR rohe PCM-Daten (kein WAV-Header!)
-      // Header-Erkennung und Entfernung für verschiedene Audio-Formate
       let pcmData;
-      
       if (audioBuffer.toString('ascii', 0, 4) === 'RIFF') {
-        // WAV-Format: Header entfernen (normalerweise 44 Bytes)
         pcmData = audioBuffer.subarray(44);
-        console.log('📦 WAV-Header entfernt, sende reine PCM-Daten');
       } else {
-        // Bereits rohe PCM-Daten
         pcmData = audioBuffer;
-        console.log('📦 Rohe PCM-Daten erkannt');
       }
-      
-      const chunkSize = 1600; // 50ms chunks bei 16kHz (16000 * 0.05 * 2 bytes)
-      console.log(`📤 Sende ${pcmData.length} Bytes PCM-Daten in ${Math.ceil(pcmData.length/chunkSize)} Chunks`);
-      
-      // Sende BINÄRE PCM-Frames (nicht Base64!)
+      const chunkSize = 1600;
       for (let i = 0; i < pcmData.length; i += chunkSize) {
-        if (ws.readyState === WebSocket.OPEN) {
-          const chunk = pcmData.subarray(i, i + chunkSize);
-          ws.send(chunk); // Binäre Daten, nicht Base64
-        }
+        if (ws.readyState === WebSocket.OPEN) ws.send(pcmData.subarray(i, i + chunkSize));
       }
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'CloseStream' }));
     });
 
     ws.on('message', data => {
-      const message = JSON.parse(data.toString());
-      
-      // Process both interim and final results for lower perceived latency
-      if (message.channel?.alternatives[0]?.transcript) {
-        const transcript = message.channel.alternatives[0].transcript;
-        
-        if (message.is_final) {
-          finalTranscript += transcript + ' ';
+      try {
+        const msg = JSON.parse(data.toString());
+        const transcript = msg.channel?.alternatives?.[0]?.transcript;
+        if (transcript) {
+          if (msg.is_final) finalTranscript += transcript + ' ';
         }
-        // Could also use interim results for even faster response initiation
-      }
+      } catch {}
     });
 
     ws.on('close', () => resolve(finalTranscript.trim()));
     ws.on('error', reject);
-    setTimeout(() => { if (ws.readyState !== WebSocket.CLOSED) { ws.terminate(); reject(new Error('Deepgram timeout')); }}, 10000);
+    setTimeout(() => {
+      if (ws.readyState !== WebSocket.CLOSED) {
+        ws.terminate();
+        reject(new Error('Deepgram timeout'));
+      }
+    }, 10000);
   });
 }
 
+// ---------------- LLM -> TTS Pipeline ----------------
 async function processAndStreamLLMResponse(transcript, voice, res) {
-  // TEMPORARILY DISABLED: XTTS Pod management for testing
-  // await ensurePodRunning();
-  
+  // Optional: await ensurePodRunning(); (re-aktivieren wenn RunPod gewollt)
   const geminiStream = getGeminiStream(transcript);
-  let sentenceBuffer = '';
 
-  for await (const chunk of geminiStream) {
-    streamResponse(res, 'llm_chunk', { text: chunk });
-    sentenceBuffer += chunk;
-    const sentenceEndIndex = sentenceBuffer.search(/[.!?]/);
-    if (sentenceEndIndex !== -1) {
-      const sentence = sentenceBuffer.substring(0, sentenceEndIndex + 1);
-      sentenceBuffer = sentenceBuffer.substring(sentenceEndIndex + 1);
-      // TEMPORARILY DISABLED: XTTS for testing
-      // generateAndStreamSpeechXTTS(sentence, voice, res).catch(e => console.error('XTTS Error:', e.message));
-      console.log(`🎵 XTTS deaktiviert für Test: "${sentence}"`);
+  let sentenceBuffer = '';
+  const sentenceRegex = /[^.!?]+[.!?]+(\s|$)/g;
+
+  for await (const token of geminiStream) {
+    streamResponse(res, 'llm_chunk', { text: token });
+    sentenceBuffer += token;
+
+    let match;
+    while ((match = sentenceRegex.exec(sentenceBuffer)) !== null) {
+      const sentence = match[0].trim();
+      // === Re-aktivieren für reale Sprachausgabe: ===
+      // generateAndStreamSpeechXTTS(sentence, voice, res).catch(e => console.error('XTTS sentence error', e));
+      streamResponse(res, 'debug_sentence', { text: sentence }); // Debug Event
+    }
+    // Rest behalten
+    if (sentenceRegex.lastIndex > 0) {
+      sentenceBuffer = sentenceBuffer.slice(sentenceRegex.lastIndex);
+      sentenceRegex.lastIndex = 0;
     }
   }
+
   if (sentenceBuffer.trim()) {
-    // TEMPORARILY DISABLED: Final XTTS for testing
-    // generateAndStreamSpeechXTTS(sentenceBuffer, voice, res).catch(e => console.error('Final XTTS Error:', e.message));
-    console.log(`🎵 Final XTTS deaktiviert für Test: "${sentenceBuffer}"`);
+    // generateAndStreamSpeechXTTS(sentenceBuffer, voice, res).catch(e => console.error('XTTS final error', e));
+    streamResponse(res, 'debug_sentence', { text: sentenceBuffer.trim() });
   }
 }
 
-// UPDATED: Gemini 2.5 Flash-Lite Global Endpoint
-async function* getGeminiStream(transcript) {
+// ---------------- Gemini Streaming ----------------
+async function* getGeminiStream(userTranscript) {
   const accessToken = await generateAccessToken();
-  // GLOBAL endpoint for Flash-Lite (nur hier verfügbar)
   const endpoint = `https://aiplatform.googleapis.com/v1beta1/projects/${SERVICE_ACCOUNT_JSON.project_id}/locations/global/publishers/google/models/gemini-2.5-flash-lite-preview-06-17:streamGenerateContent`;
+
   const requestBody = {
-      contents: [{ role: "user", parts: [{ text: `Du bist ein Telefonassistent. Antworte kurz und freundlich.\nKunde: ${transcript}` }] }],
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 200
-      }
+    contents: [{ role: 'user', parts: [{ text: `Du bist ein Telefonassistent. Antworte kurz und freundlich.\nKunde: ${userTranscript}` }] }],
+    generationConfig: { temperature: 0.7, maxOutputTokens: 200 }
   };
-  
+
   const { body } = await request(endpoint, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(requestBody),
     dispatcher: geminiAgent
   });
 
+  const decoder = new TextDecoder();
+  let buffer = '';
+
   for await (const chunk of body) {
-    try {
-        let chunkString = chunk.toString();
-        
-        // Handle different chunk formats from Gemini streaming
-        if (chunkString.startsWith('data: ')) {
-          chunkString = chunkString.slice(6); // Remove 'data: ' prefix
+    buffer += decoder.decode(chunk, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line) continue;
+      // SSE style "data: {json}"
+      if (line.startsWith('data:')) {
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') return;
+        try {
+          const json = JSON.parse(payload.replace(/^\[/, '').replace(/\]$/, ''));
+          const content = json.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (content) yield content;
+        } catch {
+          // ignore partial fragments
         }
-        
-        if (chunkString.startsWith('[')) {
-          chunkString = chunkString.slice(1); // Remove leading bracket
-        }
-        
-        if (chunkString.trim() === '' || chunkString.includes('event:') || chunkString.includes('[DONE]')) {
-          continue; // Skip empty chunks or SSE control messages
-        }
-        
-        const jsonResponse = JSON.parse(chunkString);
-        const content = jsonResponse.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (content) yield content;
-    } catch (e) {
-        console.warn('Could not parse LLM chunk:', chunk.toString().substring(0, 100));
-        // Continue without throwing to prevent pipeline failure
+      }
     }
+  }
+  // Drain any remaining (unlikely)
+  if (buffer.startsWith('data:')) {
+    const payload = buffer.slice(5).trim();
+    try {
+      const json = JSON.parse(payload);
+      const content = json.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (content) yield content;
+    } catch {}
   }
 }
 
-// --- RunPod Pod Management ---
-
+// ---------------- RunPod Pod Management (unchanged logic + debounce) ----------------
 async function ensurePodRunning() {
   try {
-    // Check Pod Status
-    const podStatus = await getPodStatus();
-    
-    // FIXED: Handle all non-running states
-    if (podStatus === 'STOPPED' || podStatus === 'EXITED' || podStatus === 'STARTING') {
-      console.log('⚡ Starting RunPod for XTTS...');
+    const status = await getPodStatus();
+    if (status === 'STOPPED' || status === 'EXITED' || status === 'STARTING') {
       await startPod();
-      // Wait for Pod to be ready
       await waitForPodReady();
-    } else if (podStatus === 'RUNNING') {
-      console.log('✓ RunPod already running');
     }
-    
-    // Set pod start time for auto-stop scheduling
-    if (!podStartTime) {
-      podStartTime = Date.now();
-    }
-  } catch (error) {
-    // Check for authentication issues specifically
-    if (error.message.includes('authentication failed') || error.message.includes('invalid or expired API key')) {
-      console.error('🔐 RunPod API-Key ungültig oder abgelaufen! Verwende Google Cloud TTS Fallback');
-      console.error('   → Bitte neuen API-Key in RunPod Dashboard generieren');
-    } else {
-      console.error('🔧 RunPod nicht verfügbar, Fallback zu Google Cloud TTS:', error.message);
-    }
-    
-    // Fallback: Verwende Google Cloud TTS statt RunPod XTTS
-    currentPodEndpoint = null; // Signalisiert Fallback-Modus
+    if (!podStartTime) podStartTime = Date.now();
+  } catch (e) {
+    console.error('RunPod not available, fallback GCP TTS:', e.message);
+    currentPodEndpoint = null;
+    streamResponseOnActive('tts_engine', { engine: 'gcp', reason: 'runpod_unavailable' });
   }
+}
+
+function streamResponseOnActive(type, data) {
+  // utility if you want to emit outside handler scope
+  // intentionally left minimal
 }
 
 async function getPodStatus() {
-  // FIXED: Korrekter Auth-Header und Schema
   const { body, statusCode } = await request(`https://api.runpod.io/graphql`, {
     method: 'POST',
-    headers: {
-      'Authorization': RUNPOD_API_KEY,
-      'Content-Type': 'application/json'
-    },
+    headers: { Authorization: RUNPOD_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      query: `query { pod(input: {podId: "${RUNPOD_POD_ID}"}) { id, desiredStatus, runtime { uptimeInSeconds, ports { ip, isIpPublic, privatePort, publicPort, type } } } }`
+      query: `query { pod(input: {podId: "${RUNPOD_POD_ID}"}) { id desiredStatus runtime { uptimeInSeconds ports { ip isIpPublic privatePort publicPort type } } } }`
     }),
     dispatcher: runpodAgent
   });
-
-  if (statusCode !== 200) throw new Error(`RunPod API error: ${statusCode}`);
+  if (statusCode !== 200) throw new Error(`RunPod API ${statusCode}`);
   const result = await body.json();
-  
-  if (result.errors) {
-    throw new Error(`RunPod GraphQL Error: ${result.errors[0].message}`);
+  if (result.errors) throw new Error(result.errors[0].message);
+  const pod = result.data?.pod;
+  if (!pod) throw new Error('Pod not found');
+
+  let podStatus = pod.desiredStatus;
+  if (pod.runtime?.uptimeInSeconds > 0) podStatus = 'RUNNING';
+  if (pod.desiredStatus === 'RUNNING' && !pod.runtime) podStatus = 'STARTING';
+  if (podStatus === 'EXITED') podStatus = 'STOPPED';
+
+  if (podStatus === 'RUNNING' && pod.runtime?.ports) {
+    const httpPort = pod.runtime.ports.find(p => p.isIpPublic && p.type === 'http' && p.privatePort === 8020);
+    if (httpPort) {
+      currentPodEndpoint = `https://${RUNPOD_POD_ID}-${httpPort.publicPort}.proxy.runpod.net`;
+    }
   }
-  
-  if (result.data?.pod) {
-    const pod = result.data.pod;
-    
-    let podStatus = pod.desiredStatus;
-    
-    if (pod.runtime?.uptimeInSeconds > 0) {
-      podStatus = 'RUNNING';
-    } else if (pod.desiredStatus === 'RUNNING' && !pod.runtime) {
-      podStatus = 'STARTING';
-    }
-    
-    if (podStatus === 'EXITED') {
-      podStatus = 'STOPPED';
-    }
-    
-    if (podStatus === 'RUNNING' && pod.runtime?.ports) {
-      const httpPort = pod.runtime.ports.find(p => p.isIpPublic && p.type === 'http' && p.privatePort === 8020);
-      if (httpPort) {
-        currentPodEndpoint = `https://${RUNPOD_POD_ID}-${httpPort.publicPort}.proxy.runpod.net`;
-        console.log(`✓ Pod Proxy URL: ${currentPodEndpoint}`);
-      }
-    }
-    
-    return podStatus;
-  }
-  throw new Error('Pod not found or invalid API key');
+  return podStatus;
 }
 
 async function startPod() {
-  // FIXED: Korrekter Auth-Header und Schema
   const { body, statusCode } = await request(`https://api.runpod.io/graphql`, {
     method: 'POST',
-    headers: {
-      'Authorization': RUNPOD_API_KEY,
-      'Content-Type': 'application/json'
-    },
+    headers: { Authorization: RUNPOD_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      query: `mutation { podResume(input: {podId: "${RUNPOD_POD_ID}", gpuCount: 1}) { id, desiredStatus } }`
+      query: `mutation { podResume(input: {podId: "${RUNPOD_POD_ID}", gpuCount: 1}) { id desiredStatus } }`
     }),
     dispatcher: runpodAgent
   });
-
-  if (statusCode !== 200) throw new Error(`Failed to start pod: ${statusCode}`);
+  if (statusCode !== 200) throw new Error(`Start pod failed ${statusCode}`);
   const result = await body.json();
-  
-  if (result.errors) {
-    throw new Error(`RunPod Start Error: ${result.errors[0].message}`);
-  }
-  
-  if (!result.data?.podResume) {
-    throw new Error('Failed to start pod, response did not contain podResume data.');
-  }
+  if (result.errors || !result.data?.podResume) throw new Error('Pod resume error');
 }
 
 async function waitForPodReady() {
-  const maxWaitTime = 120000; // 2 minutes
-  const startTime = Date.now();
-  
-  while (Date.now() - startTime < maxWaitTime) {
+  const timeout = Date.now() + 120_000;
+  while (Date.now() < timeout) {
     try {
       const status = await getPodStatus();
       if (status === 'RUNNING' && currentPodEndpoint) {
-        // FIXED: Health-Check auf / statt /health
-        const { statusCode } = await request(`${currentPodEndpoint}/`, {
-          method: 'GET',
-          dispatcher: runpodAgent
-        });
-        
-        if (statusCode === 200) {
-          console.log('✓ XTTS Pod ready at:', currentPodEndpoint);
-          return;
-        }
+        const { statusCode } = await request(`${currentPodEndpoint}/`, { method: 'GET', dispatcher: runpodAgent });
+        if (statusCode === 200) return;
       }
-    } catch (e) {
-      // Continue waiting
-    }
-    
-    await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5s
+    } catch {}
+    await new Promise(r => setTimeout(r, 5000));
   }
-  
-  throw new Error('Pod did not become ready in time');
+  throw new Error('Pod readiness timeout');
 }
 
 async function stopPod() {
   try {
-    // FIXED: Korrekter Auth-Header
-    const { body, statusCode } = await request(`https://api.runpod.io/graphql`, {
+    const { body } = await request(`https://api.runpod.io/graphql`, {
       method: 'POST',
-      headers: {
-        'Authorization': RUNPOD_API_KEY,
-        'Content-Type': 'application/json'
-      },
+      headers: { Authorization: RUNPOD_API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        query: `mutation { podStop(input: {podId: "${RUNPOD_POD_ID}"}) { id, desiredStatus } }`
+        query: `mutation { podStop(input: {podId: "${RUNPOD_POD_ID}"}) { id desiredStatus } }`
       }),
       dispatcher: runpodAgent
     });
-
     const result = await body.json();
-
     if (result.data?.podStop) {
-      console.log('🛑 RunPod stopped to save costs');
       currentPodEndpoint = null;
       podStartTime = null;
-    } else if (result.errors) {
-      console.error('Failed to stop pod:', result.errors[0].message);
     }
-  } catch (error) {
-    console.error('Failed to stop pod:', error);
+  } catch (e) {
+    console.error('Stop pod error', e);
   }
 }
 
 function schedulePodStop() {
-  // Stop pod after 5 minutes of inactivity to save costs
-  setTimeout(() => {
+  if (podStopTimer) clearTimeout(podStopTimer);
+  podStopTimer = setTimeout(() => {
     if (podStartTime && Date.now() - podStartTime > 5 * 60 * 1000) {
       stopPod();
     }
   }, 5 * 60 * 1000);
 }
 
-// --- XTTS v2.0.3 Integration (FIXED) ---
-
+// ---------------- TTS ----------------
 async function generateAndStreamSpeechXTTS(text, voice, res) {
-  // FALLBACK: Wenn RunPod nicht verfügbar, verwende Google Cloud TTS
   if (!currentPodEndpoint) {
-    console.log('🔄 Fallback zu Google Cloud TTS (RunPod nicht verfügbar)');
     await generateAndStreamSpeechGCP(text, voice, res);
     return;
   }
-
   try {
-    // FIXED: Korrekter API-Pfad für XTTS Community Images
     const endpoint = `${currentPodEndpoint}/api/tts`;
-    const requestBody = {
-      text: text,
-      speaker: voice || "german_m2", // FIXED: speaker statt speaker_wav
-      language: "de",
-      stream_chunk_size: 180 // FIXED: Optimiert für ~150ms TTFA
+    const reqBody = {
+      text,
+      speaker: voice || 'german_m2',
+      language: 'de',
+      stream_chunk_size: 180
     };
-    
     const { body, statusCode } = await request(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify(reqBody),
       dispatcher: runpodAgent
     });
-
-    if (statusCode !== 200) throw new Error(`XTTS API Error: ${statusCode}`);
-    
-    // Stream WAV audio chunks direkt (kein Base64 needed)
-    const audioBuffer = await body.arrayBuffer();
-    streamResponse(res, 'audio_chunk', { 
-      base64: Buffer.from(audioBuffer).toString('base64'),
+    if (statusCode !== 200) throw new Error(`XTTS ${statusCode}`);
+    const audioBuffer = Buffer.from(await body.arrayBuffer());
+    streamResponse(res, 'audio_chunk', {
+      base64: audioBuffer.toString('base64'),
       format: 'wav'
     });
-  } catch (error) {
-    console.log('🔄 XTTS fehgeschlagen, Fallback zu Google Cloud TTS:', error.message);
+    streamResponse(res, 'tts_engine', { engine: 'xtts' });
+  } catch (e) {
+    streamResponse(res, 'tts_engine', { engine: 'gcp', reason: e.message });
     await generateAndStreamSpeechGCP(text, voice, res);
   }
 }
 
 async function generateAccessToken() {
   const now = Math.floor(Date.now() / 1000);
-  const payload = { iss: SERVICE_ACCOUNT_JSON.client_email, scope: 'https://www.googleapis.com/auth/cloud-platform', aud: SERVICE_ACCOUNT_JSON.token_uri, exp: now + 3600, iat: now };
+  const payload = {
+    iss: SERVICE_ACCOUNT_JSON.client_email,
+    scope: 'https://www.googleapis.com/auth/cloud-platform',
+    aud: SERVICE_ACCOUNT_JSON.token_uri,
+    exp: now + 3600,
+    iat: now
+  };
   const header = { alg: 'RS256', typ: 'JWT' };
-  const toSign = `${Buffer.from(JSON.stringify(header)).toString('base64url')}.${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
+  const toSign =
+    `${Buffer.from(JSON.stringify(header)).toString('base64url')}.` +
+    `${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
   const signature = createSign('RSA-SHA256').update(toSign).sign(SERVICE_ACCOUNT_JSON.private_key, 'base64url');
-  
+
   const { body, statusCode } = await request(SERVICE_ACCOUNT_JSON.token_uri, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${toSign}.${signature}`,
     dispatcher: tokenAgent
   });
-
-  if (statusCode !== 200) throw new Error(`Token exchange failed: ${statusCode}`);
+  if (statusCode !== 200) throw new Error(`Token exchange failed ${statusCode}`);
   return (await body.json()).access_token;
 }
 
-// --- Google Cloud TTS Fallback ---
-
 async function generateAndStreamSpeechGCP(text, voice, res) {
   try {
-    console.log('🎵 Google Cloud TTS Fallback aktiv');
     const accessToken = await generateAccessToken();
-    
-    const requestBody = {
-      input: { text: text },
-      voice: { 
-        languageCode: 'de-DE', 
-        name: 'de-DE-Neural2-B', // Deutsche männliche Stimme
-        ssmlGender: 'MALE' 
-      },
-      audioConfig: { 
-        audioEncoding: 'MP3',
-        effectsProfileId: ['telephony-class-application']
-      }
+    const reqBody = {
+      input: { text },
+      voice: { languageCode: 'de-DE', name: 'de-DE-Neural2-B', ssmlGender: 'MALE' },
+      audioConfig: { audioEncoding: 'MP3', effectsProfileId: ['telephony-class-application'] }
     };
-
     const { body, statusCode } = await request('https://texttospeech.googleapis.com/v1/text:synthesize', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(requestBody),
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(reqBody),
       dispatcher: tokenAgent
     });
-
-    if (statusCode !== 200) throw new Error(`Google Cloud TTS Error: ${statusCode}`);
-    
+    if (statusCode !== 200) throw new Error(`GCP TTS ${statusCode}`);
     const result = await body.json();
-    streamResponse(res, 'audio_chunk', { 
-      base64: result.audioContent,
+    streamResponse(res, 'audio_chunk', { base64: result.audioContent, format: 'mp3' });
+    streamResponse(res, 'tts_engine', { engine: 'gcp' });
+  } catch (e) {
+    console.error('GCP TTS error', e);
+    // Silent fallback
+    streamResponse(res, 'audio_chunk', {
+      base64: 'SUQzBAAAAAAAI1RTU0UAAAAPAAADAE1wZWcgZ2VuZXJhdG9yAA==',
       format: 'mp3'
     });
-    
-    console.log('✅ Google Cloud TTS erfolgreich');
-  } catch (error) {
-    console.error('❌ Google Cloud TTS Fehler:', error.message);
-    // Als letzte Möglichkeit: Silent Audio für Graceful Degradation
-    streamResponse(res, 'audio_chunk', { 
-      base64: 'SUQzBAAAAAAAI1RTU0UAAAAPAAADAE1wZWcgZ2VuZXJhdG9yAA==', // Silent MP3
-      format: 'mp3'
-    });
+    streamResponse(res, 'tts_engine', { engine: 'silent', reason: e.message });
   }
-} 
+}
 
-export { processAndStreamLLMResponse, generateAndStreamSpeechGCP }; 
+export { processAndStreamLLMResponse, generateAndStreamSpeechGCP };
