@@ -53,6 +53,14 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const { audio, voice = 'german_m2' } = req.body || {};
+  
+  // DEBUG: Request-Daten prüfen
+  console.log('🔍 API Request Debug:');
+  console.log('  - Audio vorhanden:', !!audio);
+  console.log('  - Audio Länge:', audio ? audio.length : 'N/A');
+  console.log('  - Voice:', voice);
+  console.log('  - Content-Type:', req.headers['content-type']);
+  
   if (!audio) return res.status(400).json({ error: 'Missing audio data' });
 
   try {
@@ -67,11 +75,20 @@ export default async function handler(req, res) {
       transcript = req.headers['x-simulated-transcript'];
       streamResponse(res, 'transcript', { text: transcript });
     } else {
-      transcript = await getTranscriptViaWebSocket(Buffer.from(audio, 'base64'));
+      // DEBUG: Audio-Buffer prüfen
+      const audioBuffer = Buffer.from(audio, 'base64');
+      console.log('🎤 Audio Buffer Debug:');
+      console.log('  - Buffer Size:', audioBuffer.length, 'bytes');
+      console.log('  - Buffer Preview:', audioBuffer.toString('hex').substring(0, 100) + '...');
+      
+      transcript = await getTranscriptViaWebSocket(audioBuffer);
+      console.log('📝 Transkript erhalten:', transcript);
+      
       if (transcript) streamResponse(res, 'transcript', { text: transcript });
     }
 
     if (!transcript || transcript.trim().length === 0) {
+      console.log('❌ Kein Transkript - sende Error');
       streamResponse(res, 'error', { message: 'No speech detected.' });
       streamResponse(res, 'end', {});
       return res.end();
@@ -104,6 +121,8 @@ function streamResponse(res, type, data) {
 function getTranscriptViaWebSocket(audioBuffer) {
   return new Promise((resolve, reject) => {
     const deepgramUrl = 'wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&encoding=linear16&sample_rate=16000&punctuate=true&interim_results=true&endpointing=300';
+    console.log('🔗 Deepgram WebSocket Verbindung:', deepgramUrl);
+    
     const ws = new WebSocket(deepgramUrl, {
       headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
       perMessageDeflate: false
@@ -112,33 +131,55 @@ function getTranscriptViaWebSocket(audioBuffer) {
     let finalTranscript = '';
 
     ws.on('open', () => {
+      console.log('✅ Deepgram WebSocket geöffnet');
       let pcmData;
       if (audioBuffer.toString('ascii', 0, 4) === 'RIFF') {
         pcmData = audioBuffer.subarray(44);
+        console.log('📦 WAV-Header entfernt, PCM-Daten:', pcmData.length, 'bytes');
       } else {
         pcmData = audioBuffer;
+        console.log('📦 Rohe PCM-Daten:', pcmData.length, 'bytes');
       }
+      
       const chunkSize = 1600;
+      const numChunks = Math.ceil(pcmData.length / chunkSize);
+      console.log(`📤 Sende ${pcmData.length} Bytes in ${numChunks} Chunks`);
+      
       for (let i = 0; i < pcmData.length; i += chunkSize) {
         if (ws.readyState === WebSocket.OPEN) ws.send(pcmData.subarray(i, i + chunkSize));
       }
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'CloseStream' }));
+      console.log('📤 Audio-Daten gesendet, Stream geschlossen');
     });
 
     ws.on('message', data => {
       try {
         const msg = JSON.parse(data.toString());
+        console.log('📨 Deepgram Message:', msg.type || 'data', msg);
+        
         const transcript = msg.channel?.alternatives?.[0]?.transcript;
         if (transcript) {
+          console.log('🎤 Transkript Chunk:', transcript, '(final:', msg.is_final, ')');
           if (msg.is_final) finalTranscript += transcript + ' ';
         }
-      } catch {}
+      } catch (e) {
+        console.warn('Deepgram Message Parse Error:', e);
+      }
     });
 
-    ws.on('close', () => resolve(finalTranscript.trim()));
-    ws.on('error', reject);
+    ws.on('close', () => {
+      console.log('🔌 Deepgram WebSocket geschlossen, Final Transcript:', finalTranscript.trim());
+      resolve(finalTranscript.trim());
+    });
+    
+    ws.on('error', (error) => {
+      console.error('❌ Deepgram WebSocket Error:', error);
+      reject(error);
+    });
+    
     setTimeout(() => {
       if (ws.readyState !== WebSocket.CLOSED) {
+        console.log('⏰ Deepgram Timeout');
         ws.terminate();
         reject(new Error('Deepgram timeout'));
       }

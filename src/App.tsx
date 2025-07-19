@@ -462,21 +462,38 @@ function App() {
       // Audio zu Base64 konvertieren
       const arrayBuffer = await audioBlob.arrayBuffer();
       const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+      
+      // DEBUG: Audio-Daten prüfen
+      console.log('🎤 Audio Debug Info:');
+      console.log('  - Blob Size:', audioBlob.size, 'bytes');
+      console.log('  - Blob Type:', audioBlob.type);
+      console.log('  - ArrayBuffer Size:', arrayBuffer.byteLength, 'bytes');
+      console.log('  - Base64 Length:', base64Audio.length, 'chars');
+      console.log('  - Base64 Preview:', base64Audio.substring(0, 100) + '...');
     
       // Frontend-Voice-Name zu API-Voice-ID konvertieren
       const apiVoiceId = getApiVoiceId(selectedVoice);
       console.log(`Frontend Voice: ${selectedVoice} -> API Voice ID: ${apiVoiceId}`);
     
       // REST API Call OHNE type-Feld, nur { audio, voice }
+      const requestBody = {
+        audio: base64Audio,
+        voice: apiVoiceId // Konvertierte API-Voice-ID übertragen
+      };
+      
+      console.log('📤 Sende Request an API:', {
+        url: '/api/voice-agent',
+        method: 'POST',
+        audioLength: base64Audio.length,
+        voice: apiVoiceId
+      });
+      
       const response = await fetch('/api/voice-agent', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          audio: base64Audio,
-          voice: apiVoiceId // Konvertierte API-Voice-ID übertragen
-        })
+        body: JSON.stringify(requestBody)
       });
 
       // KORRIGIERT: NDJSON-Stream verarbeiten (nur EINMAL lesen!)
@@ -487,6 +504,12 @@ function App() {
       if (!response.body) {
         throw new Error('Kein Response-Body erhalten');
       }
+
+      console.log('📥 Response erhalten:', {
+        status: response.status,
+        statusText: response.statusText,
+        contentType: response.headers.get('content-type')
+      });
 
       // NDJSON-Stream verarbeiten
       const reader = response.body.getReader();
