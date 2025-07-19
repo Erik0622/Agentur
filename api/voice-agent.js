@@ -122,8 +122,8 @@ function streamResponse(res, type, data) {
 // ---------------- Deepgram WebSocket ----------------
 function getTranscriptViaWebSocket(audioBuffer) {
   return new Promise((resolve, reject) => {
-    // KORREKTE Parameter für WebM/Opus Audio
-    const deepgramUrl = 'wss://api.deepgram.com/v1/listen?model=nova-3&encoding=opus&sample_rate=48000&channels=1&language=de&punctuate=true&interim_results=true&endpointing=300';
+    // Versuche zuerst WebM-Encoding, dann Auto-Detection
+    const deepgramUrl = 'wss://api.deepgram.com/v1/listen?model=nova-3&encoding=auto&sample_rate=48000&channels=1&language=de&punctuate=true&interim_results=true&endpointing=300';
     console.log('🔗 Deepgram WebSocket Verbindung:', deepgramUrl);
     
     const ws = new WebSocket(deepgramUrl, {
@@ -138,7 +138,7 @@ function getTranscriptViaWebSocket(audioBuffer) {
       console.log('✅ Deepgram WebSocket geöffnet');
       
       // Audio-Daten direkt senden (keine Manipulation!)
-      console.log(`📤 Sende ${audioBuffer.length} Bytes WebM/Opus-Daten direkt an Deepgram`);
+      console.log(`📤 Sende ${audioBuffer.length} Bytes Audio-Daten direkt an Deepgram (Auto-Detection)`);
       
       // Sende die kompletten Audio-Daten in einem Chunk
       if (ws.readyState === WebSocket.OPEN) {
