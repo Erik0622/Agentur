@@ -467,20 +467,27 @@ function App() {
       const apiVoiceId = getApiVoiceId(selectedVoice);
       console.log(`Frontend Voice: ${selectedVoice} -> API Voice ID: ${apiVoiceId}`);
     
-      // REST API Call mit konvertierter Voice-ID
+      // REST API Call OHNE type-Feld, nur { audio, voice }
       const response = await fetch('/api/voice-agent', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          type: 'voice_complete',
           audio: base64Audio,
           voice: apiVoiceId // Konvertierte API-Voice-ID übertragen
         })
       });
-    
-      const result = await response.json();
+
+      // Fehlerbehandlung für nicht-JSON-Antworten
+      let result;
+      try {
+        result = await response.json();
+      } catch (jsonErr) {
+        const text = await response.text();
+        console.error('Antwort ist kein JSON:', text);
+        throw new Error('Antwort der Voice-Agent-API ist kein gültiges JSON!');
+      }
 
       if (result.success) {
         setTranscript(result.transcript);
