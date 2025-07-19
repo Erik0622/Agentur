@@ -107,7 +107,7 @@ async function transcribeAudio(audioBase64) {
     
     const audioBuffer = Buffer.from(audioBase64, 'base64');
     
-    const response = await fetch('https://api.deepgram.com/v1/listen?language=de&model=nova-2&punctuate=true&smart_format=true&tier=enhanced', {
+    const response = await fetch('https://api.deepgram.com/v1/listen?language=multi&model=nova-3&punctuate=true&smart_format=true&tier=enhanced', {
       method: 'POST',
       headers: {
         'Authorization': `Token ${DEEPGRAM_API_KEY}`,

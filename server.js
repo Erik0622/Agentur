@@ -41,13 +41,13 @@ class VoiceAgent {
 
   async startDeepgramStream() {
     try {
-      const deepgramUrl = `wss://api.deepgram.com/v1/listen?language=de&model=nova-2&punctuate=true&interim_results=true&endpointing=300&vad_events=true&smart_format=true`;
+      const deepgramUrl = `wss://api.deepgram.com/v1/listen?language=multi&model=nova-3&punctuate=true&interim_results=true&endpointing=300&vad_events=true&smart_format=true`;
       const headers = { Authorization: `Token ${DEEPGRAM_API_KEY}` };
       
-      const WebSocketDG = (await import('ws')).WebSocket;
-      this.deepgramSocket = new WebSocketDG(deepgramUrl, { headers });
+    const WebSocketDG = (await import('ws')).WebSocket;
+    this.deepgramSocket = new WebSocketDG(deepgramUrl, { headers });
 
-      this.deepgramSocket.on('open', () => {
+    this.deepgramSocket.on('open', () => {
         console.log('🎤 Deepgram WebSocket verbunden');
         this.sendToClient({
           type: 'status',
@@ -56,8 +56,8 @@ class VoiceAgent {
       });
 
       this.deepgramSocket.on('message', async (msg) => {
-        try {
-          const data = JSON.parse(msg);
+      try {
+        const data = JSON.parse(msg);
           
           if (data.channel && data.channel.alternatives && data.channel.alternatives[0]) {
             const transcript = data.channel.alternatives[0].transcript;
@@ -243,7 +243,7 @@ Antworte KURZ und natürlich auf Deutsch. Maximal 2-3 Sätze.`;
     
     try {
       // Sende Audio-Chunk direkt an Deepgram für Live-Transkription
-      this.deepgramSocket.send(chunk);
+    this.deepgramSocket.send(chunk);
     } catch (error) {
       console.error('❌ Audio-Chunk Fehler:', error);
     }
@@ -283,19 +283,19 @@ wss.on('connection', (ws) => {
       switch (message.type) {
         case 'start_audio':
           console.log('🎤 Audio-Stream gestartet');
-          await agent.startDeepgramStream();
+        await agent.startDeepgramStream();
           break;
           
         case 'audio_chunk':
           if (message.audio) {
-            const buffer = Buffer.from(message.audio, 'base64');
-            await agent.handleAudioChunk(buffer);
+        const buffer = Buffer.from(message.audio, 'base64');
+        await agent.handleAudioChunk(buffer);
           }
           break;
           
         case 'end_audio':
           console.log('🛑 Audio-Stream beendet');
-          await agent.endDeepgramStream();
+        await agent.endDeepgramStream();
           break;
           
         case 'reset_conversation':
