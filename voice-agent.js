@@ -50,7 +50,11 @@ class VoiceAgent {
       
           const deepgramUrl = `wss://api.deepgram.com/v1/listen?` + new URLSearchParams({
       language: 'multi',
+<<<<<<< HEAD
         model: 'nova-3',
+=======
+      model: 'nova-3',
+>>>>>>> a761fbca09bf9c522e4c67323332cafd36812c46
         punctuate: 'true',
         interim_results: 'true',
         endpointing: '300',

@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Phone, Clock, TrendingDown, Users, Bot, Star, CheckCircle, ArrowRight, Calendar, X, ChevronLeft, ChevronRight, Video, Monitor, Mic, Volume2, Loader } from 'lucide-react'
+import { Phone, Clock, TrendingDown, Users, Bot, Star, CheckCircle, ArrowRight, Calendar, X, ChevronLeft, ChevronRight, Video, Monitor, Mic, Volume2, Loader, MessageCircle } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import AudioVisualizer from './components/AudioVisualizer'
 
@@ -29,19 +29,34 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPlayingResponse, setIsPlayingResponse] = useState(false);
-  const [, setAudioBlob] = useState<Blob | null>(null);
+  const [isListening, setIsListening] = useState(false); // Kontinuierliches Zuhören
+  const [conversationMode, setConversationMode] = useState(true); // Standard: Gespräch-Modus
   const [transcript, setTranscript] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
   const [voiceMetrics, setVoiceMetrics] = useState<any>(null);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [conversationHistory, setConversationHistory] = useState<Array<{user: string, ai: string, timestamp: Date}>>([]);
+  const [isSpeechDetected, setIsSpeechDetected] = useState(false);
+  const [silenceCount, setSilenceCount] = useState(0);
   
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+  // Deutsche Stimmenauswahl für Bella Vista (nur geklonte deutsche Stimmen)
+  const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('bella_vista_german_voice');
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+  const germanVoices = {
+    'bella_vista_german_voice': { name: 'Bella Vista Original', gender: 'Weiblich', description: 'Authentische deutsche Stimme (geklont, Standard)' }
+  } as const;
+  
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationRef = useRef<number | null>(null);
+  
+  // Kontinuierliche Voice Detection Refs
+  const continuousStreamRef = useRef<MediaStream | null>(null);
+  const continuousRecorderRef = useRef<MediaRecorder | null>(null);
+  const speechDetectionRef = useRef<boolean>(false);
+  const currentAudioChunksRef = useRef<Blob[]>([]);
 
   // Lade gespeicherte Termine aus localStorage
   useEffect(() => {
@@ -134,10 +149,14 @@ function App() {
     };
   }, []);
 
-  // Audio Visualizer
-  const startAudioVisualization = (stream: MediaStream) => {
-    if (audioContextRef.current) {
+  // Audio Visualizer & Voice Activity Detection
+  const startAudioVisualization = (stream: MediaStream, isForVAD = false) => {
+    // Cleanup vorheriger AudioContext
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close();
+    }
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
     }
 
     audioContextRef.current = new AudioContext();
@@ -149,12 +168,51 @@ function App() {
     const bufferLength = analyserRef.current.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
 
+    const SPEECH_THRESHOLD = 25; // Anpassen je nach Umgebung
+    const SILENCE_FRAMES_NEEDED = 30; // ~0.5 Sekunden bei 60fps
+
     const updateAudioLevel = () => {
-      if (analyserRef.current && isRecording) {
+      const isActive = isForVAD ? isListening : isRecording;
+      
+      if (analyserRef.current && isActive && audioContextRef.current?.state === 'running') {
+        try {
         analyserRef.current.getByteFrequencyData(dataArray);
         const average = dataArray.reduce((a, b) => a + b) / bufferLength;
-        setAudioLevel(average / 255 * 100);
+          const audioLevel = average / 255 * 100;
+          setAudioLevel(audioLevel);
+
+          // Voice Activity Detection für kontinuierliches Gespräch
+          if (isForVAD && isListening) {
+            const wasSpeaking = speechDetectionRef.current;
+            const isSpeaking = audioLevel > SPEECH_THRESHOLD;
+            
+            if (isSpeaking && !wasSpeaking) {
+              // Sprache erkannt - beginne Aufnahme
+              console.log('🎤 Sprache erkannt - starte Aufnahme');
+              speechDetectionRef.current = true;
+              setIsSpeechDetected(true);
+              setSilenceCount(0);
+              startContinuousRecording();
+            } else if (!isSpeaking && wasSpeaking) {
+              // Stille erkannt - zähle Frames
+              setSilenceCount(prev => prev + 1);
+            } else if (!isSpeaking && wasSpeaking && silenceCount >= SILENCE_FRAMES_NEEDED) {
+              // Genug Stille - beende Aufnahme
+              console.log('🔇 Stille erkannt - beende Aufnahme');
+              speechDetectionRef.current = false;
+              setIsSpeechDetected(false);
+              setSilenceCount(0);
+              stopContinuousRecording();
+            }
+          }
+
         animationRef.current = requestAnimationFrame(updateAudioLevel);
+        } catch (error) {
+          console.error('Audio level update error:', error);
+          setAudioLevel(0);
+        }
+      } else {
+        setAudioLevel(0);
       }
     };
 
@@ -162,117 +220,197 @@ function App() {
   };
 
   const stopAudioVisualization = () => {
+    // Animation stoppen
     if (animationRef.current) {
       cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
     }
-    if (audioContextRef.current) {
+    
+    // AudioContext sicher schließen
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close();
     }
+    
     setAudioLevel(0);
   };
 
-  // Voice Recording Functions
-  const startRecording = async () => {
+  // Kontinuierliche Gespräch-Funktionen
+  const startConversationMode = async () => {
     try {
-      // Start-Signal an Server senden
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: 'start_recording'
-        }));
-      }
-
+      console.log('🎯 Starte Gesprächsmodus');
+      
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          sampleRate: 16000, // Optimiert für Deepgram
-          channelCount: 1 // Mono
+          sampleRate: 16000,
+          channelCount: 1
         } 
       });
       
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
-      });
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
-
-      // Audio Visualisierung starten
-      startAudioVisualization(stream);
-
-      mediaRecorder.ondataavailable = (event) => {
-        audioChunksRef.current.push(event.data);
-      };
-
-      mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        setAudioBlob(audioBlob);
-        processVoiceInput(audioBlob);
-        
-        // Stream und Visualisierung stoppen
-        stream.getTracks().forEach(track => track.stop());
-        stopAudioVisualization();
-      };
-
-      mediaRecorder.start(100); // Sammle Daten alle 100ms für Live-Streaming
-      setIsRecording(true);
+      continuousStreamRef.current = stream;
+      setIsListening(true);
       setTranscript('');
       setAiResponse('');
-      setVoiceMetrics(null);
+      
+      // Voice Activity Detection starten
+      startAudioVisualization(stream, true);
+      
     } catch (error) {
-      console.error('Mikrofonzugriff fehlgeschlagen:', error);
+      console.error('Gesprächsmodus-Start fehlgeschlagen:', error);
       alert('Mikrofonzugriff fehlgeschlagen. Bitte überprüfen Sie Ihre Browser-Einstellungen.');
     }
   };
 
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      // Stop-Signal an Server senden
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: 'stop_recording'
-        }));
-      }
-
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      setIsProcessing(true);
+  const stopConversationMode = () => {
+    console.log('⏹️ Stoppe Gesprächsmodus');
+    
+    setIsListening(false);
+    setIsSpeechDetected(false);
+    setSilenceCount(0);
+    speechDetectionRef.current = false;
+    
+    // Aktuelle Aufnahme stoppen falls läuft
+    if (continuousRecorderRef.current && continuousRecorderRef.current.state === 'recording') {
+      continuousRecorderRef.current.stop();
     }
+    
+    // Stream stoppen
+    if (continuousStreamRef.current) {
+      continuousStreamRef.current.getTracks().forEach(track => track.stop());
+      continuousStreamRef.current = null;
+    }
+    
+    stopAudioVisualization();
   };
 
-  const processVoiceInput = async (audioBlob: Blob) => {
-    const isProduction = window.location.hostname !== 'localhost';
+  const startContinuousRecording = () => {
+    if (!continuousStreamRef.current) return;
     
-    if (isProduction) {
-      // Production: REST API verwenden
-      return await processVoiceInputREST(audioBlob);
-    }
-    
-    // Development: WebSocket verwenden
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      alert('Voice Agent nicht verbunden. Bitte warten Sie einen Moment.');
-      setIsProcessing(false);
-      return;
-    }
-
     try {
-      // Audio zu Base64 konvertieren
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-
-      // An Backend senden mit korrektem Message-Type
-      wsRef.current.send(JSON.stringify({
-        type: 'audio_data',
-        audio: base64Audio
-      }));
+      const mediaRecorder = new MediaRecorder(continuousStreamRef.current, {
+        mimeType: 'audio/webm;codecs=opus'
+      });
+      
+      continuousRecorderRef.current = mediaRecorder;
+      currentAudioChunksRef.current = [];
+      
+      mediaRecorder.ondataavailable = (event) => {
+        currentAudioChunksRef.current.push(event.data);
+      };
+      
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(currentAudioChunksRef.current, { type: 'audio/webm' });
+        processContinuousVoiceInput(audioBlob);
+      };
+      
+      mediaRecorder.start(100);
+      
     } catch (error) {
-      console.error('Audio-Verarbeitung fehlgeschlagen:', error);
-      setIsProcessing(false);
-      alert('Audio-Verarbeitung fehlgeschlagen.');
+      console.error('Kontinuierliche Aufnahme-Start fehlgeschlagen:', error);
     }
   };
 
-  // REST API Version für Production
+  const stopContinuousRecording = () => {
+    if (continuousRecorderRef.current && continuousRecorderRef.current.state === 'recording') {
+      continuousRecorderRef.current.stop();
+    }
+  };
+
+  const processContinuousVoiceInput = async (audioBlob: Blob) => {
+    if (isProcessing || isPlayingResponse) return; // Verhindere Überlappung
+    
+    setIsProcessing(true);
+    
+    // Aktuelle Werte speichern vor processVoiceInputREST
+    const currentTranscript = transcript;
+    const currentResponse = aiResponse;
+    
+    await processVoiceInputREST(audioBlob);
+    
+    // Nach Verarbeitung: Zur Konversations-Historie hinzufügen
+    // Warte kurz bis die States aktualisiert sind
+    setTimeout(() => {
+      if (transcript && transcript !== currentTranscript && aiResponse && aiResponse !== currentResponse) {
+        setConversationHistory(prev => [...prev, {
+          user: transcript,
+          ai: aiResponse,
+          timestamp: new Date()
+        }]);
+      }
+    }, 500); // 500ms Delay für State-Updates
+  };
+
+  // Voice Recording Functions (Original)
+  const startRecording = async () => {
+    try {
+      setIsRecording(true);
+      setTranscript('');
+      setAiResponse('');
+      
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          sampleRate: 48000,        // 48kHz für Opus-Codec optimal
+          channelCount: 1,          // Mono für bessere Erkennung
+          echoCancellation: true,   // Echo-Cancellation aktivieren
+          noiseSuppression: true,   // Rauschunterdrückung
+          autoGainControl: true     // Automatische Verstärkung
+        } 
+      });
+      
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus'  // WebM mit Opus Codec
+      });
+      
+      const chunks: Blob[] = [];
+      
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+      
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+        console.log('🎤 Audio aufgenommen:', audioBlob.size, 'bytes');
+        
+        if (isDevelopment) {
+          await processVoiceInputWebSocket(audioBlob);
+        } else {
+          await processVoiceInputREST(audioBlob);
+        }
+        
+        stream.getTracks().forEach(track => track.stop());
+      };
+      
+      mediaRecorder.start();
+      setMediaRecorder(mediaRecorder);
+      
+    } catch (error) {
+      console.error('Fehler beim Starten der Aufnahme:', error);
+      setIsRecording(false);
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+      setIsRecording(false);
+    }
+  };
+
+
+
+  // Voice-Mapping: Frontend-Namen zu API-Voice-IDs (nur deutsche geklonte Stimmen)
+  const getApiVoiceId = (frontendVoiceKey: string): string => {
+    const voiceMapping = {
+      'bella_vista_german_voice': 'voice_P6itXm4qbI' // Authentische geklonte deutsche Stimme
+    };
+    return voiceMapping[frontendVoiceKey as keyof typeof voiceMapping] || 'voice_P6itXm4qbI';
+  };
+
+  // REST API Version für Production - KORRIGIERT für NDJSON-Streaming
   const processVoiceInputREST = async (audioBlob: Blob) => {
     try {
       setTranscript('Verarbeite Audio...');
@@ -281,48 +419,168 @@ function App() {
       // Audio zu Base64 konvertieren
       const arrayBuffer = await audioBlob.arrayBuffer();
       const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-
-      // REST API Call
+      
+      // DEBUG: Audio-Daten prüfen
+      console.log('🎤 Audio Debug Info:');
+      console.log('  - Blob Size:', audioBlob.size, 'bytes');
+      console.log('  - Blob Type:', audioBlob.type);
+      console.log('  - ArrayBuffer Size:', arrayBuffer.byteLength, 'bytes');
+      console.log('  - Base64 Length:', base64Audio.length, 'chars');
+      console.log('  - Base64 Preview:', base64Audio.substring(0, 100) + '...');
+    
+      // Frontend-Voice-Name zu API-Voice-ID konvertieren
+      const apiVoiceId = getApiVoiceId(selectedVoice);
+      console.log(`Frontend Voice: ${selectedVoice} -> API Voice ID: ${apiVoiceId}`);
+    
+      // REST API Call OHNE type-Feld, nur { audio, voice }
+      const requestBody = {
+        audio: base64Audio,
+        voice: apiVoiceId // Konvertierte API-Voice-ID übertragen
+      };
+      
+      console.log('📤 Sende Request an API:', {
+        url: '/api/voice-agent',
+        method: 'POST',
+        audioLength: base64Audio.length,
+        voice: apiVoiceId
+      });
+      
       const response = await fetch('/api/voice-agent', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          type: 'voice_complete',
-          audio: base64Audio
-        })
+        body: JSON.stringify(requestBody)
       });
 
-      const result = await response.json();
+      // KORRIGIERT: NDJSON-Stream verarbeiten (nur EINMAL lesen!)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
 
-      if (result.success) {
-        setTranscript(result.transcript);
-        setAiResponse(result.response);
-        setVoiceMetrics(result.metrics);
+      if (!response.body) {
+        throw new Error('Kein Response-Body erhalten');
+      }
+
+      console.log('📥 Response erhalten:', {
+        status: response.status,
+        statusText: response.statusText,
+        contentType: response.headers.get('content-type')
+      });
+
+      // NDJSON-Stream verarbeiten
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
         
-        // Audio abspielen
-        if (result.audio) {
-          setIsPlayingResponse(true);
-          const audio = new Audio(`data:audio/mp3;base64,${result.audio}`);
-          audio.onended = () => setIsPlayingResponse(false);
-          audio.play().catch(e => console.error('Audio playback failed:', e));
+        // Zeilenweise verarbeiten
+        let newlineIndex;
+        while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newlineIndex).trim();
+          buffer = buffer.slice(newlineIndex + 1);
+          
+          if (!line) continue;
+          
+          try {
+            const event = JSON.parse(line);
+            console.log('📨 Stream Event:', event.type, event.data);
+            
+            switch (event.type) {
+              case 'transcript':
+                setTranscript(event.data.text);
+                break;
+              case 'llm_chunk':
+                setAiResponse(prev => prev + event.data.text);
+                break;
+              case 'audio_chunk':
+                // Audio abspielen
+                if (event.data.base64) {
+                  setIsPlayingResponse(true);
+                  const audio = new Audio(`data:audio/${event.data.format};base64,${event.data.base64}`);
+                  audio.onended = () => setIsPlayingResponse(false);
+                  audio.play().catch(e => console.error('Audio playback failed:', e));
+                }
+                break;
+              case 'error':
+                // Spezielle Behandlung für "No speech detected" - das ist kein echter Fehler
+                if (event.data.message === 'No speech detected.') {
+                  console.log('🔇 Keine Sprache erkannt - bitte sprechen Sie lauter');
+                  setTranscript('Keine Sprache erkannt. Bitte sprechen Sie lauter.');
+                  setAiResponse('');
+                } else {
+                  throw new Error(event.data.message || 'Voice processing error');
+                }
+                break;
+              case 'end':
+                console.log('✅ Stream beendet');
+                break;
+              case 'debug_sentence':
+                console.log('🎵 Debug Sentence:', event.data.text);
+                break;
+              default:
+                console.log('📨 Unbekanntes Event:', event.type);
+            }
+          } catch (parseError) {
+            console.warn('JSON Parse Error für Zeile:', line, parseError);
+          }
         }
-      } else {
-        throw new Error(result.error || 'Voice processing failed');
       }
       
     } catch (error) {
       console.error('Voice API Error:', error);
       setTranscript('');
       setAiResponse('Fehler bei der Sprachverarbeitung.');
-      alert('Sprachverarbeitung fehlgeschlagen: ' + error.message);
+      alert('Sprachverarbeitung fehlgeschlagen: ' + (error instanceof Error ? error.message : String(error)));
     } finally {
       setIsProcessing(false);
     }
   };
 
-
+  // WebSocket Version für Development
+  const processVoiceInputWebSocket = async (audioBlob: Blob) => {
+    try {
+      setTranscript('Verarbeite Audio...');
+      setAiResponse('');
+      
+      // WebSocket Verbindung herstellen
+      const ws = new WebSocket('ws://localhost:3001');
+      
+      ws.onopen = () => {
+        console.log('WebSocket verbunden');
+        // Audio-Daten senden
+        const reader = new FileReader();
+        reader.onload = () => {
+          ws.send(JSON.stringify({
+            type: 'audio',
+            data: reader.result
+          }));
+        };
+        reader.readAsDataURL(audioBlob);
+      };
+      
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'transcript') {
+          setTranscript(data.text);
+        } else if (data.type === 'response') {
+          setAiResponse(data.text);
+        }
+      };
+      
+      ws.onerror = (error) => {
+        console.error('WebSocket Fehler:', error);
+      };
+      
+    } catch (error) {
+      console.error('WebSocket Verarbeitung fehlgeschlagen:', error);
+    }
+  };
 
   const isSlotAvailable = (date: string, time: string) => {
     return !bookings.some(booking => 
@@ -429,22 +687,27 @@ function App() {
 
     return (
       <div className="bg-white rounded-xl shadow-lg p-6">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-2xl font-bold text-gray-900">
+        <div className="flex items-center justify-between mb-4 sm:mb-6">
+          <h3 className="text-lg sm:text-2xl font-bold text-gray-900">
+            <span className="hidden sm:inline">
             {weekStart.getDate()}. {monthNames[weekStart.getMonth()]} - {weekDays[6].getDate()}. {monthNames[weekDays[6].getMonth()]} {weekStart.getFullYear()}
+            </span>
+            <span className="sm:hidden">
+              {weekStart.getDate()}.{(weekStart.getMonth() + 1).toString().padStart(2, '0')} - {weekDays[6].getDate()}.{(weekDays[6].getMonth() + 1).toString().padStart(2, '0')}.{weekStart.getFullYear()}
+            </span>
           </h3>
           <div className="flex space-x-2">
             <button
               onClick={previousWeek}
               className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
             >
-              <ChevronLeft className="h-5 w-5" />
+              <ChevronLeft className="h-4 w-4 sm:h-5 sm:w-5" />
             </button>
             <button
               onClick={nextWeek}
               className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
             >
-              <ChevronRight className="h-5 w-5" />
+              <ChevronRight className="h-4 w-4 sm:h-5 sm:w-5" />
             </button>
           </div>
         </div>
@@ -453,12 +716,12 @@ function App() {
           <div className="min-w-full">
             {/* Header mit Wochentagen */}
             <div className="grid grid-cols-8 gap-1 mb-2">
-              <div className="p-2 text-center text-sm font-medium text-gray-500">Zeit</div>
+              <div className="p-1 sm:p-2 text-center text-xs sm:text-sm font-medium text-gray-500">Zeit</div>
               {weekDays.map((day, index) => {
                 const isToday = day.toDateString() === today.toDateString();
                 return (
-                  <div key={index} className={`p-2 text-center text-sm font-medium ${isToday ? 'text-primary-600 bg-primary-50' : 'text-gray-500'} rounded`}>
-                    <div>{dayNames[index]}</div>
+                  <div key={index} className={`p-1 sm:p-2 text-center text-xs sm:text-sm font-medium ${isToday ? 'text-primary-600 bg-primary-50' : 'text-gray-500'} rounded`}>
+                    <div className="text-xs sm:text-sm">{dayNames[index]}</div>
                     <div className="text-xs">{day.getDate()}.{(day.getMonth() + 1).toString().padStart(2, '0')}</div>
                   </div>
                 );
@@ -468,7 +731,7 @@ function App() {
             {/* Stunden-Grid */}
             {timeHours.map(hour => (
               <div key={hour} className="grid grid-cols-8 gap-1 mb-1">
-                <div className="p-2 text-center text-sm font-medium text-gray-600 bg-gray-50 rounded">
+                <div className="p-1 sm:p-2 text-center text-xs sm:text-sm font-medium text-gray-600 bg-gray-50 rounded">
                   {hour.toString().padStart(2, '0')}:00
                 </div>
                 {weekDays.map((day) => {
@@ -488,12 +751,12 @@ function App() {
                   );
 
                   return (
-                    <div key={`${dateString}-${timeString}`} className="p-1">
+                    <div key={`${dateString}-${timeString}`} className="p-0.5 sm:p-1">
                       {isOpen ? (
                         <button
                           onClick={() => isAvailable ? handleSlotClick(dateString, timeString) : undefined}
                           disabled={!isAvailable}
-                          className={`w-full h-10 rounded text-xs font-medium transition-colors
+                          className={`w-full h-8 sm:h-10 rounded text-xs font-medium transition-colors leading-tight
                             ${isAvailable 
                               ? 'bg-green-100 text-green-700 hover:bg-green-200 cursor-pointer' 
                               : isBooked 
@@ -501,11 +764,15 @@ function App() {
                                 : 'bg-gray-100 text-gray-400 cursor-not-allowed'
                             }`}
                         >
+                          <span className="text-xs sm:text-sm">
                           {isAvailable ? 'Frei' : isBooked ? 'Belegt' : 'Vorbei'}
+                          </span>
                         </button>
                       ) : (
-                        <div className="w-full h-10 bg-gray-50 rounded flex items-center justify-center text-xs text-gray-400">
-                          {dayOfWeek === 0 ? 'Geschlossen' : 'Geschlossen'}
+                        <div className="w-full h-8 sm:h-10 bg-gray-50 rounded flex items-center justify-center text-xs text-gray-400">
+                          <span className="text-xs leading-tight text-center">
+                            {dayOfWeek === 0 ? 'Geschl.' : 'Geschl.'}
+                          </span>
                         </div>
                       )}
                     </div>
@@ -533,6 +800,9 @@ function App() {
       </div>
     );
   };
+
+  // Development-Modus Erkennung
+  const isDevelopment = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
   return (
     <div className="min-h-screen bg-white">
@@ -871,39 +1141,39 @@ function App() {
       </section>
 
       {/* Demo Section */}
-      <section className="py-20 bg-gradient-to-br from-primary-50 to-accent-50">
+      <section className="py-12 sm:py-16 lg:py-20 bg-gradient-to-br from-primary-50 to-accent-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <motion.div
             initial={{ opacity: 0 }}
             whileInView={{ opacity: 1 }}
             transition={{ duration: 0.8 }}
             viewport={{ once: true }}
-            className="text-center mb-16"
+            className="text-center mb-8 sm:mb-12 lg:mb-16"
           >
-            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
+            <h2 className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-4 sm:mb-6">
               Erleben Sie unsere <span className="gradient-text">KI live</span>
             </h2>
-            <p className="text-xl text-gray-600 max-w-3xl mx-auto">
+            <p className="text-base sm:text-lg lg:text-xl text-gray-600 max-w-3xl mx-auto">
               Testen Sie jetzt unseren Voice-Agent und erleben Sie, wie natürlich und effizient KI-basierter Kundenservice funktioniert
             </p>
           </motion.div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-12 items-center">
             <motion.div
               initial={{ opacity: 0, x: -50 }}
               whileInView={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.8 }}
               viewport={{ once: true }}
-              className="bg-white p-8 rounded-2xl shadow-xl"
+              className="bg-white p-4 sm:p-6 lg:p-8 rounded-2xl shadow-xl"
             >
-              <h3 className="text-2xl font-bold text-gray-900 mb-6 text-center">
+              <h3 className="text-xl sm:text-2xl font-bold text-gray-900 mb-4 sm:mb-6 text-center">
                 🎙️ Voice-Agent Demo
               </h3>
               
-              <div className="space-y-6">
+              <div className="space-y-4 sm:space-y-6">
                 {/* Audio Visualizer */}
                 <div className="flex flex-col items-center">
-                  <div className={`w-40 h-40 rounded-full flex items-center justify-center shadow-lg transition-all duration-300 ${
+                  <div className={`w-28 h-28 sm:w-36 sm:h-36 lg:w-40 lg:h-40 rounded-full flex items-center justify-center shadow-lg transition-all duration-300 ${
                     isRecording 
                       ? 'bg-gradient-to-br from-red-500 to-red-600 animate-pulse' 
                       : isProcessing
@@ -915,18 +1185,18 @@ function App() {
                       : 'bg-gradient-to-br from-gray-400 to-gray-500'
                   }`}>
                     {isProcessing ? (
-                      <Loader className="h-20 w-20 text-white animate-spin" />
+                      <Loader className="h-12 w-12 sm:h-16 sm:w-16 lg:h-20 lg:w-20 text-white animate-spin" />
                     ) : isRecording ? (
-                      <Mic className="h-20 w-20 text-white animate-pulse" />
+                      <Mic className="h-12 w-12 sm:h-16 sm:w-16 lg:h-20 lg:w-20 text-white animate-pulse" />
                     ) : isPlayingResponse ? (
-                      <Volume2 className="h-20 w-20 text-white animate-pulse" />
+                      <Volume2 className="h-12 w-12 sm:h-16 sm:w-16 lg:h-20 lg:w-20 text-white animate-pulse" />
                     ) : (
-                      <Bot className="h-20 w-20 text-white" />
+                      <Bot className="h-12 w-12 sm:h-16 sm:w-16 lg:h-20 lg:w-20 text-white" />
                     )}
                   </div>
                   
                   {/* Audio Wellen Visualisierung */}
-                  <div className="mt-6 w-full">
+                  <div className="mt-4 sm:mt-6 w-full">
                     <AudioVisualizer 
                       isRecording={isRecording}
                       isProcessing={isProcessing}
@@ -936,9 +1206,9 @@ function App() {
                   </div>
 
                   {/* Status Text */}
-                  <div className="mt-4 text-center">
-                    <div className={`text-lg font-medium ${
-                      isRecording 
+                  <div className="text-center mb-4 sm:mb-6 lg:mb-8">
+                    <div className={`text-lg sm:text-xl lg:text-2xl font-bold mb-2 ${
+                      isRecording || isListening
                         ? 'text-red-600' 
                         : isProcessing 
                         ? 'text-orange-600'
@@ -948,7 +1218,20 @@ function App() {
                         ? 'text-primary-600'
                         : 'text-gray-500'
                     }`}>
-                      {isRecording 
+                      {conversationMode ? (
+                        // Gespräch-Modus Status
+                        isListening
+                          ? isSpeechDetected
+                            ? '🎤 Nehme auf...'
+                            : '👂 Höre zu...'
+                          : isProcessing 
+                            ? '🧠 Denkt nach...'
+                            : isPlayingResponse
+                              ? '🔊 Spricht...'
+                              : '💬 Bereit für Gespräch'
+                      ) : (
+                        // Klassischer Modus Status
+                        isRecording 
                         ? '🎤 Hört zu...' 
                         : isProcessing 
                         ? '🧠 Denkt nach...'
@@ -957,10 +1240,23 @@ function App() {
                         : !wsConnected
                         ? '🔄 Verbinde...'
                         : '🤖 Bereit zum Sprechen'
-                      }
+                      )}
                     </div>
                     <div className="text-sm text-gray-500 mt-1">
-                      {isRecording 
+                      {conversationMode ? (
+                        // Gespräch-Modus Beschreibung
+                        isListening
+                          ? isSpeechDetected
+                            ? 'Ihre Worte werden aufgenommen...'
+                            : 'Sprechen Sie einfach - ich höre automatisch zu'
+                          : isProcessing 
+                            ? 'KI verarbeitet Ihre Anfrage...'
+                            : isPlayingResponse
+                              ? 'KI-Agent antwortet...'
+                              : 'Klicken Sie "Gespräch starten" für natürliche Unterhaltung'
+                      ) : (
+                        // Klassischer Modus Beschreibung
+                        isRecording 
                         ? 'Sprechen Sie deutlich ins Mikrofon' 
                         : isProcessing 
                         ? 'KI verarbeitet Ihre Anfrage...'
@@ -969,19 +1265,101 @@ function App() {
                         : !wsConnected
                         ? 'Verbindung wird hergestellt...'
                         : 'Klicken Sie den Button, um zu sprechen'
-                      }
+                      )}
                     </div>
                   </div>
                 </div>
                 
-                {/* Voice Control Button */}
+                {/* Deutsche Stimmenauswahl für Bella Vista */}
+                <div className="mb-4 sm:mb-6">
+                  <h4 className="text-base sm:text-lg font-semibold text-gray-700 mb-2 sm:mb-3 text-center">
+                    🗣️ Deutsche Stimme wählen
+                  </h4>
+                  <div className="grid grid-cols-2 gap-1.5 sm:gap-2">
+                    {Object.entries(germanVoices).map(([voiceKey, voice]) => (
+                      <button
+                        key={voiceKey}
+                        onClick={() => setSelectedVoice(voiceKey as keyof typeof germanVoices)}
+                        className={`p-2 sm:p-3 rounded-lg border-2 transition-all text-left ${
+                          selectedVoice === voiceKey
+                            ? 'bg-primary-50 border-primary-300 text-primary-700'
+                            : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
+                        }`}
+                      >
+                        <div className="font-medium text-sm sm:text-base">{voice.name}</div>
+                        <div className="text-xs opacity-75">{voice.gender}</div>
+                        <div className="text-xs opacity-60 hidden sm:block">{voice.description}</div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="text-center mt-1 sm:mt-2">
+                    <span className="text-xs sm:text-sm text-gray-500">
+                      Aktuell: <strong>{germanVoices[selectedVoice].name}</strong> ({germanVoices[selectedVoice].gender})
+                    </span>
+                  </div>
+                </div>
+                
+                {/* Voice Control Buttons */}
                 <div className="text-center">
+                  {/* Mode Selection */}
+                  <div className="mb-4 sm:mb-6">
+                    <div className="flex justify-center gap-1.5 sm:gap-2 mb-3 sm:mb-4">
+                      <button 
+                        onClick={() => setConversationMode(false)}
+                        className={`px-3 sm:px-4 py-2 rounded-lg font-medium transition-all text-sm sm:text-base ${
+                          !conversationMode 
+                            ? 'bg-primary-100 text-primary-700 border-2 border-primary-300' 
+                            : 'bg-gray-100 text-gray-600 border-2 border-gray-200'
+                        }`}
+                      >
+                        📝 Klassisch
+                      </button>
+                      <button 
+                        onClick={() => setConversationMode(true)}
+                        className={`px-3 sm:px-4 py-2 rounded-lg font-medium transition-all text-sm sm:text-base ${
+                          conversationMode 
+                            ? 'bg-green-100 text-green-700 border-2 border-green-300' 
+                            : 'bg-gray-100 text-gray-600 border-2 border-gray-200'
+                        }`}
+                      >
+                        💬 Gespräch
+                      </button>
+                    </div>
+                    <div className="text-xs sm:text-sm text-gray-600 text-center">
+                      {conversationMode 
+                        ? 'Kontinuierliches Gespräch wie am Telefon' 
+                        : 'Aufnehmen → Stoppen → Antwort'
+                      }
+                    </div>
+                  </div>
+
+                  {/* Voice Control Button(s) */}
+                  {conversationMode ? (
+                    // Kontinuierlicher Gesprächsmodus
+                    <motion.button 
+                      onClick={isListening ? stopConversationMode : startConversationMode}
+                      disabled={isProcessing}
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      className={`px-6 sm:px-8 lg:px-12 py-3 sm:py-4 rounded-xl sm:rounded-2xl font-bold text-base sm:text-lg lg:text-xl transition-all shadow-xl ${
+                        isListening 
+                          ? 'bg-gradient-to-r from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800' 
+                          : 'bg-gradient-to-r from-green-600 to-green-700 text-white hover:from-green-700 hover:to-green-800'
+                      }`}
+                    >
+                      {isListening 
+                        ? '🔴 Gespräch beenden' 
+                        : '🎯 Gespräch starten'
+                      }
+                    </motion.button>
+                  ) : (
+                    // Klassischer Aufnahme-Modus
                   <motion.button 
                     onClick={isRecording ? stopRecording : startRecording}
                     disabled={isProcessing || !wsConnected}
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
-                    className={`px-12 py-4 rounded-2xl font-bold text-xl transition-all shadow-xl ${
+                    className={`px-6 sm:px-8 lg:px-12 py-3 sm:py-4 rounded-xl sm:rounded-2xl font-bold text-base sm:text-lg lg:text-xl transition-all shadow-xl ${
                       isRecording 
                         ? 'bg-gradient-to-r from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800' 
                         : isProcessing
@@ -1000,19 +1378,33 @@ function App() {
                       : '🎤 Sprechen'
                     }
                   </motion.button>
+                  )}
+                  
+                  {/* Status Indicators */}
+                  <div className="mt-3 sm:mt-4 space-y-2">
+                    {/* Voice Activity Indicator */}
+                    {isListening && (
+                      <div className="flex justify-center items-center space-x-2">
+                        <div className={`w-3 h-3 rounded-full ${isSpeechDetected ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}></div>
+                        <span className={`text-xs sm:text-sm font-medium ${isSpeechDetected ? 'text-red-600' : 'text-green-600'}`}>
+                          {isSpeechDetected ? '🎤 Nehme auf...' : '👂 Höre zu...'}
+                        </span>
+                      </div>
+                    )}
                   
                   {/* Connection Status */}
-                  <div className="mt-3 flex items-center justify-center text-sm">
+                    <div className="flex items-center justify-center text-xs sm:text-sm">
                     <div className={`w-2 h-2 rounded-full mr-2 ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
                     <span className={wsConnected ? 'text-green-600' : 'text-red-600'}>
                       {wsConnected ? 'KI-Agent verbunden' : 'Verbindung unterbrochen'}
                     </span>
+                    </div>
                   </div>
                 </div>
               </div>
               
-              <div className="mt-8 space-y-4">
-                <h4 className="font-semibold text-gray-900">Demo-Szenarien:</h4>
+              <div className="mt-6 sm:mt-8 space-y-3 sm:space-y-4">
+                <h4 className="font-semibold text-gray-900 text-sm sm:text-base">Demo-Szenarien:</h4>
                 <div className="grid grid-cols-1 gap-2">
                   {[
                     "Tischreservierung für 4 Personen",
@@ -1020,9 +1412,9 @@ function App() {
                     "Öffnungszeiten und Anfahrt",
                     "Stornierung einer Reservierung"
                   ].map((scenario, index) => (
-                    <div key={index} className="flex items-center p-3 bg-gray-50 rounded-lg">
-                      <CheckCircle className="h-5 w-5 text-green-500 mr-3 flex-shrink-0" />
-                      <span className="text-sm text-gray-700">{scenario}</span>
+                    <div key={index} className="flex items-center p-2 sm:p-3 bg-gray-50 rounded-lg">
+                      <CheckCircle className="h-4 w-4 sm:h-5 sm:w-5 text-green-500 mr-2 sm:mr-3 flex-shrink-0" />
+                      <span className="text-xs sm:text-sm text-gray-700">{scenario}</span>
                     </div>
                   ))}
                 </div>
@@ -1032,10 +1424,11 @@ function App() {
                   <div className="mt-8 p-6 bg-gray-50 rounded-xl">
                     <h4 className="font-semibold text-gray-900 mb-4 flex items-center">
                       <Volume2 className="h-5 w-5 mr-2" />
-                      Live Demo Gespräch
+                      {conversationMode ? 'Live Gespräch' : 'Live Demo Chat'}
                     </h4>
                     
                     <div className="space-y-4">
+                      {/* Aktuelle Interaktion */}
                       {transcript && (
                         <div className="bg-blue-100 p-3 rounded-lg">
                           <div className="text-sm font-medium text-blue-800 mb-1">Sie:</div>
@@ -1066,6 +1459,48 @@ function App() {
                     </div>
                   </div>
                 )}
+
+                {/* Konversations-Historie (nur im Gespräch-Modus) */}
+                {conversationMode && conversationHistory.length > 0 && (
+                  <div className="mt-8 p-6 bg-white border-2 border-green-200 rounded-xl">
+                    <h4 className="font-semibold text-gray-900 mb-4 flex items-center">
+                      <MessageCircle className="h-5 w-5 mr-2 text-green-600" />
+                      Gesprächsverlauf ({conversationHistory.length} Nachrichten)
+                    </h4>
+                    
+                    <div className="space-y-3 max-h-60 overflow-y-auto">
+                      {conversationHistory.map((exchange, index) => (
+                        <div key={index} className="border-l-4 border-gray-200 pl-4">
+                          <div className="text-xs text-gray-500 mb-1">
+                            {exchange.timestamp.toLocaleTimeString()}
+                          </div>
+                          <div className="bg-blue-50 p-2 rounded mb-2">
+                            <div className="text-sm font-medium text-blue-800">Sie:</div>
+                            <div className="text-blue-700 text-sm">{exchange.user}</div>
+                          </div>
+                          <div className="bg-green-50 p-2 rounded">
+                            <div className="text-sm font-medium text-green-800 flex items-center">
+                              <Bot className="h-3 w-3 mr-1" />
+                              KI-Agent:
+                            </div>
+                            <div className="text-green-700 text-sm">{exchange.ai}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    
+                    {conversationHistory.length > 0 && (
+                      <div className="mt-4 pt-4 border-t border-gray-200">
+                        <button 
+                          onClick={() => setConversationHistory([])}
+                          className="text-sm text-red-600 hover:text-red-700 transition-colors"
+                        >
+                          🗑️ Verlauf löschen
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </motion.div>
 
@@ -1074,48 +1509,48 @@ function App() {
               whileInView={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.8 }}
               viewport={{ once: true }}
-              className="space-y-8"
+              className="space-y-6 lg:space-y-8"
             >
-              <div className="bg-white p-6 rounded-xl shadow-lg">
-                <h4 className="text-xl font-bold text-gray-900 mb-4">
+              <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg">
+                <h4 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 sm:mb-4">
                   🚀 Unsere Technologie
                 </h4>
-                <div className="space-y-4">
+                <div className="space-y-3 sm:space-y-4">
                   <div className="flex items-center">
                     <div className="w-3 h-3 bg-blue-500 rounded-full mr-3"></div>
-                    <span className="text-gray-700"><strong>Deepgram:</strong> Präzise Spracherkennung</span>
+                    <span className="text-sm sm:text-base text-gray-700"><strong>Deepgram:</strong> Präzise Spracherkennung</span>
                   </div>
                   <div className="flex items-center">
                     <div className="w-3 h-3 bg-green-500 rounded-full mr-3"></div>
-                    <span className="text-gray-700"><strong>Gemini Flash:</strong> Blitzschnelle KI-Antworten</span>
+                    <span className="text-sm sm:text-base text-gray-700"><strong>Gemini Flash:</strong> Blitzschnelle KI-Antworten</span>
                   </div>
                   <div className="flex items-center">
                     <div className="w-3 h-3 bg-purple-500 rounded-full mr-3"></div>
-                    <span className="text-gray-700"><strong>smallest.ai:</strong> Natürliche Sprachsynthese</span>
+                    <span className="text-sm sm:text-base text-gray-700"><strong>smallest.ai:</strong> Natürliche Sprachsynthese</span>
                   </div>
                 </div>
               </div>
 
-              <div className="bg-white p-6 rounded-xl shadow-lg">
-                <h4 className="text-xl font-bold text-gray-900 mb-4">
+              <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg">
+                <h4 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 sm:mb-4">
                   ⚡ Performance
                 </h4>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-2 gap-3 sm:gap-4">
                   <div className="text-center">
-                    <div className="text-2xl font-bold text-green-600">~500ms</div>
-                    <div className="text-sm text-gray-600">Antwortzeit</div>
+                    <div className="text-xl sm:text-2xl font-bold text-green-600">~500ms</div>
+                    <div className="text-xs sm:text-sm text-gray-600">Antwortzeit</div>
                   </div>
                   <div className="text-center">
-                    <div className="text-2xl font-bold text-blue-600">99.9%</div>
-                    <div className="text-sm text-gray-600">Verfügbarkeit</div>
+                    <div className="text-xl sm:text-2xl font-bold text-blue-600">99.9%</div>
+                    <div className="text-xs sm:text-sm text-gray-600">Verfügbarkeit</div>
                   </div>
                   <div className="text-center">
-                    <div className="text-2xl font-bold text-purple-600">~€0.02</div>
-                    <div className="text-sm text-gray-600">pro Gespräch</div>
+                    <div className="text-xl sm:text-2xl font-bold text-purple-600">~€0.02</div>
+                    <div className="text-xs sm:text-sm text-gray-600">pro Gespräch</div>
                   </div>
                   <div className="text-center">
-                    <div className="text-2xl font-bold text-orange-600">24/7</div>
-                    <div className="text-sm text-gray-600">Betrieb</div>
+                    <div className="text-xl sm:text-2xl font-bold text-orange-600">24/7</div>
+                    <div className="text-xs sm:text-sm text-gray-600">Betrieb</div>
                   </div>
                 </div>
               </div>
