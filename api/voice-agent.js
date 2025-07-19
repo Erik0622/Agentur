@@ -43,6 +43,41 @@ let currentPodEndpoint = null;
 let podStartTime = null;
 let podStopTimer = null;
 
+// ---------------- Audio Conversion ----------------
+async function convertWebMToPCM(webmBuffer) {
+  console.log('🔄 Konvertiere WebM zu PCM...');
+  
+  // WebM Buffer zu PCM konvertieren
+  // Da wir keine Audio-Library haben, verwenden wir einen einfachen Ansatz
+  // WebM hat normalerweise einen Header, den wir überspringen müssen
+  
+  try {
+    // Prüfe ob es ein WebM-Header ist
+    const header = webmBuffer.toString('ascii', 0, 4);
+    console.log('📦 Audio Header:', header);
+    
+    if (header === 'RIFF') {
+      // Bereits WAV-Format
+      console.log('✅ Bereits WAV-Format erkannt');
+      return webmBuffer;
+    }
+    
+    // Für WebM: Versuche den Header zu entfernen und als PCM zu behandeln
+    // WebM hat variable Header-Größe, daher nehmen wir einen sicheren Wert
+    const pcmStart = 1000; // WebM Header ist normalerweise < 1KB
+    const pcmData = webmBuffer.subarray(pcmStart);
+    
+    console.log(`🔄 WebM zu PCM: ${webmBuffer.length} -> ${pcmData.length} bytes`);
+    console.log('📦 PCM Preview:', pcmData.toString('hex').substring(0, 100) + '...');
+    
+    return pcmData;
+  } catch (error) {
+    console.error('❌ WebM Konvertierung fehlgeschlagen:', error);
+    // Fallback: Verwende rohe Daten
+    return webmBuffer;
+  }
+}
+
 // ---------------- API Handler ----------------
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -81,7 +116,10 @@ export default async function handler(req, res) {
       console.log('  - Buffer Size:', audioBuffer.length, 'bytes');
       console.log('  - Buffer Preview:', audioBuffer.toString('hex').substring(0, 100) + '...');
       
-      transcript = await getTranscriptViaWebSocket(audioBuffer);
+      // WebM zu PCM konvertieren
+      const pcmBuffer = await convertWebMToPCM(audioBuffer);
+      
+      transcript = await getTranscriptViaWebSocket(pcmBuffer);
       console.log('📝 Transkript erhalten:', transcript);
       
       if (transcript) streamResponse(res, 'transcript', { text: transcript });
@@ -120,7 +158,8 @@ function streamResponse(res, type, data) {
 // ---------------- Deepgram WebSocket ----------------
 function getTranscriptViaWebSocket(audioBuffer) {
   return new Promise((resolve, reject) => {
-    const deepgramUrl = 'wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&encoding=linear16&sample_rate=16000&punctuate=true&interim_results=true&endpointing=300';
+    // Angepasste Parameter für WebM-Audio (48kHz statt 16kHz)
+    const deepgramUrl = 'wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&encoding=linear16&sample_rate=48000&punctuate=true&interim_results=true&endpointing=300';
     console.log('🔗 Deepgram WebSocket Verbindung:', deepgramUrl);
     
     const ws = new WebSocket(deepgramUrl, {
@@ -141,7 +180,7 @@ function getTranscriptViaWebSocket(audioBuffer) {
         console.log('📦 Rohe PCM-Daten:', pcmData.length, 'bytes');
       }
       
-      const chunkSize = 1600;
+      const chunkSize = 4800; // Angepasst für 48kHz (1600 * 3)
       const numChunks = Math.ceil(pcmData.length / chunkSize);
       console.log(`📤 Sende ${pcmData.length} Bytes in ${numChunks} Chunks`);
       

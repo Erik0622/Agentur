@@ -43,6 +43,7 @@ function App() {
   
   // Deutsche Stimmenauswahl für Bella Vista (nur geklonte deutsche Stimmen)
   const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('bella_vista_german_voice');
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const germanVoices = {
     'bella_vista_german_voice': { name: 'Bella Vista Original', gender: 'Weiblich', description: 'Authentische deutsche Stimme (geklont, Standard)' }
   } as const;
@@ -347,69 +348,58 @@ function App() {
   // Voice Recording Functions (Original)
   const startRecording = async () => {
     try {
-      // Start-Signal an Server senden
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: 'start_recording'
-        }));
-      }
-
+      setIsRecording(true);
+      setTranscript('');
+      setAiResponse('');
+      
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 16000, // Optimiert für Deepgram
-          channelCount: 1 // Mono
+          sampleRate: 48000,        // 48kHz für bessere Qualität
+          channelCount: 1,          // Mono für bessere Erkennung
+          echoCancellation: true,   // Echo-Cancellation aktivieren
+          noiseSuppression: true,   // Rauschunterdrückung
+          autoGainControl: true     // Automatische Verstärkung
         } 
       });
       
       const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
+        mimeType: 'audio/webm;codecs=opus'  // WebM mit Opus Codec
       });
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
-
-      // Audio Visualisierung starten
-      startAudioVisualization(stream);
-
+      
+      const chunks: Blob[] = [];
+      
       mediaRecorder.ondataavailable = (event) => {
-        audioChunksRef.current.push(event.data);
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+        }
       };
-
-      mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        setAudioBlob(audioBlob);
-        processVoiceInput(audioBlob);
+      
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+        console.log('🎤 Audio aufgenommen:', audioBlob.size, 'bytes');
         
-        // Stream und Visualisierung stoppen
+        if (isDevelopment) {
+          await processVoiceInputWebSocket(audioBlob);
+        } else {
+          await processVoiceInputREST(audioBlob);
+        }
+        
         stream.getTracks().forEach(track => track.stop());
-        stopAudioVisualization();
       };
-
-      mediaRecorder.start(100); // Sammle Daten alle 100ms für Live-Streaming
-      setIsRecording(true);
-      setTranscript('');
-      setAiResponse('');
-      setVoiceMetrics(null);
+      
+      mediaRecorder.start();
+      setMediaRecorder(mediaRecorder);
+      
     } catch (error) {
-      console.error('Mikrofonzugriff fehlgeschlagen:', error);
-      alert('Mikrofonzugriff fehlgeschlagen. Bitte überprüfen Sie Ihre Browser-Einstellungen.');
+      console.error('Fehler beim Starten der Aufnahme:', error);
+      setIsRecording(false);
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      // Stop-Signal an Server senden
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: 'stop_recording'
-        }));
-      }
-
-      mediaRecorderRef.current.stop();
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
       setIsRecording(false);
-      setIsProcessing(true);
     }
   };
 
@@ -582,6 +572,46 @@ function App() {
       alert('Sprachverarbeitung fehlgeschlagen: ' + (error instanceof Error ? error.message : String(error)));
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  // WebSocket Version für Development
+  const processVoiceInputWebSocket = async (audioBlob: Blob) => {
+    try {
+      setTranscript('Verarbeite Audio...');
+      setAiResponse('');
+      
+      // WebSocket Verbindung herstellen
+      const ws = new WebSocket('ws://localhost:3001');
+      
+      ws.onopen = () => {
+        console.log('WebSocket verbunden');
+        // Audio-Daten senden
+        const reader = new FileReader();
+        reader.onload = () => {
+          ws.send(JSON.stringify({
+            type: 'audio',
+            data: reader.result
+          }));
+        };
+        reader.readAsDataURL(audioBlob);
+      };
+      
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'transcript') {
+          setTranscript(data.text);
+        } else if (data.type === 'response') {
+          setAiResponse(data.text);
+        }
+      };
+      
+      ws.onerror = (error) => {
+        console.error('WebSocket Fehler:', error);
+      };
+      
+    } catch (error) {
+      console.error('WebSocket Verarbeitung fehlgeschlagen:', error);
     }
   };
 
@@ -803,6 +833,9 @@ function App() {
       </div>
     );
   };
+
+  // Development-Modus Erkennung
+  const isDevelopment = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
   return (
     <div className="min-h-screen bg-white">
