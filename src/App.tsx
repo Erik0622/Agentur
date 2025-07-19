@@ -31,7 +31,6 @@ function App() {
   const [isPlayingResponse, setIsPlayingResponse] = useState(false);
   const [isListening, setIsListening] = useState(false); // Kontinuierliches Zuhören
   const [conversationMode, setConversationMode] = useState(true); // Standard: Gespräch-Modus
-  const [, setAudioBlob] = useState<Blob | null>(null);
   const [transcript, setTranscript] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
@@ -48,8 +47,6 @@ function App() {
     'bella_vista_german_voice': { name: 'Bella Vista Original', gender: 'Weiblich', description: 'Authentische deutsche Stimme (geklont, Standard)' }
   } as const;
   
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -403,37 +400,7 @@ function App() {
     }
   };
 
-  const processVoiceInput = async (audioBlob: Blob) => {
-    const isProduction = window.location.hostname !== 'localhost';
-    
-    if (isProduction) {
-      // Production: REST API verwenden
-      return await processVoiceInputREST(audioBlob);
-    }
-    
-    // Development: WebSocket verwenden
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      alert('Voice Agent nicht verbunden. Bitte warten Sie einen Moment.');
-      setIsProcessing(false);
-      return;
-    }
 
-    try {
-      // Audio zu Base64 konvertieren
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-
-      // An Backend senden mit korrektem Message-Type
-      wsRef.current.send(JSON.stringify({
-        type: 'audio_data',
-        audio: base64Audio
-      }));
-    } catch (error) {
-      console.error('Audio-Verarbeitung fehlgeschlagen:', error);
-      setIsProcessing(false);
-      alert('Audio-Verarbeitung fehlgeschlagen.');
-    }
-  };
 
   // Voice-Mapping: Frontend-Namen zu API-Voice-IDs (nur deutsche geklonte Stimmen)
   const getApiVoiceId = (frontendVoiceKey: string): string => {
