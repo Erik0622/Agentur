@@ -33,6 +33,9 @@ let podStopTimer = null;
 
 // ---------------- API Handler ----------------
 export default async function handler(req, res) {
+  console.log('--- API Request ---');
+  console.log('Headers:', req.headers);
+  console.log('Body:', req.body);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Bypass-Stt, X-Simulated-Transcript');
