@@ -1,433 +1,506 @@
-import express from 'express';
-import cors from 'cors';
-import { WebSocketServer } from 'ws';
-import { createServer } from 'http';
-import { v4 as uuidv4 } from 'uuid';
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import fetch from 'node-fetch';
+// voice.js  (bereinigte Version)
+// Achtung: API Keys im echten Betrieb rotieren!
 
-const app = express();
-const server = createServer(app);
-const wss = new WebSocketServer({ server });
+import { request, Agent } from 'undici';
+import WebSocket from 'ws';
+import { createSign } from 'crypto';
 
-app.use(cors());
-app.use(express.json());
-
-// API Keys
-const DEEPGRAM_API_KEY = '3e69806feb52b90f01f2e47f9e778fc87b6d811a';
-const GEMINI_API_KEY = 'AIzaSyDCqBRhKqrwXGfIbfmQVj3nRbQLDFsGqEI';
-const SMALLEST_API_KEY = 'sk-2ad79c9f-cf37-44b3-87dd-0b0b8eb66e5b';
-
-// Initialize Gemini AI
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-
-const clients = new Map();
-
-class VoiceAgent {
-  constructor(clientId, ws) {
-    this.clientId = clientId;
-    this.ws = ws;
-    this.deepgramSocket = null;
-    this.conversationHistory = [];
-    this.currentTranscript = '';
-    this.isProcessing = false;
-    this.startTime = Date.now();
-  }
-
-  sendToClient(data) {
-    if (this.ws && this.ws.readyState === 1) {
-      this.ws.send(JSON.stringify({
-        ...data,
-        timestamp: Date.now(),
-        latency: Date.now() - this.startTime
-      }));
-    }
-  }
-
-  async startDeepgramStream() {
-    try {
-      console.log('🎤 Starte Deepgram Stream für Client:', this.clientId);
-      
-          const deepgramUrl = `wss://api.deepgram.com/v1/listen?` + new URLSearchParams({
-      language: 'multi',
-<<<<<<< HEAD
-        model: 'nova-3',
-=======
-      model: 'nova-3',
->>>>>>> a761fbca09bf9c522e4c67323332cafd36812c46
-        punctuate: 'true',
-        interim_results: 'true',
-        endpointing: '300',
-        vad_events: 'true',
-        smart_format: 'true',
-        utterance_end_ms: '1000',
-        encoding: 'linear16',
-        sample_rate: '16000'
-      });
-
-      const headers = { 
-        Authorization: `Token ${DEEPGRAM_API_KEY}`,
-        'Content-Type': 'application/json'
-      };
-      
-      const WebSocketDG = (await import('ws')).WebSocket;
-      this.deepgramSocket = new WebSocketDG(deepgramUrl, { headers });
-
-      this.deepgramSocket.on('open', () => {
-        console.log('✅ Deepgram WebSocket verbunden');
-        this.sendToClient({
-          type: 'status',
-          message: 'Spracherkennung bereit - sprechen Sie jetzt!'
-        });
-      });
-
-      this.deepgramSocket.on('message', async (msg) => {
-        try {
-          const data = JSON.parse(msg);
-          
-          if (data.channel && data.channel.alternatives && data.channel.alternatives[0]) {
-            const transcript = data.channel.alternatives[0].transcript;
-            const isFinal = data.is_final;
-            const confidence = data.channel.alternatives[0].confidence;
-            
-            if (transcript && transcript.trim()) {
-              this.currentTranscript = transcript;
-              
-              this.sendToClient({
-                type: 'transcript',
-                text: transcript,
-                isFinal: isFinal,
-                confidence: confidence || 0,
-                partial: !isFinal
-              });
-
-              if (isFinal && transcript.length > 2 && !this.isProcessing) {
-                this.isProcessing = true;
-                console.log('🤖 Verarbeite:', transcript);
-                this.processWithGemini(transcript);
-              }
-            }
-          }
-
-          if (data.type === 'UtteranceEnd') {
-            console.log('🔚 Satzende erkannt');
-            this.sendToClient({
-              type: 'utterance_end',
-              message: 'Satzende erkannt'
-            });
-          }
-
-        } catch (e) { 
-          console.error('❌ Deepgram Parse-Fehler:', e); 
-        }
-      });
-
-      this.deepgramSocket.on('close', (code, reason) => {
-        console.log('🔌 Deepgram WebSocket geschlossen:', code, reason.toString());
-      });
-
-      this.deepgramSocket.on('error', (err) => {
-        console.error('❌ Deepgram Fehler:', err);
-        this.sendToClient({
-          type: 'error',
-          message: 'Spracherkennung Fehler'
-        });
-      });
-
-    } catch (error) {
-      console.error('❌ Deepgram Setup Fehler:', error);
-      this.sendToClient({
-        type: 'error',
-        message: 'Spracherkennung konnte nicht gestartet werden'
-      });
-    }
-  }
-
-  async processWithGemini(transcript) {
-    try {
-      const processingStart = Date.now();
-      
-      const systemPrompt = `Du bist ein freundlicher Telefonassistent für das Restaurant "Bella Vista". 
-
-Deine Hauptaufgaben:
-- Tischreservierungen entgegennehmen 
-- Informationen über Öffnungszeiten geben
-- Fragen zur Speisekarte beantworten
-- Bei Reservierungen: Name, Datum, Uhrzeit, Personenzahl erfragen
-
-Öffnungszeiten:
-• Montag-Freitag: 17:00-23:00 Uhr
-• Samstag: 17:00-24:00 Uhr  
-• Sonntag: 17:00-22:00 Uhr
-
-WICHTIG: Antworte SEHR KURZ und natürlich (max. 20 Wörter). Sei freundlich aber effizient.`;
-
-      this.conversationHistory.push(`Kunde: ${transcript}`);
-      const context = this.conversationHistory.slice(-8).join('\n');
-
-      const model = genAI.getGenerativeModel({ 
-        model: "models/gemini-2.5-flash-lite-preview-0617",
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 50,
-          topP: 0.8,
-          topK: 40
-        }
-      });
-
-      const fullPrompt = `${systemPrompt}\n\nAktuelles Gespräch:\n${context}\n\nAssistant:`;
-
-      this.sendToClient({
-        type: 'ai_thinking',
-        message: 'KI überlegt...'
-      });
-
-      const result = await model.generateContentStream(fullPrompt);
-      let fullResponse = '';
-      let firstChunk = true;
-
-      for await (const chunk of result.stream) {
-        const chunkText = chunk.text();
-        if (chunkText) {
-          fullResponse += chunkText;
-          
-          this.sendToClient({
-            type: 'llm_chunk',
-            text: chunkText,
-            isFirst: firstChunk
-          });
-          firstChunk = false;
-        }
+// ---------------- Configuration ----------------
+let config;
+try {
+  config = await import('../config.js').then(m => m.config);
+} catch {
+  config = {
+    DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY || "ac6a04eb0684c7bd7c61e8faab45ea6b1ee47681",
+    RUNPOD_API_KEY: process.env.RUNPOD_API_KEY || "rpa_6BJIJQF8T0JDF8CV2PMGDDM3NMU4EQFGY5FQJYEGcd95ru",
+    RUNPOD_POD_ID: process.env.RUNPOD_POD_ID || "1qk7cgnywlip7f",
+    SERVICE_ACCOUNT_JSON: process.env.GOOGLE_SERVICE_ACCOUNT_JSON ?
+      JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON) :
+      {
+        "type": "service_account",
+        "project_id": "gen-lang-client-0449145483",
+        "private_key_id": "1e6ef13b66c6482c0b9aef385d6d95f042717a0b",
+        "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCdfC/EouuNEeSm\n2FXhptXiwm7P7qkQk4afQjXgaJ8cMSJgE0DKWbhingFQEBxJgSncPfmbRQpXiGFO\nEWngJFyObbXMyTrbBU2h2Q4se+n+T44Vu3mcYcPFVbPFT1iIbOi70RUG2ek1ea+w\nw3y+ayh0o7v9/Jo5ShelS5gInjsbuOkmT7DV0kbWn1kx0uA1ss3L7fBwCt9WfJSV\nlZrpliVrZRdIolBV14ieW3scaL2E57KR/gvnjoo3g7G+y4xXCT7h4BysyH3SLMcU\nVcj52uKgcOp9Akn4/Z2dXZVErpjH/FwWAQ0yLz40HwggIItoRRqxQgg0nYBd1Gth\nDDftRBBZAgMBAAECggEADBZJ/Eec2Jj0+bFE9iq948eUhbUFmNYZ0QNd6zlcbOeA\nges4X89/DWKfKyvxX9rgAZ1oGPi1kH5RKZLAk4l26R+Wgn83WzQO/0sPgW6JSRGG\nEDjxXoVKZ0zqnUw3uVDSlAe6G2qCMa6DQ4fdfSfwVPN0LExE8fyzz+X7Zz3tv3TU\n4tjnIVV6CPGsysYD5KRF68w1qgQb4K4pTTOoiaCM1mJYFp8jCd7y5HFjM2+2bq0i\nyVNLxnJ7kcm0spUuHZwINImEZ3RV6tuXwljM088ph9voX2ZE8dcwtcBvo8rgGEJE\nMkIc0N5iiTqCINcFgtV5dCGuzHnkIvSFYXFNY+zI4QKBgQDTqPimyLQrx9tyOYb1\nxzT17ekvj0VAluYUMgwgFgncMFnm3i0wHUMp/a3OOmJasko5/Z3RhCRPO6PhB2e8\nIDL1A9VxaFCVrSARVA5oFZTVBZG6O1iH7BRgqGMusHY58wFF/wpl5J/s/wY9CpYU\nz1tB5wEkoFNUx3AoqND4cuyBnQKBgQC+eePQoUq4tTSYq8/M+yfnigkoYt7EeNel\nxyPOOmbN0IMSpOyKvjrBmQes10pjT9aAFql12Km+/aQ+bjWq0T5tqw8znZkfQPb/\nWQk6LkZkYRWIPNiqU/P/7+6fxd38wEyYqJuzd73Db0RkT2aDiCt8fLvnpIp4SyLL\nBG/Uo3S67QKBgQCf9CcNK8n0+BFgDhdu7/+XBxddKMGmISN5CaVeLil/bE7UiPzP\nSp3yQtKxci/X6LrtfjthFaK2+hRLv+PmKNM5lI8eKD4WDwKX9dT5Va3nGlFZ0vWB\nqqhvr3Fc3GBMRNemhSnffNpbKRMW2EQ5L8cAU8nqWvr+q8WYBJP/3iHbhQKBgEuq\n+nCgEqIMAmgAIR4KTFD0Ci1MEbk1VF3cHYJIuxxaECfw8rMvXQIZu+3S3Q9U4R6j\nYhCZ0N05v+y5NYK1ezpv8SsNGY5L7ZOFGGBPj9FCrB4iJeSMU2tCMqawIT7OWd9v\nY+NI107zPdUnoc7w4m2i07bzK7scBidmjNKJWM8FAoGADZ8Ew7y19Zzn7+vp8GEq\nLcZ+dtgT9diJH65fllnuX8pLmT8/qgX2UrzioPQ8ibdsHxg7JzJ56kYD+3+rH3H/\nx9B6GEDHKQoyKEPP/mO1K2TKYgyNcOuV/DvOaHa79fIUdZVuKAN1VPDOF/1rrRUu\ns1Ic6uppkG5eB+SXKwU9O5M=\n-----END PRIVATE KEY-----\n",
+        "client_email": "erik86756r75@gen-lang-client-0449145483.iam.gserviceaccount.com",
+        "client_id": "115562603227493619457",
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/erik86756r75%40gen-lang-client-0449145483.iam.gserviceaccount.com",
+        "universe_domain": "googleapis.com"
       }
+  };
+}
 
-      const processingTime = Date.now() - processingStart;
-      console.log(`⚡ Gemini 2.5 Flash-Lite Response in ${processingTime}ms:`, fullResponse.substring(0, 50));
+const { DEEPGRAM_API_KEY, RUNPOD_API_KEY, RUNPOD_POD_ID, SERVICE_ACCOUNT_JSON } = config;
 
-      if (fullResponse.trim()) {
-        this.conversationHistory.push(`Assistant: ${fullResponse}`);
-        this.generateSpeech(fullResponse, processingTime);
-      } else {
-        this.isProcessing = false;
-      }
+// ---------------- HTTP Agents ----------------
+const geminiAgent = new Agent({ keepAliveTimeout: 30_000, keepAliveMaxTimeout: 120_000, keepAliveTimeoutThreshold: 1000, connections: 10, pipelining: 1 });
+const runpodAgent = new Agent({ keepAliveTimeout: 15_000, keepAliveMaxTimeout: 60_000, connections: 5, pipelining: 1 });
+const tokenAgent  = new Agent({ keepAliveTimeout: 60_000, keepAliveMaxTimeout: 300_000, connections: 2, pipelining: 1 });
 
-    } catch (error) {
-      console.error('❌ Gemini Fehler:', error);
-      this.sendToClient({
-        type: 'error',
-        message: 'KI-Verarbeitung fehlgeschlagen'
-      });
-      this.isProcessing = false;
-    }
-  }
+// ---------------- Pod State ----------------
+let currentPodEndpoint = null;
+let podStartTime = null;
+let podStopTimer = null;
 
-  async generateSpeech(text, geminiTime = 0) {
-    try {
-      const ttsStart = Date.now();
-      console.log('🔊 Generiere deutsche Sprache mit Lightning v2:', text.substring(0, 30) + '...');
+// ---------------- API Handler ----------------
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Bypass-Stt, X-Simulated-Transcript');
+
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  const { audio, voice = 'german_m2', detect = false } = req.body || {}; // L120 // CHANGED: detect flag optional
+  
+  console.log('🔍 API Request Debug:');
+  console.log('  - Audio vorhanden:', !!audio);
+  console.log('  - Audio Länge (Base64 chars):', audio ? audio.length : 'N/A');
+  console.log('  - Voice:', voice);
+  console.log('  - Content-Type:', req.headers['content-type']);
+  
+  if (!audio) return res.status(400).json({ error: 'Missing audio data' });
+
+  try {
+    res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Transfer-Encoding': 'chunked'
+    });
+
+    let transcript;
+    if (req.headers['x-bypass-stt'] === 'true' && req.headers['x-simulated-transcript']) {
+      transcript = req.headers['x-simulated-transcript'];
+      streamResponse(res, 'transcript', { text: transcript });
+    } else {
+      const audioBuffer = Buffer.from(audio, 'base64');
+      console.log('🎤 Audio Buffer Debug:');
+      console.log('  - Buffer Size (bytes):', audioBuffer.length);
+      console.log('  - Hex Preview:', audioBuffer.toString('hex').substring(0, 60), '...');
       
-      const response = await fetch('https://waves-api.smallest.ai/api/v1/lightning-v2/get_speech', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${SMALLEST_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          voice_id: 'de-DE-Standard-A',
-          text: text,
-          language: 'de',
-          response_format: 'mp3',
-          speed: 1.2
-        })
-      });
-
-      const ttsTime = Date.now() - ttsStart;
-
-      if (response.ok) {
-        const audioBuffer = await response.arrayBuffer();
-        const base64Audio = Buffer.from(audioBuffer).toString('base64');
-        
-        console.log(`🎵 TTS in ${ttsTime}ms, Audio: ${(audioBuffer.byteLength / 1024).toFixed(1)}KB`);
-        
-        this.sendToClient({
-          type: 'voice_response',
-          transcript: this.currentTranscript,
-          response: text,
-          audio: base64Audio,
-          format: 'mp3',
-          metrics: {
-            gemini_time: geminiTime,
-            tts_time: ttsTime,
-            total_time: Date.now() - this.startTime,
-            audio_size: audioBuffer.byteLength
-          }
-        });
-      } else {
-        const errorText = await response.text();
-        console.error('❌ TTS Fehler:', response.status, errorText);
-        
-        this.sendToClient({
-          type: 'voice_response',
-          transcript: this.currentTranscript,
-          response: text,
-          audio: null,
-          error: 'TTS fehlgeschlagen'
-        });
-      }
-
-    } catch (error) {
-      console.error('❌ TTS Fehler:', error);
+      transcript = await getTranscriptViaWebSocket(audioBuffer, { detect }); // L147 // CHANGED (pass detect)
+      console.log('📝 Transkript erhalten:', transcript);
       
-      this.sendToClient({
-        type: 'voice_response',
-        transcript: this.currentTranscript,
-        response: text,
-        audio: null,
-        error: error.message
-      });
-    } finally {
-      this.isProcessing = false;
-      this.startTime = Date.now();
+      if (transcript) streamResponse(res, 'transcript', { text: transcript });
     }
-  }
 
-  async handleAudioChunk(chunk) {
-    if (!this.deepgramSocket || this.deepgramSocket.readyState !== 1) {
-      return;
+    if (!transcript || transcript.trim().length === 0) {
+      console.log('❌ Kein Transkript - sende Error');
+      streamResponse(res, 'error', { message: 'No speech detected.' });
+      streamResponse(res, 'end', {});
+      return res.end();
     }
-    
-    try {
-      this.deepgramSocket.send(chunk);
-    } catch (error) {
-      console.error('❌ Audio-Chunk Fehler:', error);
-    }
-  }
 
-  async endDeepgramStream() {
-    if (this.deepgramSocket) {
-      try {
-        this.deepgramSocket.send(JSON.stringify({type: 'CloseStream'}));
-      } catch (e) {}
-      
-      this.deepgramSocket.close(1000, 'Stream beendet');
-      this.deepgramSocket = null;
-      console.log('🛑 Deepgram Stream beendet für Client:', this.clientId);
-    }
-  }
+    await processAndStreamLLMResponse(transcript, voice, res);
 
-  resetConversation() {
-    this.conversationHistory = [];
-    this.currentTranscript = '';
-    this.isProcessing = false;
-    console.log('🔄 Conversation reset für Client:', this.clientId);
+    schedulePodStop();
+    streamResponse(res, 'end', {});
+  } catch (e) {
+    console.error('Pipeline Error', e);
+    streamResponse(res, 'error', { message: e.message || 'Internal error' });
+    streamResponse(res, 'end', {});
+  } finally {
+    if (!res.finished) res.end();
   }
 }
 
-wss.on('connection', (ws) => {
-  const clientId = uuidv4();
-  const agent = new VoiceAgent(clientId, ws);
-  clients.set(clientId, agent);
-  
-  console.log(`👤 Neuer Client verbunden: ${clientId} (Total: ${clients.size})`);
-  
-  ws.send(JSON.stringify({
-    type: 'connected',
-    clientId,
-    message: 'Voice Agent bereit! 🎙️ Drücken Sie auf das Mikrofon und sprechen Sie.',
-    version: '2.0.0'
-  }));
+// ---------------- Streaming Helpers ----------------
+function streamResponse(res, type, data) {
+  if (res.finished) return;
+  try {
+    res.write(JSON.stringify({ type, data }) + '\n');
+  } catch {
+    res.write(JSON.stringify({ type: 'error', data: { message: 'serialization' } }) + '\n');
+  }
+}
 
-  ws.on('message', async (data, isBinary) => {
-    try {
-      if (isBinary) {
-        await agent.handleAudioChunk(data);
-        return;
-      }
+// ---------------- Deepgram WebSocket ----------------
+function getTranscriptViaWebSocket(audioBuffer, { detect }) { // L184 // CHANGED signature
+  return new Promise((resolve, reject) => {
 
-      const message = JSON.parse(data);
-      
-      switch (message.type) {
-        case 'start_recording':
-          console.log('🎤 Start Recording für Client:', clientId);
-          agent.resetConversation();
-          await agent.startDeepgramStream();
-          break;
-          
-        case 'audio_data':
-          if (message.audio) {
-            const audioBuffer = Buffer.from(message.audio, 'base64');
-            await agent.handleAudioChunk(audioBuffer);
-          }
-          break;
-          
-        case 'stop_recording':
-          console.log('🛑 Stop Recording für Client:', clientId);
-          await agent.endDeepgramStream();
-          break;
-          
-        case 'reset_conversation':
-          agent.resetConversation();
-          agent.sendToClient({
-            type: 'conversation_reset',
-            message: 'Gespräch zurückgesetzt'
-          });
-          break;
-
-        case 'ping':
-          agent.sendToClient({ type: 'pong', timestamp: Date.now() });
-          break;
-          
-        default:
-          console.log('❓ Unbekannter Message-Type:', message.type);
-      }
-    } catch (error) {
-      console.error('❌ Message Handler Fehler:', error);
-      agent.sendToClient({
-        type: 'error',
-        message: 'Nachrichtenverarbeitung fehlgeschlagen'
-      });
+    // === Format-Erkennung (einmalig) ===
+    // L188 // NEW
+    let encoding; // was wir an Deepgram schicken
+    // EBML/WebM Header 1A 45 DF A3
+    if (audioBuffer.slice(0,4).toString('hex') === '1a45dfa3') {
+      encoding = 'webm'; // kompletter WebM Container
+    } else if (audioBuffer.slice(0,4).toString('ascii') === 'RIFF') {
+      encoding = 'linear16'; // wir erwarten rohen PCM Anteil (oder WAV -> linear16)
+    } else {
+      // Fallback: könnte ein bereits extrahierter Opus Frame Dump sein
+      encoding = 'opus';
     }
+    const sampleRate = 48000; // Für Opus/WebM Standard; für linear16 ggf. anpassen
+    const channels = 1;       // Dein Client scheint mono zu liefern; sonst dynamisch erkennen.
+
+    // Sprache / Detection Query zusammenbauen
+    // L202 // NEW
+    const langParams = detect
+      ? 'detect_language=true'  // automatische Erkennung
+      : 'language=de';          // feste Sprache (Deutsch)
+
+    const deepgramUrl =
+      `wss://api.deepgram.com/v1/listen?model=nova-3` +
+      `&encoding=${encodeURIComponent(encoding)}` +
+      `&sample_rate=${sampleRate}` +
+      `&channels=${channels}` +
+      `&${langParams}` +
+      `&punctuate=true&interim_results=true&endpointing=300`;
+
+    console.log('🔗 Deepgram WebSocket Verbindung:', deepgramUrl); // L212
+
+    const ws = new WebSocket(deepgramUrl, {
+      headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
+      perMessageDeflate: false
+    });
+
+    let finalTranscript = '';
+    let hasReceivedAnyData = false;
+
+    ws.on('open', () => {
+      console.log('✅ Deepgram WebSocket geöffnet (encoding=', encoding, ')');
+
+      // Statt einen großen Chunk → in kleinere Stücke streamen (simulate real-time)
+      // L222 // CHANGED
+      const CHUNK_MS = 100; // ~100ms
+      const bytesPerSecond = sampleRate * 2 * channels; // linear16: 2 Bytes, bei webm/opus nicht exakt, hier nur Chunking-Heuristik
+      const approxBytesPerChunk = Math.max(4000, Math.floor(bytesPerSecond * (CHUNK_MS / 1000)));
+
+      let offset = 0;
+      function sendNext() {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        const end = Math.min(offset + approxBytesPerChunk, audioBuffer.length);
+        const slice = audioBuffer.subarray(offset, end);
+        ws.send(slice);
+        offset = end;
+        if (offset < audioBuffer.length) {
+          setTimeout(sendNext, CHUNK_MS);
+        } else {
+          // Abschluss senden
+          ws.send(JSON.stringify({ type: 'CloseStream' }));
+          console.log('📤 Audio fertig gesendet (', audioBuffer.length, 'Bytes )');
+        }
+      }
+      sendNext();
+    });
+
+    ws.on('message', data => {
+      try {
+        const msg = JSON.parse(data.toString());
+        hasReceivedAnyData = true;
+        if (msg.channel?.alternatives?.[0]) {
+          const alt = msg.channel.alternatives[0];
+            const partial = alt.transcript;
+            if (partial) {
+              streamResponseOnActive?.('stt_partial', { text: partial }); // optional
+              if (msg.is_final) {
+                finalTranscript += partial + ' ';
+              }
+            }
+        }
+        if (msg.type === 'Metadata') {
+          console.log('ℹ️ Metadata:', msg);
+        }
+      } catch (e) {
+        console.warn('Deepgram Message Parse Error:', e);
+      }
+    });
+
+    ws.on('close', () => {
+      console.log('🔌 Deepgram WebSocket geschlossen, Final Transcript:', finalTranscript.trim());
+      if (!hasReceivedAnyData) {
+        console.warn('⚠️ Keine Daten erhalten - vermutlich Encoding-Mismatch');
+      }
+      resolve(finalTranscript.trim());
+    });
+
+    ws.on('error', (error) => {
+      console.error('❌ Deepgram WebSocket Error:', error);
+      reject(error);
+    });
+
+    setTimeout(() => {
+      if (ws.readyState !== WebSocket.CLOSED) {
+        console.log('⏰ Deepgram Timeout');
+        try { ws.terminate(); } catch {}
+        reject(new Error('Deepgram timeout'));
+      }
+    }, 20000); // etwas länger
+  });
+}
+
+// ---------------- LLM -> TTS Pipeline ----------------
+async function processAndStreamLLMResponse(transcript, voice, res) {
+  const geminiStream = getGeminiStream(transcript);
+
+  let sentenceBuffer = '';
+  const sentenceRegex = /[^.!?]+[.!?]+(\s|$)/g;
+
+  for await (const token of geminiStream) {
+    streamResponse(res, 'llm_chunk', { text: token });
+    sentenceBuffer += token;
+
+    let match;
+    while ((match = sentenceRegex.exec(sentenceBuffer)) !== null) {
+      const sentence = match[0].trim();
+      streamResponse(res, 'debug_sentence', { text: sentence });
+    }
+    if (sentenceRegex.lastIndex > 0) {
+      sentenceBuffer = sentenceBuffer.slice(sentenceRegex.lastIndex);
+      sentenceRegex.lastIndex = 0;
+    }
+  }
+
+  if (sentenceBuffer.trim()) {
+    streamResponse(res, 'debug_sentence', { text: sentenceBuffer.trim() });
+  }
+}
+
+// ---------------- Gemini Streaming ----------------
+async function* getGeminiStream(userTranscript) {
+  const accessToken = await generateAccessToken();
+  const endpoint =
+    `https://aiplatform.googleapis.com/v1beta1/projects/${SERVICE_ACCOUNT_JSON.project_id}` +
+    `/locations/global/publishers/google/models/gemini-2.5-flash-lite-preview-06-17:streamGenerateContent`;
+
+  const requestBody = {
+    contents: [{ role: 'user', parts: [{ text: `Du bist ein Telefonassistent. Antworte kurz und freundlich.\nKunde: ${userTranscript}` }] }],
+    generationConfig: { temperature: 0.7, maxOutputTokens: 200 }
+  };
+
+  const { body } = await request(endpoint, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody),
+    dispatcher: geminiAgent
   });
 
-  ws.on('close', (code, reason) => {
-    console.log(`👋 Client ${clientId} getrennt: ${code} ${reason} (Verbleibend: ${clients.size - 1})`);
-    clients.delete(clientId);
-    agent.endDeepgramStream();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  for await (const chunk of body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line) continue;
+      if (line.startsWith('data:')) {
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') return;
+        try {
+          const json = JSON.parse(payload.replace(/^\[/, '').replace(/\]$/, ''));
+          const content = json.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (content) yield content;
+        } catch {
+          // ignore partial fragments
+        }
+      }
+    }
+  }
+  if (buffer.startsWith('data:')) {
+    const payload = buffer.slice(5).trim();
+    try {
+      const json = JSON.parse(payload);
+      const content = json.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (content) yield content;
+    } catch {}
+  }
+}
+
+// ---------------- RunPod Pod Management ----------------
+async function ensurePodRunning() {
+  try {
+    const status = await getPodStatus();
+    if (status === 'STOPPED' || status === 'EXITED' || status === 'STARTING') {
+      await startPod();
+      await waitForPodReady();
+    }
+    if (!podStartTime) podStartTime = Date.now();
+  } catch (e) {
+    console.error('RunPod not available, fallback GCP TTS:', e.message);
+    currentPodEndpoint = null;
+    streamResponseOnActive('tts_engine', { engine: 'gcp', reason: 'runpod_unavailable' });
+  }
+}
+
+function streamResponseOnActive(type, data) {
+  // optional hook
+}
+
+async function getPodStatus() {
+  const { body, statusCode } = await request(`https://api.runpod.io/graphql`, {
+    method: 'POST',
+    headers: { Authorization: RUNPOD_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query: `query { pod(input: {podId: "${RUNPOD_POD_ID}"}) { id desiredStatus runtime { uptimeInSeconds ports { ip isIpPublic privatePort publicPort type } } } }`
+    }),
+    dispatcher: runpodAgent
   });
+  if (statusCode !== 200) throw new Error(`RunPod API ${statusCode}`);
+  const result = await body.json();
+  if (result.errors) throw new Error(result.errors[0].message);
+  const pod = result.data?.pod;
+  if (!pod) throw new Error('Pod not found');
 
-  ws.on('error', (error) => {
-    console.error(`❌ WebSocket Fehler für Client ${clientId}:`, error);
+  let podStatus = pod.desiredStatus;
+  if (pod.runtime?.uptimeInSeconds > 0) podStatus = 'RUNNING';
+  if (pod.desiredStatus === 'RUNNING' && !pod.runtime) podStatus = 'STARTING';
+  if (podStatus === 'EXITED') podStatus = 'STOPPED';
+
+  if (podStatus === 'RUNNING' && pod.runtime?.ports) {
+    const httpPort = pod.runtime.ports.find(p => p.isIpPublic && p.type === 'http' && p.privatePort === 8020);
+    if (httpPort) {
+      currentPodEndpoint = `https://${RUNPOD_POD_ID}-${httpPort.publicPort}.proxy.runpod.net`;
+    }
+  }
+  return podStatus;
+}
+
+async function startPod() {
+  const { body, statusCode } = await request(`https://api.runpod.io/graphql`, {
+    method: 'POST',
+    headers: { Authorization: RUNPOD_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query: `mutation { podResume(input: {podId: "${RUNPOD_POD_ID}", gpuCount: 1}) { id desiredStatus } }`
+    }),
+    dispatcher: runpodAgent
   });
-});
+  if (statusCode !== 200) throw new Error(`Start pod failed ${statusCode}`);
+  const result = await body.json();
+  if (result.errors || !result.data?.podResume) throw new Error('Pod resume error');
+}
 
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    memory: process.memoryUsage(),
-    clients: clients.size,
-    services: {
-      deepgram: '✅ Speech-to-Text (Nova-3)',
-      gemini: '✅ AI Chat (2.5-Flash-Lite)',
-      smallest_ai: '✅ Text-to-Speech (Lightning-v2)'
-    },
-    version: '2.0.0',
-    node_version: process.version
+async function waitForPodReady() {
+  const timeout = Date.now() + 120_000;
+  while (Date.now() < timeout) {
+    try {
+      const status = await getPodStatus();
+      if (status === 'RUNNING' && currentPodEndpoint) {
+        const { statusCode } = await request(`${currentPodEndpoint}/`, { method: 'GET', dispatcher: runpodAgent });
+        if (statusCode === 200) return;
+      }
+    } catch {}
+    await new Promise(r => setTimeout(r, 5000));
+  }
+  throw new Error('Pod readiness timeout');
+}
+
+async function stopPod() {
+  try {
+    const { body } = await request(`https://api.runpod.io/graphql`, {
+      method: 'POST',
+      headers: { Authorization: RUNPOD_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: `mutation { podStop(input: {podId: "${RUNPOD_POD_ID}"}) { id desiredStatus } }`
+      }),
+      dispatcher: runpodAgent
+    });
+    const result = await body.json();
+    if (result.data?.podStop) {
+      currentPodEndpoint = null;
+      podStartTime = null;
+    }
+  } catch (e) {
+    console.error('Stop pod error', e);
+  }
+}
+
+function schedulePodStop() {
+  if (podStopTimer) clearTimeout(podStopTimer);
+  podStopTimer = setTimeout(() => {
+    if (podStartTime && Date.now() - podStartTime > 5 * 60 * 1000) {
+      stopPod();
+    }
+  }, 5 * 60 * 1000);
+}
+
+// ---------------- TTS ----------------
+async function generateAndStreamSpeechXTTS(text, voice, res) {
+  if (!currentPodEndpoint) {
+    await generateAndStreamSpeechGCP(text, voice, res);
+    return;
+  }
+  try {
+    const endpoint = `${currentPodEndpoint}/api/tts`;
+    const reqBody = {
+      text,
+      speaker: voice || 'german_m2',
+      language: 'de',
+      stream_chunk_size: 180
+    };
+    const { body, statusCode } = await request(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(reqBody),
+      dispatcher: runpodAgent
+    });
+    if (statusCode !== 200) throw new Error(`XTTS ${statusCode}`);
+    const audioBuffer = Buffer.from(await body.arrayBuffer());
+    streamResponse(res, 'audio_chunk', {
+      base64: audioBuffer.toString('base64'),
+      format: 'wav'
+    });
+    streamResponse(res, 'tts_engine', { engine: 'xtts' });
+  } catch (e) {
+    streamResponse(res, 'tts_engine', { engine: 'gcp', reason: e.message });
+    await generateAndStreamSpeechGCP(text, voice, res);
+  }
+}
+
+async function generateAccessToken() {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iss: SERVICE_ACCOUNT_JSON.client_email,
+    scope: 'https://www.googleapis.com/auth/cloud-platform',
+    aud: SERVICE_ACCOUNT_JSON.token_uri,
+    exp: now + 3600,
+    iat: now
+  };
+  const header = { alg: 'RS256', typ: 'JWT' };
+  const toSign =
+    `${Buffer.from(JSON.stringify(header)).toString('base64url')}.` +
+    `${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
+  const signature = createSign('RSA-SHA256').update(toSign).sign(SERVICE_ACCOUNT_JSON.private_key, 'base64url');
+
+  const { body, statusCode } = await request(SERVICE_ACCOUNT_JSON.token_uri, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${toSign}.${signature}`,
+    dispatcher: tokenAgent
   });
-});
+  if (statusCode !== 200) throw new Error(`Token exchange failed ${statusCode}`);
+  return (await body.json()).access_token;
+}
 
-const PORT = process.env.PORT || 3001;
+async function generateAndStreamSpeechGCP(text, voice, res) {
+  try {
+    const accessToken = await generateAccessToken();
+    const reqBody = {
+      input: { text },
+      voice: { languageCode: 'de-DE', name: 'de-DE-Neural2-B', ssmlGender: 'MALE' },
+      audioConfig: { audioEncoding: 'MP3', effectsProfileId: ['telephony-class-application'] }
+    };
+    const { body, statusCode } = await request('https://texttospeech.googleapis.com/v1/text:synthesize', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(reqBody),
+      dispatcher: tokenAgent
+    });
+    if (statusCode !== 200) throw new Error(`GCP TTS ${statusCode}`);
+    const result = await body.json();
+    streamResponse(res, 'audio_chunk', { base64: result.audioContent, format: 'mp3' });
+    streamResponse(res, 'tts_engine', { engine: 'gcp' });
+  } catch (e) {
+    console.error('GCP TTS error', e);
+    streamResponse(res, 'audio_chunk', {
+      base64: 'SUQzBAAAAAAAI1RTU0UAAAAPAAADAE1wZWcgZ2VuZXJhdG9yAA==',
+      format: 'mp3'
+    });
+    streamResponse(res, 'tts_engine', { engine: 'silent', reason: e.message });
+  }
+}
 
-server.listen(PORT, () => {
-  console.log('\n🚀 VOICE AGENT SERVER GESTARTET 🚀');
-  console.log(`📡 Server: http://localhost:${PORT}`);
-  console.log(`🔗 WebSocket: ws://localhost:${PORT}`);
-  console.log('\n🔧 Services (NEUESTE MODELLE):');
-  console.log('   🎤 Deepgram Nova-3 - Deutsche Spracherkennung');
-  console.log('   🤖 Gemini 2.5 Flash-Lite - Ultraschnelle KI-Antworten');  
-  console.log('   🔊 Smallest.ai Lightning-v2 - Deutsche Sprachsynthese');
-  console.log('\n⚡ Optimiert für <500ms Latenz mit neuesten Modellen!');
-  console.log('📊 Health Check: http://localhost:' + PORT + '/health\n');
-});
-
-export default server; 
+export { processAndStreamLLMResponse, generateAndStreamSpeechGCP };
