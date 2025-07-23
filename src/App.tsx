@@ -410,138 +410,143 @@ function App() {
     return voiceMapping[frontendVoiceKey as keyof typeof voiceMapping] || 'voice_P6itXm4qbI';
   };
 
-  // REST API Version für Production - KORRIGIERT für NDJSON-Streaming
-  const processVoiceInputREST = async (audioBlob: Blob) => {
-    try {
-      setTranscript('Verarbeite Audio...');
-      setAiResponse('');
-      
-      // Audio zu Base64 konvertieren
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-      
-      // DEBUG: Audio-Daten prüfen
-      console.log('🎤 Audio Debug Info:');
-      console.log('  - Blob Size:', audioBlob.size, 'bytes');
-      console.log('  - Blob Type:', audioBlob.type);
-      console.log('  - ArrayBuffer Size:', arrayBuffer.byteLength, 'bytes');
-      console.log('  - Base64 Length:', base64Audio.length, 'chars');
-      console.log('  - Base64 Preview:', base64Audio.substring(0, 100) + '...');
+  // REST API Version für Production - KORRIGIERT
+const processVoiceInputREST = async (audioBlob: Blob) => {
+  try {
+    setTranscript('Verarbeite Audio...');
+    setAiResponse('');
     
-      // Frontend-Voice-Name zu API-Voice-ID konvertieren
-      const apiVoiceId = getApiVoiceId(selectedVoice);
-      console.log(`Frontend Voice: ${selectedVoice} -> API Voice ID: ${apiVoiceId}`);
+    // Audio zu Base64 konvertieren
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
     
-      // REST API Call OHNE type-Feld, nur { audio, voice }
-      const requestBody = {
-        audio: base64Audio,
-        voice: apiVoiceId // Konvertierte API-Voice-ID übertragen
-      };
+    // DEBUG: Audio-Daten prüfen
+    console.log('🎤 Audio aufgenommen:', audioBlob.size, 'bytes');
+    console.log('🎤 Audio Debug Info:');
+    console.log('  - Blob Size:', audioBlob.size, 'bytes');
+    console.log('  - Blob Type:', audioBlob.type);
+    console.log('  - ArrayBuffer Size:', arrayBuffer.byteLength, 'bytes');
+    console.log('  - Base64 Length:', base64Audio.length, 'chars');
+    console.log('  - Base64 Preview:', base64Audio.substring(0, 100) + '...');
+  
+    // Frontend-Voice-Name zu API-Voice-ID konvertieren
+    const apiVoiceId = getApiVoiceId(selectedVoice);
+    console.log(`Frontend Voice: ${selectedVoice} -> API Voice ID: ${apiVoiceId}`);
+  
+    // KORRIGIERT: Request Body Format
+    const requestBody = {
+      audio: base64Audio,     // GENAU was die API erwartet
+      voice: apiVoiceId       // GENAU was die API erwartet
+    };
+    
+    console.log('📤 Sende Request an API:', {
+      url: '/api/voice-agent',
+      method: 'POST',
+      audioLength: base64Audio.length,
+      voice: apiVoiceId
+    });
+    
+    const response = await fetch('/api/voice-agent', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    console.log('📥 Response status:', response.status);
+    console.log('📥 Response headers:', Object.fromEntries(response.headers.entries()));
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ API Error Response:', errorText);
+      throw new Error(`HTTP ${response.status}: ${errorText}`);
+    }
+
+    if (!response.body) {
+      throw new Error('Kein Response-Body erhalten');
+    }
+
+    // NDJSON-Stream verarbeiten
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
       
-      console.log('📤 Sende Request an API:', {
-        url: '/api/voice-agent',
-        method: 'POST',
-        audioLength: base64Audio.length,
-        voice: apiVoiceId
-      });
-      
-      const response = await fetch('/api/voice-agent', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody)
-      });
-
-      // KORRIGIERT: NDJSON-Stream verarbeiten (nur EINMAL lesen!)
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      if (!response.body) {
-        throw new Error('Kein Response-Body erhalten');
-      }
-
-      console.log('📥 Response erhalten:', {
-        status: response.status,
-        statusText: response.statusText,
-        contentType: response.headers.get('content-type')
-      });
-
-      // NDJSON-Stream verarbeiten
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
+      // Zeilenweise verarbeiten
+      let newlineIndex;
+      while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
         
-        // Zeilenweise verarbeiten
-        let newlineIndex;
-        while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
-          const line = buffer.slice(0, newlineIndex).trim();
-          buffer = buffer.slice(newlineIndex + 1);
+        if (!line) continue;
+        
+        try {
+          const event = JSON.parse(line);
+          console.log('📨 Stream Event:', event.type, event.data);
           
-          if (!line) continue;
-          
-          try {
-            const event = JSON.parse(line);
-            console.log('📨 Stream Event:', event.type, event.data);
-            
-            switch (event.type) {
-              case 'transcript':
-                setTranscript(event.data.text);
-                break;
-              case 'llm_chunk':
-                setAiResponse(prev => prev + event.data.text);
-                break;
-              case 'audio_chunk':
-                // Audio abspielen
-                if (event.data.base64) {
-                  setIsPlayingResponse(true);
-                  const audio = new Audio(`data:audio/${event.data.format};base64,${event.data.base64}`);
-                  audio.onended = () => setIsPlayingResponse(false);
-                  audio.play().catch(e => console.error('Audio playback failed:', e));
-                }
-                break;
-              case 'error':
-                // Spezielle Behandlung für "No speech detected" - das ist kein echter Fehler
-                if (event.data.message === 'No speech detected.') {
-                  console.log('🔇 Keine Sprache erkannt - bitte sprechen Sie lauter');
-                  setTranscript('Keine Sprache erkannt. Bitte sprechen Sie lauter.');
-                  setAiResponse('');
-                } else {
-                  throw new Error(event.data.message || 'Voice processing error');
-                }
-                break;
-              case 'end':
-                console.log('✅ Stream beendet');
-                break;
-              case 'debug_sentence':
-                console.log('🎵 Debug Sentence:', event.data.text);
-                break;
-              default:
-                console.log('📨 Unbekanntes Event:', event.type);
-            }
-          } catch (parseError) {
-            console.warn('JSON Parse Error für Zeile:', line, parseError);
+          switch (event.type) {
+            case 'transcript':
+              setTranscript(event.data.text);
+              break;
+            case 'llm_chunk':
+              setAiResponse(prev => prev + event.data.text);
+              break;
+            case 'llm_response':
+              // Vollständige Antwort erhalten
+              setAiResponse(event.data.text);
+              break;
+            case 'audio_chunk':
+              // Audio abspielen
+              if (event.data.base64) {
+                setIsPlayingResponse(true);
+                const audio = new Audio(`data:audio/${event.data.format};base64,${event.data.base64}`);
+                audio.onended = () => setIsPlayingResponse(false);
+                audio.play().catch(e => console.error('Audio playback failed:', e));
+              }
+              break;
+            case 'error':
+              // Spezielle Behandlung für "No speech detected"
+              if (event.data.message === 'No speech detected.') {
+                console.log('🔇 Keine Sprache erkannt');
+                setTranscript('Keine Sprache erkannt. Bitte sprechen Sie lauter.');
+                setAiResponse('');
+              } else {
+                throw new Error(event.data.message || 'Voice processing error');
+              }
+              break;
+            case 'end':
+              console.log('✅ Stream beendet');
+              break;
+            case 'debug_sentence':
+              console.log('🎵 Debug Sentence:', event.data.text);
+              break;
+            case 'tts_engine':
+              console.log('🔊 TTS Engine:', event.data.engine);
+              break;
+            default:
+              console.log('📨 Unbekanntes Event:', event.type, event.data);
           }
+        } catch (parseError) {
+          console.warn('⚠️ JSON Parse Error für Zeile:', line, parseError);
         }
       }
-      
-    } catch (error) {
-      console.error('Voice API Error:', error);
-      setTranscript('');
-      setAiResponse('Fehler bei der Sprachverarbeitung.');
-      alert('Sprachverarbeitung fehlgeschlagen: ' + (error instanceof Error ? error.message : String(error)));
-    } finally {
-      setIsProcessing(false);
     }
-  };
-
+    
+  } catch (error) {
+    console.error('❌ Voice API Error:', error);
+    setTranscript('');
+    setAiResponse('Fehler bei der Sprachverarbeitung.');
+    alert('Sprachverarbeitung fehlgeschlagen: ' + (error instanceof Error ? error.message : String(error)));
+  } finally {
+    setIsProcessing(false);
+  }
+};
   // WebSocket Version für Development
   const processVoiceInputWebSocket = async (audioBlob: Blob) => {
     try {
