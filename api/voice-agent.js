@@ -118,75 +118,79 @@ function streamResponse(res, type, data) {
   }
 }
 
-// Deepgram WebSocket - KORRIGIERT für bessere Format-Erkennung
+// Deepgram WebSocket - KORRIGIERT für WebM/Opus
 function getTranscriptViaWebSocket(audioBuffer, { detect }) {
   return new Promise((resolve, reject) => {
-    // Format Detection - VERBESSERT
+    // Format Detection
     let encoding;
     const hex = audioBuffer.slice(0, 8).toString('hex');
     console.log('🔍 Audio Format Detection:', hex);
     
     if (hex.startsWith('1a45dfa3')) {
-      encoding = 'webm';
+      encoding = 'webm-opus';  // KORRIGIERT: WebM mit Opus braucht "webm-opus"
       console.log('✅ Detected: WebM/EBML format');
-    } else if (hex.startsWith('52494646')) { // RIFF
+    } else if (hex.startsWith('52494646')) {
       encoding = 'wav';
       console.log('✅ Detected: WAV/RIFF format');
-    } else if (hex.startsWith('4f676753')) { // OggS
+    } else if (hex.startsWith('4f676753')) {
       encoding = 'ogg-opus';
       console.log('✅ Detected: OGG format');
     } else {
-      encoding = 'webm'; // Fallback für unbekannte Formate
-      console.log('⚠️ Unknown format, using WebM fallback');
+      encoding = 'webm-opus';
+      console.log('⚠️ Unknown format, using WebM-Opus fallback');
     }
 
     const sampleRate = 48000;
     const channels = 1;
-
     const langParams = detect ? 'detect_language=true' : 'language=de';
 
+    // KORRIGIERT: Deepgram WebSocket URL für WebM-Opus
     const deepgramUrl =
-      `wss://api.deepgram.com/v1/listen?model=nova-2` +
-      `&encoding=${encodeURIComponent(encoding)}` +
+      `wss://api.deepgram.com/v1/listen?` +
+      `model=nova-2` +
+      `&encoding=${encoding}` +
       `&sample_rate=${sampleRate}` +
       `&channels=${channels}` +
       `&${langParams}` +
-      `&punctuate=true&interim_results=true&endpointing=300`;
+      `&punctuate=true` +
+      `&interim_results=false` +  // GEÄNDERT: false für stabilere Ergebnisse
+      `&endpointing=300` +
+      `&vad_events=true`;         // NEU: Voice Activity Detection
 
     console.log('🔗 Deepgram WebSocket URL:', deepgramUrl);
 
     const ws = new WebSocket(deepgramUrl, {
-      headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
+      headers: { 
+        Authorization: `Token ${DEEPGRAM_API_KEY}`,
+        'Content-Type': 'application/json'  // NEU: Content-Type Header
+      },
       perMessageDeflate: false
     });
 
     let finalTranscript = '';
     let hasReceivedAnyData = false;
+    let connectionEstablished = false;
 
     ws.on('open', () => {
       console.log('✅ Deepgram WebSocket connected');
+      connectionEstablished = true;
 
-      // Chunked streaming für bessere Erkennung
-      const CHUNK_SIZE = 8192; // 8KB chunks
-      let offset = 0;
-
-      function sendNext() {
-        if (ws.readyState !== WebSocket.OPEN) return;
+      // KORRIGIERT: Audio in einem Stück senden für WebM
+      try {
+        ws.send(audioBuffer);
+        console.log('📤 Audio gesendet:', audioBuffer.length, 'bytes');
         
-        const end = Math.min(offset + CHUNK_SIZE, audioBuffer.length);
-        const chunk = audioBuffer.subarray(offset, end);
-        
-        ws.send(chunk);
-        offset = end;
-        
-        if (offset < audioBuffer.length) {
-          setTimeout(sendNext, 50); // 50ms delay zwischen chunks
-        } else {
-          ws.send(JSON.stringify({ type: 'CloseStream' }));
-          console.log('📤 Audio komplett gesendet:', audioBuffer.length, 'bytes');
-        }
+        // Kurz warten, dann CloseStream senden
+        setTimeout(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'CloseStream' }));
+            console.log('📤 CloseStream gesendet');
+          }
+        }, 1000);
+      } catch (error) {
+        console.error('❌ Fehler beim Senden:', error);
+        reject(error);
       }
-      sendNext();
     });
 
     ws.on('message', data => {
@@ -194,12 +198,14 @@ function getTranscriptViaWebSocket(audioBuffer, { detect }) {
         const msg = JSON.parse(data.toString());
         hasReceivedAnyData = true;
         
+        console.log('📨 Deepgram Message:', msg.type || 'unknown', msg);
+        
         if (msg.channel?.alternatives?.[0]) {
           const alt = msg.channel.alternatives[0];
           const partial = alt.transcript;
           if (partial) {
-            console.log('📝 Partial transcript:', partial, '(final:', msg.is_final, ')');
-            if (msg.is_final) {
+            console.log('📝 Transcript:', partial, '(final:', msg.is_final, ')');
+            if (msg.is_final || !msg.is_final) { // Akzeptiere alle Transkripte
               finalTranscript += partial + ' ';
             }
           }
@@ -208,33 +214,59 @@ function getTranscriptViaWebSocket(audioBuffer, { detect }) {
         if (msg.type === 'Metadata') {
           console.log('ℹ️ Deepgram Metadata:', JSON.stringify(msg, null, 2));
         }
+        
+        if (msg.type === 'Results' && msg.channel?.alternatives?.[0]?.transcript) {
+          const transcript = msg.channel.alternatives[0].transcript;
+          if (transcript.trim()) {
+            finalTranscript = transcript.trim();
+            console.log('✅ Final transcript from Results:', finalTranscript);
+          }
+        }
       } catch (e) {
-        console.warn('Deepgram Message Parse Error:', e);
+        console.warn('⚠️ Deepgram Message Parse Error:', e);
       }
     });
 
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
       const result = finalTranscript.trim();
-      console.log('🔌 Deepgram WebSocket closed. Final:', result);
+      console.log('🔌 Deepgram WebSocket closed:', code, reason?.toString());
+      console.log('📝 Final transcript:', result);
+      
+      if (!connectionEstablished) {
+        reject(new Error('Connection failed - check API key and encoding'));
+        return;
+      }
+      
       if (!hasReceivedAnyData) {
         console.warn('⚠️ No data received - possible encoding mismatch');
+        reject(new Error('No response from Deepgram - encoding mismatch'));
+        return;
       }
+      
       resolve(result);
     });
 
     ws.on('error', (error) => {
       console.error('❌ Deepgram WebSocket Error:', error);
-      reject(error);
+      
+      // Spezifische Fehlerbehandlung
+      if (error.message.includes('400')) {
+        reject(new Error('Deepgram 400 Error - Invalid audio format or parameters'));
+      } else if (error.message.includes('401')) {
+        reject(new Error('Deepgram 401 Error - Invalid API key'));
+      } else {
+        reject(error);
+      }
     });
 
-    // Timeout
+    // Timeout mit längerer Wartezeit für WebM
     setTimeout(() => {
       if (ws.readyState !== WebSocket.CLOSED) {
         console.log('⏰ Deepgram Timeout');
         try { ws.terminate(); } catch {}
-        reject(new Error('Deepgram timeout'));
+        reject(new Error('Deepgram timeout - try shorter audio'));
       }
-    }, 15000);
+    }, 25000); // Längerer Timeout für WebM-Verarbeitung
   });
 }
 
