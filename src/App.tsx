@@ -402,13 +402,13 @@ function App() {
 
 
 
-  // Voice-Mapping: Frontend-Namen zu API-Voice-IDs (nur deutsche geklonte Stimmen)
-  const getApiVoiceId = (frontendVoiceKey: string): string => {
-    const voiceMapping = {
-      'bella_vista_german_voice': 'voice_P6itXm4qbI' // Authentische geklonte deutsche Stimme
-    };
-    return voiceMapping[frontendVoiceKey as keyof typeof voiceMapping] || 'voice_P6itXm4qbI';
+  // Voice-Mapping: Frontend-Namen zu API-Voice-IDs
+const getApiVoiceId = (frontendVoiceKey: string): string => {
+  const voiceMapping = {
+    'bella_vista_german_voice': 'german_m2'  // KORRIGIERT: Verwende die richtige Voice ID
   };
+  return voiceMapping[frontendVoiceKey as keyof typeof voiceMapping] || 'german_m2';
+};
 
   // REST API Version für Production - KORRIGIERT
 const processVoiceInputREST = async (audioBlob: Blob) => {
