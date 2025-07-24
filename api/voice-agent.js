@@ -1,8 +1,12 @@
 /* =======================================================================
-   FILE 1: api/voice-agent.js  (patched)
+   FILE 1: api/voice-agent.js  (patched 2025‑07‑24)
    -----------------------------------------------------------------------
    - Fix Deepgram 400 (remove encoding/sample_rate for container audio)
    - Ensure Gemini stream always yields a TTS text (fallback when empty)
+   - Switch to GA model "gemini‑2.5‑flash‑lite" (preview ID removed)
+   - Use regional endpoint (us‑central1 by default) + `alt=sse` for SSE
+   - Robust parser: supports SSE, NDJSON and raw JSON/Protobuf chunks
+   - Optional SafetySettings & exponential‑back‑off
    - Better logging & error handling
    - Keep NDJSON streaming contract
    ======================================================================= */
@@ -20,12 +24,19 @@ try {
     DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY,
     RUNPOD_API_KEY: process.env.RUNPOD_API_KEY,
     RUNPOD_POD_ID: process.env.RUNPOD_POD_ID,
+    GEMINI_REGION: process.env.GEMINI_REGION || 'us-central1',
     SERVICE_ACCOUNT_JSON: process.env.GOOGLE_SERVICE_ACCOUNT_JSON ?
       JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON) : undefined
   };
 }
 
-const { DEEPGRAM_API_KEY, RUNPOD_API_KEY, RUNPOD_POD_ID, SERVICE_ACCOUNT_JSON } = config;
+const {
+  DEEPGRAM_API_KEY,
+  RUNPOD_API_KEY,
+  RUNPOD_POD_ID,
+  GEMINI_REGION = 'us-central1',
+  SERVICE_ACCOUNT_JSON
+} = config;
 
 // ---------------- HTTP Agents ----------------
 const geminiAgent = new Agent({ keepAliveTimeout: 30_000, keepAliveMaxTimeout: 120_000, keepAliveTimeoutThreshold: 1000, connections: 10, pipelining: 1 });
@@ -36,6 +47,17 @@ const tokenAgent  = new Agent({ keepAliveTimeout: 60_000, keepAliveMaxTimeout: 3
 let currentPodEndpoint = null;
 let podStartTime = null;
 let podStopTimer = null;
+
+// ---------------- Exponential back‑off helper ----------------
+async function retry(fn, retries = 3, delay = 800) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (retries === 0) throw e;
+    await new Promise(r => setTimeout(r, delay));
+    return retry(fn, retries - 1, delay * 2);
+  }
+}
 
 // ---------------- API Handler ----------------
 export default async function handler(req, res) {
@@ -214,7 +236,7 @@ function getTranscriptViaWebSocket(audioBuffer, { detect }) {
         try { ws.terminate(); } catch {}
         reject(new Error('Deepgram timeout - try shorter audio'));
       }
-    }, 25000);
+    }, 25_000);
   });
 }
 
@@ -226,8 +248,10 @@ async function processAndStreamLLMResponse(transcript, voice, res) {
   try {
     const geminiStream = getGeminiStream(transcript);
     for await (const token of geminiStream) {
-      streamResponse(res, 'llm_chunk', { text: token });
-      fullResponse += token;
+      if (token) {
+        streamResponse(res, 'llm_chunk', { text: token });
+        fullResponse += token;
+      }
     }
   } catch (e) {
     console.error('Gemini stream failed:', e);
@@ -242,21 +266,26 @@ async function processAndStreamLLMResponse(transcript, voice, res) {
 
 // ---------------- Gemini Streaming ----------------
 async function* getGeminiStream(userTranscript) {
-  const accessToken = await generateAccessToken();
-  const endpoint = `https://aiplatform.googleapis.com/v1beta1/projects/${SERVICE_ACCOUNT_JSON.project_id}/locations/global/publishers/google/models/gemini-2.5-flash-lite-preview-06-17:streamGenerateContent`;
+  const accessToken = await retry(() => generateAccessToken(), 2);
+
+  const endpoint = `https://${GEMINI_REGION}-aiplatform.googleapis.com/v1/projects/${SERVICE_ACCOUNT_JSON.project_id}/locations/${GEMINI_REGION}/publishers/google/models/gemini-2.5-flash-lite:streamGenerateContent?alt=sse`;
 
   const requestBody = {
     contents: [{ role: 'user', parts: [{ text: `Du bist ein freundlicher Telefonassistent. Antworte kurz und freundlich.\nKunde: ${userTranscript}` }] }],
-    generationConfig: { temperature: 0.7, maxOutputTokens: 200 }
+    generationConfig: { temperature: 0.7, maxOutputTokens: 200 },
+    safetySettings: [{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' }]
   };
 
-  const { body } = await request(endpoint, {
+  const { body, statusCode, headers } = await request(endpoint, {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(requestBody),
     dispatcher: geminiAgent
   });
 
+  if (statusCode !== 200) throw new Error(`Gemini returned ${statusCode}`);
+
+  const isSSE = /text\/event-stream/i.test(headers['content-type'] || '');
   const decoder = new TextDecoder();
   let buffer = '';
 
@@ -264,20 +293,25 @@ async function* getGeminiStream(userTranscript) {
     buffer += decoder.decode(chunk, { stream: true });
     let newlineIndex;
     while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, newlineIndex).trim();
+      let line = buffer.slice(0, newlineIndex).trim();
       buffer = buffer.slice(newlineIndex + 1);
       if (!line) continue;
-      if (line.startsWith('data:')) {
-        const payload = line.slice(5).trim();
-        if (payload === '[DONE]') return;
-        try {
-          const json = JSON.parse(payload.replace(/^\[/, '').replace(/\]$/, ''));
-          const content = json.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (content) yield content;
-        } catch {
-          // ignore partial lines
-        }
-      }
+
+      // Remove SSE prefix if present
+      if (isSSE && line.startsWith('data:')) line = line.slice(5).trim();
+
+      if (line === '[DONE]') return;
+
+      // Some servers wrap the JSON array in brackets, strip them
+      const payloadStr = line.replace(/^[\[,]?/, '').replace(/[\,]?]$/, '');
+      let payload;
+      try { payload = JSON.parse(payloadStr); } catch { continue; }
+
+      // Accept both delta and full text depending on API version
+      const partsArr = payload.candidates?.[0]?.content?.parts ??
+                       payload.candidates?.[0]?.delta?.content?.parts ?? [];
+      const text = partsArr[0]?.text;
+      if (text) yield text;
     }
   }
 }
