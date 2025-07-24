@@ -1,12 +1,11 @@
-// api/voice-agent.js – FIXED to avoid Deepgram 400 (encoding/sample_rate mismatch)
-// -----------------------------------------------------------------------------
-// Changes vs. your version:
-//  - Removed invalid query params for container audio (encoding/sample_rate/channels)
-//  - Auto-detects container and only sets encoding if RAW audio
-//  - Dropped unnecessary Content-Type header on WS handshake
-//  - Hardened error/close handling to log Deepgram's reason
-//  - Small cleanups & security notes (no hardcoded keys!)
-// -----------------------------------------------------------------------------
+/* =======================================================================
+   FILE 1: api/voice-agent.js  (patched)
+   -----------------------------------------------------------------------
+   - Fix Deepgram 400 (remove encoding/sample_rate for container audio)
+   - Ensure Gemini stream always yields a TTS text (fallback when empty)
+   - Better logging & error handling
+   - Keep NDJSON streaming contract
+   ======================================================================= */
 
 import { request, Agent } from 'undici';
 import WebSocket from 'ws';
@@ -56,7 +55,10 @@ export default async function handler(req, res) {
   console.log('  - Voice:', voice);
   console.log('  - Request body keys:', Object.keys(req.body || {}));
 
-  if (!audio) return res.status(400).json({ error: 'Missing audio data' });
+  if (!audio) {
+    console.log('⚠️ Missing audio data');
+    return res.status(400).json({ error: 'Missing audio data' });
+  }
 
   try {
     res.writeHead(200, {
@@ -115,21 +117,16 @@ function streamResponse(res, type, data) {
 // ---------------- Deepgram WebSocket ----------------
 function getTranscriptViaWebSocket(audioBuffer, { detect }) {
   return new Promise((resolve, reject) => {
-    // Detect container/format by magic bytes
     const hex8 = audioBuffer.slice(0, 8).toString('hex');
     let encodingParam = '';
     let sampleRateParam = '';
     let channelsParam = '';
-
     let format = 'unknown';
-    if (hex8.startsWith('1a45dfa3')) {
-      format = 'webm'; // WebM/EBML container
-    } else if (hex8.startsWith('52494646')) {
-      format = 'wav'; // RIFF/WAV
-    } else if (hex8.startsWith('4f676753')) {
-      format = 'ogg'; // Ogg container (opus likely)
-    } else {
-      // assume raw opus/pcm => we MUST tell Deepgram
+
+    if (hex8.startsWith('1a45dfa3')) format = 'webm';
+    else if (hex8.startsWith('52494646')) format = 'wav';
+    else if (hex8.startsWith('4f676753')) format = 'ogg';
+    else {
       format = 'raw';
       encodingParam = '&encoding=opus';
       sampleRateParam = '&sample_rate=48000';
@@ -152,9 +149,7 @@ function getTranscriptViaWebSocket(audioBuffer, { detect }) {
     console.log('🔗 Deepgram WebSocket URL:', deepgramUrl);
 
     const ws = new WebSocket(deepgramUrl, {
-      headers: {
-        Authorization: `Token ${DEEPGRAM_API_KEY}`
-      },
+      headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
       perMessageDeflate: false
     });
 
@@ -166,7 +161,6 @@ function getTranscriptViaWebSocket(audioBuffer, { detect }) {
       opened = true;
       console.log('✅ Deepgram WebSocket connected');
       try {
-        // Send entire buffer (container ok)
         ws.send(audioBuffer);
         console.log('📤 Audio gesendet:', audioBuffer.length, 'bytes');
         setTimeout(() => {
@@ -188,9 +182,7 @@ function getTranscriptViaWebSocket(audioBuffer, { detect }) {
           const txt = alt.transcript || '';
           if (txt.trim()) {
             gotResults = true;
-            if (msg.is_final) {
-              finalTranscript += txt + ' ';
-            }
+            if (msg.is_final) finalTranscript += txt + ' ';
           }
         }
       } catch (e) {
@@ -204,27 +196,18 @@ function getTranscriptViaWebSocket(audioBuffer, { detect }) {
       const result = finalTranscript.trim();
 
       if (!opened) return reject(new Error('WS not opened – check API key/URL'));
-      if (code >= 4000 || code === 1006) {
-        return reject(new Error(`Deepgram WS closed abnormally (${code}) ${reason}`));
-      }
-      if (!gotResults && format === 'raw') {
-        return reject(new Error('No results – likely wrong encoding/sample rate for raw audio'));
-      }
+      if (code >= 4000 || code === 1006) return reject(new Error(`Deepgram WS closed abnormally (${code}) ${reason}`));
+      if (!gotResults && format === 'raw') return reject(new Error('No results – likely wrong encoding/sample rate for raw audio'));
       resolve(result);
     });
 
     ws.on('error', err => {
       console.error('❌ Deepgram WebSocket Error:', err);
-      if (String(err?.message || '').includes('400')) {
-        reject(new Error('Deepgram 400 Error - Invalid audio format or parameters'));
-      } else if (String(err?.message || '').includes('401')) {
-        reject(new Error('Deepgram 401 Error - Invalid API key'));
-      } else {
-        reject(err);
-      }
+      if (String(err?.message || '').includes('400')) reject(new Error('Deepgram 400 Error - Invalid audio format or parameters'));
+      else if (String(err?.message || '').includes('401')) reject(new Error('Deepgram 401 Error - Invalid API key'));
+      else reject(err);
     });
 
-    // Safety timeout
     setTimeout(() => {
       if (ws.readyState !== WebSocket.CLOSED) {
         console.log('⏰ Deepgram Timeout');
@@ -238,19 +221,23 @@ function getTranscriptViaWebSocket(audioBuffer, { detect }) {
 // ---------------- LLM Processing ----------------
 async function processAndStreamLLMResponse(transcript, voice, res) {
   console.log('🤖 Starting LLM processing for:', transcript);
-  const geminiStream = getGeminiStream(transcript);
   let fullResponse = '';
 
-  for await (const token of geminiStream) {
-    streamResponse(res, 'llm_chunk', { text: token });
-    fullResponse += token;
+  try {
+    const geminiStream = getGeminiStream(transcript);
+    for await (const token of geminiStream) {
+      streamResponse(res, 'llm_chunk', { text: token });
+      fullResponse += token;
+    }
+  } catch (e) {
+    console.error('Gemini stream failed:', e);
   }
 
+  console.log('🤖 LLM Complete Response:', fullResponse);
   streamResponse(res, 'llm_response', { text: fullResponse });
 
-  if (fullResponse.trim()) {
-    await generateAndStreamSpeechXTTS(fullResponse, voice, res);
-  }
+  const ttsText = (fullResponse && fullResponse.trim()) ? fullResponse.trim() : 'Ich habe dich verstanden.';
+  await generateAndStreamSpeechXTTS(ttsText, voice, res);
 }
 
 // ---------------- Gemini Streaming ----------------
@@ -288,7 +275,7 @@ async function* getGeminiStream(userTranscript) {
           const content = json.candidates?.[0]?.content?.parts?.[0]?.text;
           if (content) yield content;
         } catch {
-          // ignore partials
+          // ignore partial lines
         }
       }
     }
