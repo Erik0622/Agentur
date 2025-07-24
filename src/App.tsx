@@ -1,14 +1,7 @@
-/* =============================================================
-   FRONTEND – App.tsx (vollständig bis handleBookingSubmit) – PATCHED
-   ============================================================= */
-
-import { motion } from 'framer-motion';
-import {
-  Phone, Clock, TrendingDown, Users, Bot, Star, CheckCircle, ArrowRight, Calendar, X,
-  ChevronLeft, ChevronRight, Video, Monitor, Mic, Volume2, Loader, MessageCircle
-} from 'lucide-react';
-import { useState, useEffect, useRef } from 'react';
-import AudioVisualizer from './components/AudioVisualizer';
+import { motion } from 'framer-motion'
+import { Phone, Clock, TrendingDown, Users, Bot, Star, CheckCircle, ArrowRight, Calendar, X, ChevronLeft, ChevronRight, Video, Monitor, Mic, Volume2, Loader, MessageCircle } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import AudioVisualizer from './components/AudioVisualizer'
 
 interface BookingData {
   name: string;
@@ -20,32 +13,10 @@ interface BookingData {
   id: string;
 }
 
-/* ---------------------- Helper & Consts ---------------------- */
-const isDevelopment = window.location.hostname === 'localhost';
-
-const germanVoices = {
-  bella_vista_german_voice: {
-    name: 'Bella Vista Original',
-    gender: 'Weiblich',
-    description: 'Authentische deutsche Stimme (geklont, Standard)'
-  }
-} as const;
-
-const getApiVoiceId = (frontendVoiceKey: keyof typeof germanVoices): string => {
-  const voiceMapping: Record<string, string> = {
-    bella_vista_german_voice: 'german_m2'
-  };
-  return voiceMapping[frontendVoiceKey] || 'german_m2';
-};
-
-/* ===============================
-   React‑Komponente
-   =============================== */
 function App() {
-  /* ------- Termin‑Buchung ------- */
   const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
   const [bookings, setBookings] = useState<BookingData[]>([]);
-  const [selectedSlot, setSelectedSlot] = useState<{ date: string; time: string } | null>(null);
+  const [selectedSlot, setSelectedSlot] = useState<{date: string, time: string} | null>(null);
   const [currentWeek, setCurrentWeek] = useState(new Date());
   const [formData, setFormData] = useState({
     name: '',
@@ -54,50 +25,64 @@ function App() {
     meetingType: 'phone' as 'phone' | 'zoom' | 'teams'
   });
 
-  /* ------------ Voice‑Agent ------------ */
+  // Voice Agent State
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPlayingResponse, setIsPlayingResponse] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const [conversationMode] = useState(true);
+  const [isListening, setIsListening] = useState(false); // Kontinuierliches Zuhören
+  const [conversationMode, setConversationMode] = useState(true); // Standard: Gespräch-Modus
   const [transcript, setTranscript] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
   const [voiceMetrics, setVoiceMetrics] = useState<any>(null);
   const [audioLevel, setAudioLevel] = useState(0);
-  const [conversationHistory, setConversationHistory] = useState<Array<{ user: string; ai: string; timestamp: Date }>>([]);
+  const [conversationHistory, setConversationHistory] = useState<Array<{user: string, ai: string, timestamp: Date}>>([]);
   const [isSpeechDetected, setIsSpeechDetected] = useState(false);
   const [silenceCount, setSilenceCount] = useState(0);
+  
+  // Deutsche Stimmenauswahl für Bella Vista (nur geklonte deutsche Stimmen)
   const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('bella_vista_german_voice');
-
-  /* ------------ Refs ------------ */
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+  const germanVoices = {
+    'bella_vista_german_voice': { name: 'Bella Vista Original', gender: 'Weiblich', description: 'Authentische deutsche Stimme (geklont, Standard)' }
+  } as const;
+  
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationRef = useRef<number | null>(null);
-
+  
+  // Kontinuierliche Voice Detection Refs
   const continuousStreamRef = useRef<MediaStream | null>(null);
   const continuousRecorderRef = useRef<MediaRecorder | null>(null);
   const speechDetectionRef = useRef<boolean>(false);
   const currentAudioChunksRef = useRef<Blob[]>([]);
 
-  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
-
-  /* ------------- Load bookings ------------- */
+  // Lade gespeicherte Termine aus localStorage
   useEffect(() => {
-    const saved = localStorage.getItem('bookings');
-    if (saved) setBookings(JSON.parse(saved));
+    const savedBookings = localStorage.getItem('bookings');
+    if (savedBookings) {
+      setBookings(JSON.parse(savedBookings));
+    }
   }, []);
 
-  /* ------------- WebSocket (Dev) ------------- */
+  // WebSocket Verbindung für Voice Agent
   useEffect(() => {
-    const connectWs = () => {
-      if (!isDevelopment) {
-        console.log('🌐 Production‑Modus: REST API wird verwendet');
-        setWsConnected(true);
+    const connectWebSocket = () => {
+      // Production erkennen
+      const isProduction = window.location.hostname !== 'localhost';
+      
+      if (isProduction) {
+        // In Production: REST API verwenden statt WebSocket
+        console.log('🌐 Production-Modus: REST API wird verwendet');
+        setWsConnected(true); // Simuliere Verbindung für UI
         return;
       }
-      const ws = new WebSocket('ws://localhost:3001');
+      
+      // Development: WebSocket verwenden
+      const wsUrl = 'ws://localhost:3001';
+      console.log('🔗 Verbinde zu Voice Agent:', wsUrl);
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -105,34 +90,39 @@ function App() {
         setWsConnected(true);
       };
 
-      ws.onmessage = (evt) => {
-        const msg = JSON.parse(evt.data);
-        console.log('📨 WS‑Event:', msg);
-        switch (msg.type) {
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        console.log('📨 Nachricht erhalten:', data);
+
+        switch (data.type) {
           case 'transcript':
-            setTranscript(msg.text);
-            setVoiceMetrics(msg.metrics);
+            setTranscript(data.text);
+            setVoiceMetrics(data.metrics);
             break;
           case 'llm_chunk':
-            setAiResponse((p) => p + msg.text);
+            setAiResponse(prev => prev + data.text);
             break;
           case 'voice_response':
-            setTranscript(msg.transcript);
-            setAiResponse(msg.response);
+            setTranscript(data.transcript);
+            setAiResponse(data.response);
+            setVoiceMetrics(data.metrics);
             setIsProcessing(false);
-            if (msg.audio) {
+            
+            // Audio abspielen mit Visualisierung
+            if (data.audio) {
               setIsPlayingResponse(true);
-              const audio = new Audio(`data:audio/wav;base64,${msg.audio}`);
+              const audio = new Audio(data:audio/wav;base64,${data.audio});
               audio.onended = () => setIsPlayingResponse(false);
-              audio.play().catch(console.error);
+              audio.play().catch(e => console.error('Audio playback failed:', e));
             }
             break;
           case 'error':
-            console.error('Voice Agent Error:', msg.message);
+            console.error('Voice Agent Error:', data.message);
             setIsProcessing(false);
-            alert(msg.message);
+            alert(Fehler: ${data.message});
             break;
-          default:
+          case 'status':
+            console.log('Status:', data.message);
             break;
         }
       };
@@ -140,171 +130,468 @@ function App() {
       ws.onclose = () => {
         console.log('🔌 Voice Agent getrennt');
         setWsConnected(false);
-        setTimeout(connectWs, 3000);
+        // Automatisch reconnecten nach 3 Sekunden
+        setTimeout(connectWebSocket, 3000);
       };
 
-      ws.onerror = (err) => {
-        console.error('WebSocket Fehler:', err);
+      ws.onerror = (error) => {
+        console.error('WebSocket Fehler:', error);
         setWsConnected(false);
       };
     };
 
-    connectWs();
-    return () => wsRef.current?.close();
+    connectWebSocket();
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
   }, []);
 
-  /* ---------- Recorder (simple) ---------- */
+  // Audio Visualizer & Voice Activity Detection
+  const startAudioVisualization = (stream: MediaStream, isForVAD = false) => {
+    // Cleanup vorheriger AudioContext
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      audioContextRef.current.close();
+    }
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+    }
+
+    audioContextRef.current = new AudioContext();
+    analyserRef.current = audioContextRef.current.createAnalyser();
+    const source = audioContextRef.current.createMediaStreamSource(stream);
+    source.connect(analyserRef.current);
+
+    analyserRef.current.fftSize = 256;
+    const bufferLength = analyserRef.current.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+
+    const SPEECH_THRESHOLD = 25; // Anpassen je nach Umgebung
+    const SILENCE_FRAMES_NEEDED = 30; // ~0.5 Sekunden bei 60fps
+
+    const updateAudioLevel = () => {
+      const isActive = isForVAD ? isListening : isRecording;
+      
+      if (analyserRef.current && isActive && audioContextRef.current?.state === 'running') {
+        try {
+        analyserRef.current.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b) / bufferLength;
+          const audioLevel = average / 255 * 100;
+          setAudioLevel(audioLevel);
+
+          // Voice Activity Detection für kontinuierliches Gespräch
+          if (isForVAD && isListening) {
+            const wasSpeaking = speechDetectionRef.current;
+            const isSpeaking = audioLevel > SPEECH_THRESHOLD;
+            
+            if (isSpeaking && !wasSpeaking) {
+              // Sprache erkannt - beginne Aufnahme
+              console.log('🎤 Sprache erkannt - starte Aufnahme');
+              speechDetectionRef.current = true;
+              setIsSpeechDetected(true);
+              setSilenceCount(0);
+              startContinuousRecording();
+            } else if (!isSpeaking && wasSpeaking) {
+              // Stille erkannt - zähle Frames
+              setSilenceCount(prev => prev + 1);
+            } else if (!isSpeaking && wasSpeaking && silenceCount >= SILENCE_FRAMES_NEEDED) {
+              // Genug Stille - beende Aufnahme
+              console.log('🔇 Stille erkannt - beende Aufnahme');
+              speechDetectionRef.current = false;
+              setIsSpeechDetected(false);
+              setSilenceCount(0);
+              stopContinuousRecording();
+            }
+          }
+
+        animationRef.current = requestAnimationFrame(updateAudioLevel);
+        } catch (error) {
+          console.error('Audio level update error:', error);
+          setAudioLevel(0);
+        }
+      } else {
+        setAudioLevel(0);
+      }
+    };
+
+    updateAudioLevel();
+  };
+
+  const stopAudioVisualization = () => {
+    // Animation stoppen
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
+    }
+    
+    // AudioContext sicher schließen
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      audioContextRef.current.close();
+    }
+    
+    setAudioLevel(0);
+  };
+
+  // Kontinuierliche Gespräch-Funktionen
+  const startConversationMode = async () => {
+    try {
+      console.log('🎯 Starte Gesprächsmodus');
+      
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 16000,
+          channelCount: 1
+        } 
+      });
+      
+      continuousStreamRef.current = stream;
+      setIsListening(true);
+      setTranscript('');
+      setAiResponse('');
+      
+      // Voice Activity Detection starten
+      startAudioVisualization(stream, true);
+      
+    } catch (error) {
+      console.error('Gesprächsmodus-Start fehlgeschlagen:', error);
+      alert('Mikrofonzugriff fehlgeschlagen. Bitte überprüfen Sie Ihre Browser-Einstellungen.');
+    }
+  };
+
+  const stopConversationMode = () => {
+    console.log('⏹️ Stoppe Gesprächsmodus');
+    
+    setIsListening(false);
+    setIsSpeechDetected(false);
+    setSilenceCount(0);
+    speechDetectionRef.current = false;
+    
+    // Aktuelle Aufnahme stoppen falls läuft
+    if (continuousRecorderRef.current && continuousRecorderRef.current.state === 'recording') {
+      continuousRecorderRef.current.stop();
+    }
+    
+    // Stream stoppen
+    if (continuousStreamRef.current) {
+      continuousStreamRef.current.getTracks().forEach(track => track.stop());
+      continuousStreamRef.current = null;
+    }
+    
+    stopAudioVisualization();
+  };
+
+  const startContinuousRecording = () => {
+    if (!continuousStreamRef.current) return;
+    
+    try {
+      const mediaRecorder = new MediaRecorder(continuousStreamRef.current, {
+        mimeType: 'audio/webm;codecs=opus'
+      });
+      
+      continuousRecorderRef.current = mediaRecorder;
+      currentAudioChunksRef.current = [];
+      
+      mediaRecorder.ondataavailable = (event) => {
+        currentAudioChunksRef.current.push(event.data);
+      };
+      
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(currentAudioChunksRef.current, { type: 'audio/webm' });
+        processContinuousVoiceInput(audioBlob);
+      };
+      
+      mediaRecorder.start(100);
+      
+    } catch (error) {
+      console.error('Kontinuierliche Aufnahme-Start fehlgeschlagen:', error);
+    }
+  };
+
+  const stopContinuousRecording = () => {
+    if (continuousRecorderRef.current && continuousRecorderRef.current.state === 'recording') {
+      continuousRecorderRef.current.stop();
+    }
+  };
+
+  const processContinuousVoiceInput = async (audioBlob: Blob) => {
+    if (isProcessing || isPlayingResponse) return; // Verhindere Überlappung
+    
+    setIsProcessing(true);
+    
+    // Aktuelle Werte speichern vor processVoiceInputREST
+    const currentTranscript = transcript;
+    const currentResponse = aiResponse;
+    
+    await processVoiceInputREST(audioBlob);
+    
+    // Nach Verarbeitung: Zur Konversations-Historie hinzufügen
+    // Warte kurz bis die States aktualisiert sind
+    setTimeout(() => {
+      if (transcript && transcript !== currentTranscript && aiResponse && aiResponse !== currentResponse) {
+        setConversationHistory(prev => [...prev, {
+          user: transcript,
+          ai: aiResponse,
+          timestamp: new Date()
+        }]);
+      }
+    }, 500); // 500ms Delay für State-Updates
+  };
+
+  // Voice Recording Functions (Original)
   const startRecording = async () => {
     try {
       setIsRecording(true);
       setTranscript('');
       setAiResponse('');
-
-      const stream = await navigator.mediaDevices.getUserMedia({
+      
+      const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
-          sampleRate: 48000,
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
+          sampleRate: 48000,        // 48kHz für Opus-Codec optimal
+          channelCount: 1,          // Mono für bessere Erkennung
+          echoCancellation: true,   // Echo-Cancellation aktivieren
+          noiseSuppression: true,   // Rauschunterdrückung
+          autoGainControl: true     // Automatische Verstärkung
+        } 
       });
-
-      const rec = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+      
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus'  // WebM mit Opus Codec
+      });
+      
       const chunks: Blob[] = [];
-      rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-      rec.onstop = async () => {
-        const blob = new Blob(chunks, { type: 'audio/webm' });
-        console.log('🎤 Audio aufgenommen:', blob.size, 'bytes');
-        if (blob.size < 2000) {
-          console.warn('⚠️ Audio zu kurz, überspringe.');
-          setIsRecording(false);
-          stream.getTracks().forEach((t) => t.stop());
-          return;
+      
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
         }
-        if (isDevelopment) await processVoiceInputWebSocket(blob); else await processVoiceInputREST(blob);
-        stream.getTracks().forEach((t) => t.stop());
       };
-      rec.start();
-      setMediaRecorder(rec);
-    } catch (e) {
-      console.error('Recorder start error:', e);
+      
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+        console.log('🎤 Audio aufgenommen:', audioBlob.size, 'bytes');
+        
+        if (isDevelopment) {
+          await processVoiceInputWebSocket(audioBlob);
+        } else {
+          await processVoiceInputREST(audioBlob);
+        }
+        
+        stream.getTracks().forEach(track => track.stop());
+      };
+      
+      mediaRecorder.start();
+      setMediaRecorder(mediaRecorder);
+      
+    } catch (error) {
+      console.error('Fehler beim Starten der Aufnahme:', error);
       setIsRecording(false);
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
-    setIsRecording(false);
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+      setIsRecording(false);
+    }
   };
 
-  /* ---------- REST‑Upload ---------- */
-  const processVoiceInputREST = async (audioBlob: Blob) => {
-    try {
-      if (!audioBlob || audioBlob.size === 0) {
-        console.warn('Empty blob – abort send');
-        return;
-      }
-      setIsProcessing(true);
-      setTranscript('Verarbeite Audio...');
-      setAiResponse('');
 
-      const arr = new Uint8Array(await audioBlob.arrayBuffer());
-      const base64Audio = btoa(String.fromCharCode(...arr));
-      if (base64Audio.length < 100) {
-        console.warn('Base64 zu kurz – skip');
-        return;
-      }
 
-      const apiVoiceId = getApiVoiceId(selectedVoice);
-      const res = await fetch('/api/voice-agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audio: base64Audio, voice: apiVoiceId })
-      });
+  // Voice-Mapping: Frontend-Namen zu API-Voice-IDs
+const getApiVoiceId = (frontendVoiceKey: string): string => {
+  const voiceMapping = {
+    'bella_vista_german_voice': 'german_m2'  // KORRIGIERT: Verwende die richtige Voice ID
+  };
+  return voiceMapping[frontendVoiceKey as keyof typeof voiceMapping] || 'german_m2';
+};
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-      }
-      if (!res.body) throw new Error('No body');
+  // REST API Version für Production - KORRIGIERT
+const processVoiceInputREST = async (audioBlob: Blob) => {
+  try {
+    setTranscript('Verarbeite Audio...');
+    setAiResponse('');
+    
+    // Audio zu Base64 konvertieren
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+    
+    // DEBUG: Audio-Daten prüfen
+    console.log('🎤 Audio aufgenommen:', audioBlob.size, 'bytes');
+    console.log('🎤 Audio Debug Info:');
+    console.log('  - Blob Size:', audioBlob.size, 'bytes');
+    console.log('  - Blob Type:', audioBlob.type);
+    console.log('  - ArrayBuffer Size:', arrayBuffer.byteLength, 'bytes');
+    console.log('  - Base64 Length:', base64Audio.length, 'chars');
+    console.log('  - Base64 Preview:', base64Audio.substring(0, 100) + '...');
+  
+    // Frontend-Voice-Name zu API-Voice-ID konvertieren
+    const apiVoiceId = getApiVoiceId(selectedVoice);
+    console.log(Frontend Voice: ${selectedVoice} -> API Voice ID: ${apiVoiceId});
+  
+    // KORRIGIERT: Request Body Format
+    const requestBody = {
+      audio: base64Audio,     // GENAU was die API erwartet
+      voice: apiVoiceId       // GENAU was die API erwartet
+    };
+    
+    console.log('📤 Sende Request an API:', {
+      url: '/api/voice-agent',
+      method: 'POST',
+      audioLength: base64Audio.length,
+      voice: apiVoiceId
+    });
+    
+    const response = await fetch('/api/voice-agent', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody)
+    });
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let nl;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line) continue;
-          try {
-            const evt = JSON.parse(line);
-            switch (evt.type) {
-              case 'transcript':
-                setTranscript(evt.data.text);
-                break;
-              case 'llm_chunk':
-                setAiResponse((p) => p + evt.data.text);
-                break;
-              case 'llm_response':
-                setAiResponse(evt.data.text);
-                break;
-              case 'audio_chunk': {
-                const { base64, format } = evt.data;
-                if (base64) {
-                  setIsPlayingResponse(true);
-                  const audio = new Audio(`data:audio/${format};base64,${base64}`);
-                  audio.onended = () => setIsPlayingResponse(false);
-                  audio.play().catch(console.error);
-                }
-                break; }
-              case 'error':
-                if (evt.data.message === 'No speech detected.') {
-                  setTranscript('Keine Sprache erkannt.');
-                } else throw new Error(evt.data.message);
-                break;
-              case 'end':
-                console.log('Stream Ende');
-                break;
-              default:
-                console.log('Evt', evt);
-            }
-          } catch (err) {
-            console.warn('JSON parse err:', err);
+    console.log('📥 Response status:', response.status);
+    console.log('📥 Response headers:', Object.fromEntries(response.headers.entries()));
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ API Error Response:', errorText);
+      throw new Error(HTTP ${response.status}: ${errorText});
+    }
+
+    if (!response.body) {
+      throw new Error('Kein Response-Body erhalten');
+    }
+
+    // NDJSON-Stream verarbeiten
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      
+      // Zeilenweise verarbeiten
+      let newlineIndex;
+      while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        
+        if (!line) continue;
+        
+        try {
+          const event = JSON.parse(line);
+          console.log('📨 Stream Event:', event.type, event.data);
+          
+          switch (event.type) {
+            case 'transcript':
+              setTranscript(event.data.text);
+              break;
+            case 'llm_chunk':
+              setAiResponse(prev => prev + event.data.text);
+              break;
+            case 'llm_response':
+              // Vollständige Antwort erhalten
+              setAiResponse(event.data.text);
+              break;
+            case 'audio_chunk':
+              // Audio abspielen
+              if (event.data.base64) {
+                setIsPlayingResponse(true);
+                const audio = new Audio(data:audio/${event.data.format};base64,${event.data.base64});
+                audio.onended = () => setIsPlayingResponse(false);
+                audio.play().catch(e => console.error('Audio playback failed:', e));
+              }
+              break;
+            case 'error':
+              // Spezielle Behandlung für "No speech detected"
+              if (event.data.message === 'No speech detected.') {
+                console.log('🔇 Keine Sprache erkannt');
+                setTranscript('Keine Sprache erkannt. Bitte sprechen Sie lauter.');
+                setAiResponse('');
+              } else {
+                throw new Error(event.data.message || 'Voice processing error');
+              }
+              break;
+            case 'end':
+              console.log('✅ Stream beendet');
+              break;
+            case 'debug_sentence':
+              console.log('🎵 Debug Sentence:', event.data.text);
+              break;
+            case 'tts_engine':
+              console.log('🔊 TTS Engine:', event.data.engine);
+              break;
+            default:
+              console.log('📨 Unbekanntes Event:', event.type, event.data);
           }
+        } catch (parseError) {
+          console.warn('⚠️ JSON Parse Error für Zeile:', line, parseError);
         }
       }
-    } catch (err) {
-      console.error('REST error:', err);
-      setAiResponse('Fehler bei der Sprachverarbeitung.');
-      alert(String(err));
-    } finally {
-      setIsProcessing(false);
     }
-  };
-
-  /* ---------- WS‑Upload (Dev) ---------- */
+    
+  } catch (error) {
+    console.error('❌ Voice API Error:', error);
+    setTranscript('');
+    setAiResponse('Fehler bei der Sprachverarbeitung.');
+    alert('Sprachverarbeitung fehlgeschlagen: ' + (error instanceof Error ? error.message : String(error)));
+  } finally {
+    setIsProcessing(false);
+  }
+};
+  // WebSocket Version für Development
   const processVoiceInputWebSocket = async (audioBlob: Blob) => {
     try {
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        console.warn('WS nicht verbunden');
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        wsRef.current!.send(JSON.stringify({ type: 'audio', data: reader.result }));
+      setTranscript('Verarbeite Audio...');
+      setAiResponse('');
+      
+      // WebSocket Verbindung herstellen
+      const ws = new WebSocket('ws://localhost:3001');
+      
+      ws.onopen = () => {
+        console.log('WebSocket verbunden');
+        // Audio-Daten senden
+        const reader = new FileReader();
+        reader.onload = () => {
+          ws.send(JSON.stringify({
+            type: 'audio',
+            data: reader.result
+          }));
+        };
+        reader.readAsDataURL(audioBlob);
       };
-      reader.readAsDataURL(audioBlob);
-    } catch (err) {
-      console.error('WS send error:', err);
+      
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'transcript') {
+          setTranscript(data.text);
+        } else if (data.type === 'response') {
+          setAiResponse(data.text);
+        }
+      };
+      
+      ws.onerror = (error) => {
+        console.error('WebSocket Fehler:', error);
+      };
+      
+    } catch (error) {
+      console.error('WebSocket Verarbeitung fehlgeschlagen:', error);
     }
   };
 
-  /* ------- Time slot helpers (unchanged) ------- */
-  const isSlotAvailable = (date: string, time: string) => !bookings.some((b) => b.date === date && b.time === time);
+  const isSlotAvailable = (date: string, time: string) => {
+    return !bookings.some(booking => 
+      booking.date === date && booking.time === time
+    );
+  };
 
   const handleSlotClick = (date: string, time: string) => {
     if (isSlotAvailable(date, time)) {
@@ -315,7 +602,7 @@ function App() {
 
   const handleBookingSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-
+    
     if (!formData.name || !formData.email || !selectedSlot) {
       alert('Bitte füllen Sie alle Felder aus.');
       return;
@@ -334,17 +621,23 @@ function App() {
       id: Date.now().toString()
     };
 
-    const updated = [...bookings, newBooking];
-    setBookings(updated);
-    localStorage.setItem('bookings', JSON.stringify(updated));
-
+    const updatedBookings = [...bookings, newBooking];
+    setBookings(updatedBookings);
+    localStorage.setItem('bookings', JSON.stringify(updatedBookings));
+    
+    // Reset form
     setFormData({ name: '', email: '', phone: '', meetingType: 'phone' });
     setSelectedSlot(null);
     setIsBookingModalOpen(false);
-
-    const txt = { phone: 'rufen Sie an', zoom: 'senden Ihnen einen Zoom‑Link', teams: 'senden Ihnen einen Teams‑Link' };
-    alert(`Termin gebucht! Wir ${txt[newBooking.meetingType]} zur vereinbarten Zeit.`);
-  };
+    
+    const meetingTypeText = {
+      phone: 'rufen Sie an',
+      zoom: 'senden Ihnen einen Zoom-Link',
+      teams: 'senden Ihnen einen Teams-Link'
+    };
+    
+    alert(Termin erfolgreich gebucht! Wir ${meetingTypeText[newBooking.meetingType]} zur vereinbarten Zeit.);
+  }
 
   // Wochennavigation
   const getWeekStart = (date: Date) => {
