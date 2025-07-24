@@ -158,12 +158,12 @@ function getTranscriptViaWebSocket(audioBuffer, { detect }) {
     const langParams = detect ? 'detect_language=true' : 'language=de';
 
     const deepgramUrl =
-      wss://api.deepgram.com/v1/listen?model=nova-2 +
-      &${langParams} +
-      &punctuate=true +
-      &interim_results=false +
-      &endpointing=300 +
-      &vad_events=true +
+      `wss://api.deepgram.com/v1/listen?model=nova-2` +
+      `&${langParams}` +
+      `&punctuate=true` +
+      `&interim_results=false` +
+      `&endpointing=300` +
+      `&vad_events=true` +
       encodingParam + sampleRateParam + channelsParam;
 
     console.log('🔍 Audio Format Detection:', hex8);
@@ -171,7 +171,7 @@ function getTranscriptViaWebSocket(audioBuffer, { detect }) {
     console.log('🔗 Deepgram WebSocket URL:', deepgramUrl);
 
     const ws = new WebSocket(deepgramUrl, {
-      headers: { Authorization: Token ${DEEPGRAM_API_KEY} },
+      headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
       perMessageDeflate: false
     });
 
@@ -218,7 +218,7 @@ function getTranscriptViaWebSocket(audioBuffer, { detect }) {
       const result = finalTranscript.trim();
 
       if (!opened) return reject(new Error('WS not opened – check API key/URL'));
-      if (code >= 4000 || code === 1006) return reject(new Error(Deepgram WS closed abnormally (${code}) ${reason}));
+      if (code >= 4000 || code === 1006) return reject(new Error(`Deepgram WS closed abnormally (${code}) ${reason}`));
       if (!gotResults && format === 'raw') return reject(new Error('No results – likely wrong encoding/sample rate for raw audio'));
       resolve(result);
     });
@@ -268,22 +268,22 @@ async function processAndStreamLLMResponse(transcript, voice, res) {
 async function* getGeminiStream(userTranscript) {
   const accessToken = await retry(() => generateAccessToken(), 2);
 
-  const endpoint = https://${GEMINI_REGION}-aiplatform.googleapis.com/v1/projects/${SERVICE_ACCOUNT_JSON.project_id}/locations/${GEMINI_REGION}/publishers/google/models/gemini-2.5-flash-lite:streamGenerateContent?alt=sse;
+  const endpoint = `https://${GEMINI_REGION}-aiplatform.googleapis.com/v1/projects/${SERVICE_ACCOUNT_JSON.project_id}/locations/${GEMINI_REGION}/publishers/google/models/gemini-2.5-flash-lite:streamGenerateContent?alt=sse`;
 
   const requestBody = {
-    contents: [{ role: 'user', parts: [{ text: Du bist ein freundlicher Telefonassistent. Antworte kurz und freundlich.\nKunde: ${userTranscript} }] }],
+    contents: [{ role: 'user', parts: [{ text: `Du bist ein freundlicher Telefonassistent. Antworte kurz und freundlich.\nKunde: ${userTranscript}` }] }],
     generationConfig: { temperature: 0.7, maxOutputTokens: 200 },
     safetySettings: [{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' }]
   };
 
   const { body, statusCode, headers } = await request(endpoint, {
     method: 'POST',
-    headers: { Authorization: Bearer ${accessToken}, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(requestBody),
     dispatcher: geminiAgent
   });
 
-  if (statusCode !== 200) throw new Error(Gemini returned ${statusCode});
+  if (statusCode !== 200) throw new Error(`Gemini returned ${statusCode}`);
 
   const isSSE = /text\/event-stream/i.test(headers['content-type'] || '');
   const decoder = new TextDecoder();
@@ -323,7 +323,7 @@ async function generateAndStreamSpeechXTTS(text, voice, res) {
     await ensurePodRunning();
     if (!currentPodEndpoint) throw new Error('RunPod not available');
 
-    const endpoint = ${currentPodEndpoint}/api/tts;
+    const endpoint = `${currentPodEndpoint}/api/tts`;
     const reqBody = { text, speaker: voice || 'german_m2', language: 'de', stream_chunk_size: 180 };
 
     const { body, statusCode } = await request(endpoint, {
@@ -333,7 +333,7 @@ async function generateAndStreamSpeechXTTS(text, voice, res) {
       dispatcher: runpodAgent
     });
 
-    if (statusCode !== 200) throw new Error(XTTS returned ${statusCode});
+    if (statusCode !== 200) throw new Error(`XTTS returned ${statusCode}`);
 
     const audioBuffer = Buffer.from(await body.arrayBuffer());
     streamResponse(res, 'audio_chunk', { base64: audioBuffer.toString('base64'), format: 'wav' });
@@ -363,7 +363,7 @@ async function ensurePodRunning() {
 async function getPodStatus() {
   const { body, statusCode } = await request('https://api.runpod.io/graphql', {
     method: 'POST',
-    headers: { Authorization: RUNPOD_API_KEY, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${RUNPOD_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       query: `query { pod(input: {podId: "${RUNPOD_POD_ID}"}) { id desiredStatus runtime { uptimeInSeconds ports { ip isIpPublic privatePort publicPort type } } } }`
     }),
@@ -399,7 +399,7 @@ async function getPodStatus() {
 async function startPod() {
   const { body, statusCode } = await request('https://api.runpod.io/graphql', {
     method: 'POST',
-    headers: { Authorization: RUNPOD_API_KEY, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${RUNPOD_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       query: `mutation { podResume(input: {podId: "${RUNPOD_POD_ID}", gpuCount: 1}) { id desiredStatus } }`
     }),
@@ -430,9 +430,9 @@ async function stopPod() {
   try {
     const { body } = await request('https://api.runpod.io/graphql', {
       method: 'POST',
-      headers: { Authorization: RUNPOD_API_KEY, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${RUNPOD_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        query: mutation { podStop(input: {podId: "${RUNPOD_POD_ID}"}) { id desiredStatus } }
+        query: `mutation { podStop(input: {podId: "${RUNPOD_POD_ID}"}) { id desiredStatus } }`
       }),
       dispatcher: runpodAgent
     });
@@ -466,17 +466,17 @@ async function generateAccessToken() {
     iat: now
   };
   const header = { alg: 'RS256', typ: 'JWT' };
-  const toSign = ${Buffer.from(JSON.stringify(header)).toString('base64url')}. +
-                 ${Buffer.from(JSON.stringify(payload)).toString('base64url')};
+  const toSign = `${Buffer.from(JSON.stringify(header)).toString('base64url')}.` +
+                 `${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
   const signature = createSign('RSA-SHA256').update(toSign).sign(SERVICE_ACCOUNT_JSON.private_key, 'base64url');
 
   const { body, statusCode } = await request(SERVICE_ACCOUNT_JSON.token_uri, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${toSign}.${signature},
+    body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${toSign}.${signature}`,
     dispatcher: tokenAgent
   });
-  if (statusCode !== 200) throw new Error(Token exchange failed ${statusCode});
+  if (statusCode !== 200) throw new Error(`Token exchange failed ${statusCode}`);
   return (await body.json()).access_token;
 }
 
@@ -490,11 +490,11 @@ async function generateAndStreamSpeechGCP(text, voice, res) {
     };
     const { body, statusCode } = await request('https://texttospeech.googleapis.com/v1/text:synthesize', {
       method: 'POST',
-      headers: { Authorization: Bearer ${accessToken}, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(reqBody),
       dispatcher: tokenAgent
     });
-    if (statusCode !== 200) throw new Error(GCP TTS ${statusCode});
+    if (statusCode !== 200) throw new Error(`GCP TTS ${statusCode}`);
     const result = await body.json();
     streamResponse(res, 'audio_chunk', { base64: result.audioContent, format: 'mp3' });
     streamResponse(res, 'tts_engine', { engine: 'gcp' });
