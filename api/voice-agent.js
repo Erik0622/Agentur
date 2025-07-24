@@ -1,49 +1,46 @@
-// api/voice-agent.js - KOMPLETT ERSETZEN
+// api/voice-agent.js – FIXED to avoid Deepgram 400 (encoding/sample_rate mismatch)
+// -----------------------------------------------------------------------------
+// Changes vs. your version:
+//  - Removed invalid query params for container audio (encoding/sample_rate/channels)
+//  - Auto-detects container and only sets encoding if RAW audio
+//  - Dropped unnecessary Content-Type header on WS handshake
+//  - Hardened error/close handling to log Deepgram's reason
+//  - Small cleanups & security notes (no hardcoded keys!)
+// -----------------------------------------------------------------------------
+
 import { request, Agent } from 'undici';
 import WebSocket from 'ws';
 import { createSign } from 'crypto';
 
-// Configuration
+// ---------------- Configuration ----------------
 let config;
 try {
   config = await import('../config.js').then(m => m.config);
 } catch {
   config = {
-    DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY || "ac6a04eb0684c7bd7c61e8faab45ea6b1ee47681",
-    RUNPOD_API_KEY: process.env.RUNPOD_API_KEY || "rpa_6BJIJQF8T0JDF8CV2PMGDDM3NMU4EQFGY5FQJYEGcd95ru",
-    RUNPOD_POD_ID: process.env.RUNPOD_POD_ID || "1qk7cgnywlip7f",
+    DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY,
+    RUNPOD_API_KEY: process.env.RUNPOD_API_KEY,
+    RUNPOD_POD_ID: process.env.RUNPOD_POD_ID,
     SERVICE_ACCOUNT_JSON: process.env.GOOGLE_SERVICE_ACCOUNT_JSON ?
-      JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON) :
-      {
-        "type": "service_account",
-        "project_id": "gen-lang-client-0449145483",
-        "private_key_id": "1e6ef13b66c6482c0b9aef385d6d95f042717a0b",
-        "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCdfC/EouuNEeSm\n2FXhptXiwm7P7qkQk4afQjXgaJ8cMSJgE0DKWbhingFQEBxJgSncPfmbRQpXiGFO\nEWngJFyObbXMyTrbBU2h2Q4se+n+T44Vu3mcYcPFVbPFT1iIbOi70RUG2ek1ea+w\nw3y+ayh0o7v9/Jo5ShelS5gInjsbuOkmT7DV0kbWn1kx0uA1ss3L7fBwCt9WfJSV\nlZrpliVrZRdIolBV14ieW3scaL2E57KR/gvnjoo3g7G+y4xXCT7h4BysyH3SLMcU\nVcj52uKgcOp9Akn4/Z2dXZVErpjH/FwWAQ0yLz40HwggIItoRRqxQgg0nYBd1Gth\nDDftRBBZAgMBAAECggEADBZJ/Eec2Jj0+bFE9iq948eUhbUFmNYZ0QNd6zlcbOeA\nges4X89/DWKfKyvxX9rgAZ1oGPi1kH5RKZLAk4l26R+Wgn83WzQO/0sPgW6JSRGG\nEDjxXoVKZ0zqnUw3uVDSlAe6G2qCMa6DQ4fdfSfwVPN0LExE8fyzz+X7Zz3tv3TU\n4tjnIVV6CPGsysYD5KRF68w1qgQb4K4pTTOoiaCM1mJYFp8jCd7y5HFjM2+2bq0i\nyVNLxnJ7kcm0spUuHZwINImEZ3RV6tuXwljM088ph9voX2ZE8dcwtcBvo8rgGEJE\nMkIc0N5iiTqCINcFgtV5dCGuzHnkIvSFYXFNY+zI4QKBgQDTqPimyLQrx9tyOYb1\nxzT17ekvj0VAluYUMgwgFgncMFnm3i0wHUMp/a3OOmJasko5/Z3RhCRPO6PhB2e8\nIDL1A9VxaFCVrSARVA5oFZTVBZG6O1iH7BRgqGMusHY58wFF/wpl5J/s/wY9CpYU\nz1tB5wEkoFNUx3AoqND4cuyBnQKBgQC+eePQoUq4tTSYq8/M+yfnigkoYt7EeNel\nxyPOOmbN0IMSpOyKvjrBmQes10pjT9aAFql12Km+/aQ+bjWq0T5tqw8znZkfQPb/\nWQk6LkZkYRWIPNiqU/P/7+6fxd38wEyYqJuzd73Db0RkT2aDiCt8fLvnpIp4SyLL\nBG/Uo3S67QKBgQCf9CcNK8n0+BFgDhdu7/+XBxddKMGmISN5CaVeLil/bE7UiPzP\nSp3yQtKxci/X6LrtfjthFaK2+hRLv+PmKNM5lI8eKD4WDwKX9dT5Va3nGlFZ0vWB\nqqhvr3Fc3GBMRNemhSnffNpbKRMW2EQ5L8cAU8nqWvr+q8WYBJP/3iHbhQKBgEuq\n+nCgEqIMAmgAIR4KTFD0Ci1MEbk1VF3cHYJIuxxaECfw8rMvXQIZu+3S3Q9U4R6j\nYhCZ0N05v+y5NYK1ezpv8SsNGY5L7ZOFGGBPj9FCrB4iJeSMU2tCMqawIT7OWd9v\nY+NI107zPdUnoc7w4m2i07bzK7scBidmjNKJWM8FAoGADZ8Ew7y19Zzn7+vp8GEq\nLcZ+dtgT9diJH65fllnuX8pLmT8/qgX2UrzioPQ8ibdsHxg7JzJ56kYD+3+rH3H/\nx9B6GEDHKQoyKEPP/mO1K2TKYgyNcOuV/DvOaHa79fIUdZVuKAN1VPDOF/1rrRUu\ns1Ic6uppkG5eB+SXKwU9O5M=\n-----END PRIVATE KEY-----\n",
-        "client_email": "erik86756r75@gen-lang-client-0449145483.iam.gserviceaccount.com",
-        "client_id": "115562603227493619457",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/erik86756r75%40gen-lang-client-0449145483.iam.gserviceaccount.com",
-        "universe_domain": "googleapis.com"
-      }
+      JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON) : undefined
   };
 }
 
 const { DEEPGRAM_API_KEY, RUNPOD_API_KEY, RUNPOD_POD_ID, SERVICE_ACCOUNT_JSON } = config;
 
-// HTTP Agents
+// ---------------- HTTP Agents ----------------
 const geminiAgent = new Agent({ keepAliveTimeout: 30_000, keepAliveMaxTimeout: 120_000, keepAliveTimeoutThreshold: 1000, connections: 10, pipelining: 1 });
 const runpodAgent = new Agent({ keepAliveTimeout: 15_000, keepAliveMaxTimeout: 60_000, connections: 5, pipelining: 1 });
 const tokenAgent  = new Agent({ keepAliveTimeout: 60_000, keepAliveMaxTimeout: 300_000, connections: 2, pipelining: 1 });
 
-// Pod State
+// ---------------- Pod State ----------------
 let currentPodEndpoint = null;
 let podStartTime = null;
 let podStopTimer = null;
 
-// MAIN API HANDLER - KORRIGIERT für Frontend Request Format
+// ---------------- API Handler ----------------
 export default async function handler(req, res) {
+  console.log('[voice-agent] --- API Request ---');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Bypass-Stt, X-Simulated-Transcript');
@@ -51,19 +48,15 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  // WICHTIG: Frontend sendet {audio, voice}, nicht {type, audio, text}
   const { audio, voice = 'german_m2', detect = false } = req.body || {};
-  
+
   console.log('🔍 API Request Debug:');
   console.log('  - Audio vorhanden:', !!audio);
   console.log('  - Audio Länge (Base64 chars):', audio ? audio.length : 'N/A');
   console.log('  - Voice:', voice);
   console.log('  - Request body keys:', Object.keys(req.body || {}));
-  
-  if (!audio) {
-    console.log('❌ Kein Audio in Request Body');
-    return res.status(400).json({ error: 'Missing audio data' });
-  }
+
+  if (!audio) return res.status(400).json({ error: 'Missing audio data' });
 
   try {
     res.writeHead(200, {
@@ -78,13 +71,14 @@ export default async function handler(req, res) {
       streamResponse(res, 'transcript', { text: transcript });
     } else {
       const audioBuffer = Buffer.from(audio, 'base64');
+
       console.log('🎤 Audio Buffer Debug:');
       console.log('  - Buffer Size (bytes):', audioBuffer.length);
       console.log('  - First 4 bytes (hex):', audioBuffer.slice(0, 4).toString('hex'));
-      
+
       transcript = await getTranscriptViaWebSocket(audioBuffer, { detect });
       console.log('📝 Transkript erhalten:', transcript);
-      
+
       if (transcript) streamResponse(res, 'transcript', { text: transcript });
     }
 
@@ -108,7 +102,7 @@ export default async function handler(req, res) {
   }
 }
 
-// Streaming Helper
+// ---------------- Streaming Helper ----------------
 function streamResponse(res, type, data) {
   if (res.finished) return;
   try {
@@ -118,207 +112,160 @@ function streamResponse(res, type, data) {
   }
 }
 
-// Deepgram WebSocket - KORRIGIERT für WebM/Opus
+// ---------------- Deepgram WebSocket ----------------
 function getTranscriptViaWebSocket(audioBuffer, { detect }) {
   return new Promise((resolve, reject) => {
-    // Format Detection
-    let encoding;
-    const hex = audioBuffer.slice(0, 8).toString('hex');
-    console.log('🔍 Audio Format Detection:', hex);
-    
-    if (hex.startsWith('1a45dfa3')) {
-      encoding = 'webm-opus';  // KORRIGIERT: WebM mit Opus braucht "webm-opus"
-      console.log('✅ Detected: WebM/EBML format');
-    } else if (hex.startsWith('52494646')) {
-      encoding = 'wav';
-      console.log('✅ Detected: WAV/RIFF format');
-    } else if (hex.startsWith('4f676753')) {
-      encoding = 'ogg-opus';
-      console.log('✅ Detected: OGG format');
+    // Detect container/format by magic bytes
+    const hex8 = audioBuffer.slice(0, 8).toString('hex');
+    let encodingParam = '';
+    let sampleRateParam = '';
+    let channelsParam = '';
+
+    let format = 'unknown';
+    if (hex8.startsWith('1a45dfa3')) {
+      format = 'webm'; // WebM/EBML container
+    } else if (hex8.startsWith('52494646')) {
+      format = 'wav'; // RIFF/WAV
+    } else if (hex8.startsWith('4f676753')) {
+      format = 'ogg'; // Ogg container (opus likely)
     } else {
-      encoding = 'webm-opus';
-      console.log('⚠️ Unknown format, using WebM-Opus fallback');
+      // assume raw opus/pcm => we MUST tell Deepgram
+      format = 'raw';
+      encodingParam = '&encoding=opus';
+      sampleRateParam = '&sample_rate=48000';
+      channelsParam = '&channels=1';
     }
 
-    const sampleRate = 48000;
-    const channels = 1;
     const langParams = detect ? 'detect_language=true' : 'language=de';
 
-    // KORRIGIERT: Deepgram WebSocket URL für WebM-Opus
     const deepgramUrl =
-      `wss://api.deepgram.com/v1/listen?` +
-      `model=nova-2` +
-      `&encoding=${encoding}` +
-      `&sample_rate=${sampleRate}` +
-      `&channels=${channels}` +
+      `wss://api.deepgram.com/v1/listen?model=nova-2` +
       `&${langParams}` +
       `&punctuate=true` +
-      `&interim_results=false` +  // GEÄNDERT: false für stabilere Ergebnisse
+      `&interim_results=false` +
       `&endpointing=300` +
-      `&vad_events=true`;         // NEU: Voice Activity Detection
+      `&vad_events=true` +
+      encodingParam + sampleRateParam + channelsParam;
 
+    console.log('🔍 Audio Format Detection:', hex8);
+    console.log('✅ Detected format:', format);
     console.log('🔗 Deepgram WebSocket URL:', deepgramUrl);
 
     const ws = new WebSocket(deepgramUrl, {
-      headers: { 
-        Authorization: `Token ${DEEPGRAM_API_KEY}`,
-        'Content-Type': 'application/json'  // NEU: Content-Type Header
+      headers: {
+        Authorization: `Token ${DEEPGRAM_API_KEY}`
       },
       perMessageDeflate: false
     });
 
     let finalTranscript = '';
-    let hasReceivedAnyData = false;
-    let connectionEstablished = false;
+    let gotResults = false;
+    let opened = false;
 
     ws.on('open', () => {
+      opened = true;
       console.log('✅ Deepgram WebSocket connected');
-      connectionEstablished = true;
-
-      // KORRIGIERT: Audio in einem Stück senden für WebM
       try {
+        // Send entire buffer (container ok)
         ws.send(audioBuffer);
         console.log('📤 Audio gesendet:', audioBuffer.length, 'bytes');
-        
-        // Kurz warten, dann CloseStream senden
         setTimeout(() => {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'CloseStream' }));
             console.log('📤 CloseStream gesendet');
           }
-        }, 1000);
-      } catch (error) {
-        console.error('❌ Fehler beim Senden:', error);
-        reject(error);
+        }, 50);
+      } catch (err) {
+        reject(err);
       }
     });
 
     ws.on('message', data => {
       try {
         const msg = JSON.parse(data.toString());
-        hasReceivedAnyData = true;
-        
-        console.log('📨 Deepgram Message:', msg.type || 'unknown', msg);
-        
-        if (msg.channel?.alternatives?.[0]) {
+        if (msg.type === 'Results' && msg.channel?.alternatives?.[0]) {
           const alt = msg.channel.alternatives[0];
-          const partial = alt.transcript;
-          if (partial) {
-            console.log('📝 Transcript:', partial, '(final:', msg.is_final, ')');
-            if (msg.is_final || !msg.is_final) { // Akzeptiere alle Transkripte
-              finalTranscript += partial + ' ';
+          const txt = alt.transcript || '';
+          if (txt.trim()) {
+            gotResults = true;
+            if (msg.is_final) {
+              finalTranscript += txt + ' ';
             }
           }
         }
-        
-        if (msg.type === 'Metadata') {
-          console.log('ℹ️ Deepgram Metadata:', JSON.stringify(msg, null, 2));
-        }
-        
-        if (msg.type === 'Results' && msg.channel?.alternatives?.[0]?.transcript) {
-          const transcript = msg.channel.alternatives[0].transcript;
-          if (transcript.trim()) {
-            finalTranscript = transcript.trim();
-            console.log('✅ Final transcript from Results:', finalTranscript);
-          }
-        }
       } catch (e) {
-        console.warn('⚠️ Deepgram Message Parse Error:', e);
+        console.warn('⚠️ Parse error:', e);
       }
     });
 
-    ws.on('close', (code, reason) => {
+    ws.on('close', (code, reasonBuf) => {
+      const reason = reasonBuf?.toString() || '';
+      console.log('🔌 Deepgram WebSocket closed:', code, reason);
       const result = finalTranscript.trim();
-      console.log('🔌 Deepgram WebSocket closed:', code, reason?.toString());
-      console.log('📝 Final transcript:', result);
-      
-      if (!connectionEstablished) {
-        reject(new Error('Connection failed - check API key and encoding'));
-        return;
+
+      if (!opened) return reject(new Error('WS not opened – check API key/URL'));
+      if (code >= 4000 || code === 1006) {
+        return reject(new Error(`Deepgram WS closed abnormally (${code}) ${reason}`));
       }
-      
-      if (!hasReceivedAnyData) {
-        console.warn('⚠️ No data received - possible encoding mismatch');
-        reject(new Error('No response from Deepgram - encoding mismatch'));
-        return;
+      if (!gotResults && format === 'raw') {
+        return reject(new Error('No results – likely wrong encoding/sample rate for raw audio'));
       }
-      
       resolve(result);
     });
 
-    ws.on('error', (error) => {
-      console.error('❌ Deepgram WebSocket Error:', error);
-      
-      // Spezifische Fehlerbehandlung
-      if (error.message.includes('400')) {
+    ws.on('error', err => {
+      console.error('❌ Deepgram WebSocket Error:', err);
+      if (String(err?.message || '').includes('400')) {
         reject(new Error('Deepgram 400 Error - Invalid audio format or parameters'));
-      } else if (error.message.includes('401')) {
+      } else if (String(err?.message || '').includes('401')) {
         reject(new Error('Deepgram 401 Error - Invalid API key'));
       } else {
-        reject(error);
+        reject(err);
       }
     });
 
-    // Timeout mit längerer Wartezeit für WebM
+    // Safety timeout
     setTimeout(() => {
       if (ws.readyState !== WebSocket.CLOSED) {
         console.log('⏰ Deepgram Timeout');
         try { ws.terminate(); } catch {}
         reject(new Error('Deepgram timeout - try shorter audio'));
       }
-    }, 25000); // Längerer Timeout für WebM-Verarbeitung
+    }, 25000);
   });
 }
 
-// LLM Processing - mit XTTS Integration
+// ---------------- LLM Processing ----------------
 async function processAndStreamLLMResponse(transcript, voice, res) {
   console.log('🤖 Starting LLM processing for:', transcript);
-  
   const geminiStream = getGeminiStream(transcript);
   let fullResponse = '';
 
-  // Stream LLM Response
   for await (const token of geminiStream) {
     streamResponse(res, 'llm_chunk', { text: token });
     fullResponse += token;
   }
 
-  console.log('🤖 LLM Complete Response:', fullResponse);
   streamResponse(res, 'llm_response', { text: fullResponse });
 
-  // Generate TTS
   if (fullResponse.trim()) {
-    console.log('🔊 Starting TTS generation...');
     await generateAndStreamSpeechXTTS(fullResponse, voice, res);
   }
 }
 
-// Gemini 2.5 Flash Lite Stream - KORRIGIERT
+// ---------------- Gemini Streaming ----------------
 async function* getGeminiStream(userTranscript) {
   const accessToken = await generateAccessToken();
-  const endpoint =
-    `https://aiplatform.googleapis.com/v1beta1/projects/${SERVICE_ACCOUNT_JSON.project_id}` +
-    `/locations/global/publishers/google/models/gemini-2.5-flash-lite-preview-06-17:streamGenerateContent`;
+  const endpoint = `https://aiplatform.googleapis.com/v1beta1/projects/${SERVICE_ACCOUNT_JSON.project_id}/locations/global/publishers/google/models/gemini-2.5-flash-lite-preview-06-17:streamGenerateContent`;
 
   const requestBody = {
-    contents: [{ 
-      role: 'user', 
-      parts: [{ text: `Du bist ein freundlicher Telefonassistent. Antworte kurz und freundlich.\nKunde: ${userTranscript}` }] 
-    }],
-    generationConfig: { 
-      temperature: 0.7, 
-      maxOutputTokens: 200 
-    }
+    contents: [{ role: 'user', parts: [{ text: `Du bist ein freundlicher Telefonassistent. Antworte kurz und freundlich.\nKunde: ${userTranscript}` }] }],
+    generationConfig: { temperature: 0.7, maxOutputTokens: 200 }
   };
-
-  console.log('🤖 Gemini Request to:', endpoint);
 
   const { body } = await request(endpoint, {
     method: 'POST',
-    headers: { 
-      Authorization: `Bearer ${accessToken}`, 
-      'Content-Type': 'application/json' 
-    },
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(requestBody),
     dispatcher: geminiAgent
   });
@@ -329,51 +276,34 @@ async function* getGeminiStream(userTranscript) {
   for await (const chunk of body) {
     buffer += decoder.decode(chunk, { stream: true });
     let newlineIndex;
-    
     while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, newlineIndex).trim();
       buffer = buffer.slice(newlineIndex + 1);
-      
       if (!line) continue;
       if (line.startsWith('data:')) {
         const payload = line.slice(5).trim();
         if (payload === '[DONE]') return;
-        
         try {
           const json = JSON.parse(payload.replace(/^\[/, '').replace(/\]$/, ''));
           const content = json.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (content) {
-            console.log('🤖 Gemini token:', content);
-            yield content;
-          }
-        } catch (e) {
-          // Ignore parse errors for partial data
+          if (content) yield content;
+        } catch {
+          // ignore partials
         }
       }
     }
   }
 }
 
-// XTTS v2 über RunPod
+// ---------------- XTTS via RunPod ----------------
 async function generateAndStreamSpeechXTTS(text, voice, res) {
   console.log('🔊 XTTS generation starting...');
-  
   try {
     await ensurePodRunning();
-    
-    if (!currentPodEndpoint) {
-      throw new Error('RunPod not available');
-    }
+    if (!currentPodEndpoint) throw new Error('RunPod not available');
 
     const endpoint = `${currentPodEndpoint}/api/tts`;
-    const reqBody = {
-      text,
-      speaker: voice || 'german_m2',
-      language: 'de',
-      stream_chunk_size: 180
-    };
-    
-    console.log('🔊 XTTS Request:', endpoint, reqBody);
+    const reqBody = { text, speaker: voice || 'german_m2', language: 'de', stream_chunk_size: 180 };
 
     const { body, statusCode } = await request(endpoint, {
       method: 'POST',
@@ -382,19 +312,11 @@ async function generateAndStreamSpeechXTTS(text, voice, res) {
       dispatcher: runpodAgent
     });
 
-    if (statusCode !== 200) {
-      throw new Error(`XTTS returned ${statusCode}`);
-    }
+    if (statusCode !== 200) throw new Error(`XTTS returned ${statusCode}`);
 
     const audioBuffer = Buffer.from(await body.arrayBuffer());
-    console.log('🔊 XTTS audio generated:', audioBuffer.length, 'bytes');
-    
-    streamResponse(res, 'audio_chunk', {
-      base64: audioBuffer.toString('base64'),
-      format: 'wav'
-    });
+    streamResponse(res, 'audio_chunk', { base64: audioBuffer.toString('base64'), format: 'wav' });
     streamResponse(res, 'tts_engine', { engine: 'xtts' });
-
   } catch (e) {
     console.error('XTTS Error:', e);
     streamResponse(res, 'tts_engine', { engine: 'gcp_fallback', reason: e.message });
@@ -402,7 +324,7 @@ async function generateAndStreamSpeechXTTS(text, voice, res) {
   }
 }
 
-// RunPod Management (behalten wie ursprünglich)
+// ---------------- RunPod Management ----------------
 async function ensurePodRunning() {
   try {
     const status = await getPodStatus();
@@ -418,7 +340,7 @@ async function ensurePodRunning() {
 }
 
 async function getPodStatus() {
-  const { body, statusCode } = await request(`https://api.runpod.io/graphql`, {
+  const { body, statusCode } = await request('https://api.runpod.io/graphql', {
     method: 'POST',
     headers: { Authorization: RUNPOD_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -426,11 +348,11 @@ async function getPodStatus() {
     }),
     dispatcher: runpodAgent
   });
-  
+
   if (statusCode !== 200) throw new Error(`RunPod API ${statusCode}`);
   const result = await body.json();
   if (result.errors) throw new Error(result.errors[0].message);
-  
+
   const pod = result.data?.pod;
   if (!pod) throw new Error('Pod not found');
 
@@ -449,7 +371,7 @@ async function getPodStatus() {
 }
 
 async function startPod() {
-  const { body, statusCode } = await request(`https://api.runpod.io/graphql`, {
+  const { body, statusCode } = await request('https://api.runpod.io/graphql', {
     method: 'POST',
     headers: { Authorization: RUNPOD_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -479,7 +401,7 @@ async function waitForPodReady() {
 
 async function stopPod() {
   try {
-    const { body } = await request(`https://api.runpod.io/graphql`, {
+    const { body } = await request('https://api.runpod.io/graphql', {
       method: 'POST',
       headers: { Authorization: RUNPOD_API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -506,7 +428,7 @@ function schedulePodStop() {
   }, 5 * 60 * 1000);
 }
 
-// Google Access Token Generation
+// ---------------- Google Auth & GCP TTS Fallback ----------------
 async function generateAccessToken() {
   const now = Math.floor(Date.now() / 1000);
   const payload = {
@@ -517,9 +439,8 @@ async function generateAccessToken() {
     iat: now
   };
   const header = { alg: 'RS256', typ: 'JWT' };
-  const toSign =
-    `${Buffer.from(JSON.stringify(header)).toString('base64url')}.` +
-    `${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
+  const toSign = `${Buffer.from(JSON.stringify(header)).toString('base64url')}.` +
+                 `${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
   const signature = createSign('RSA-SHA256').update(toSign).sign(SERVICE_ACCOUNT_JSON.private_key, 'base64url');
 
   const { body, statusCode } = await request(SERVICE_ACCOUNT_JSON.token_uri, {
@@ -532,7 +453,6 @@ async function generateAccessToken() {
   return (await body.json()).access_token;
 }
 
-// GCP TTS Fallback
 async function generateAndStreamSpeechGCP(text, voice, res) {
   try {
     const accessToken = await generateAccessToken();
@@ -553,10 +473,9 @@ async function generateAndStreamSpeechGCP(text, voice, res) {
     streamResponse(res, 'tts_engine', { engine: 'gcp' });
   } catch (e) {
     console.error('GCP TTS error', e);
-    streamResponse(res, 'audio_chunk', {
-      base64: 'SUQzBAAAAAAAI1RTU0UAAAAPAAADAE1wZWcgZ2VuZXJhdG9yAA==',
-      format: 'mp3'
-    });
+    streamResponse(res, 'audio_chunk', { base64: 'SUQzBAAAAAAAI1RTU0UAAAAPAAADAE1wZWcgZ2VuZXJhdG9yAA==', format: 'mp3' });
     streamResponse(res, 'tts_engine', { engine: 'silent', reason: e.message });
   }
 }
+
+export { processAndStreamLLMResponse, generateAndStreamSpeechGCP };
