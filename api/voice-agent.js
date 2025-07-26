@@ -314,13 +314,15 @@
      }
    }
    
-  // ---------------- Azure TTS (chunked REST stream) ----------------
+ // ---------------- Azure TTS (chunked REST stream) ----------------
 async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
   const region = (process.env.AZURE_SPEECH_REGION || AZURE_SPEECH_REGION || 'westeurope').toLowerCase();
   const TTS_HOST   = process.env.AZURE_TTS_HOST   || `${region}.tts.speech.microsoft.com`;
   const TOKEN_HOST = process.env.AZURE_TOKEN_HOST || `${region}.api.cognitive.microsoft.com`;
 
-  const requestedVoice = (opts.voice || AZURE_VOICE_NAME).trim();
+  // requested voice (can be overridden via opts.voice)
+  let requestedVoice = (opts.voice || AZURE_VOICE_NAME || 'de-DE-FlorianMultilingualNeural').trim();
+
   console.log('🔊 Azure HD TTS starting...');
   console.log('  • Raw text length:', text?.length || 0);
   console.log('  • Configured voice:', requestedVoice);
@@ -337,15 +339,18 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
     }
   }
 
-  // Normalisieren: einige Libraries führen „DragonHDLatestNeural“ etc.
-  // Falls diese Stimme in der Region fehlt, später fallbacken wir.
-  await ensureVoiceAvailable(ssmlVoiceName, TTS_HOST, await buildAuthHeaders(TOKEN_HOST));
+  // Make sure the voice exists (or pick a fallback)
+  try {
+    ssmlVoiceName = await ensureVoiceAvailable(ssmlVoiceName, TTS_HOST, TOKEN_HOST) || ssmlVoiceName;
+  } catch (e) {
+    console.warn('⚠️ ensureVoiceAvailable failed:', e.message);
+  }
 
-  // ----- Text vorbereiten -----
-  const safeText  = String(text || '').trim();
+  // ----- Text prep -----
+  const safeText = String(text || '').trim();
   if (!safeText) throw new Error('Empty text for TTS');
 
-  // Azure akzeptiert SSML bis ~5000 Zeichen. Wir splitten konservativ.
+  // Azure SSML payload limit ~5k chars. Split to be safe.
   const chunks = splitForSsml(safeText, 4800);
 
   let totalBytes = 0;
@@ -384,7 +389,6 @@ function splitForSsml(str, maxLen) {
   let start = 0;
   while (start < str.length) {
     let end = Math.min(start + maxLen, str.length);
-    // Versuche an Satzende zu schneiden
     const slice = str.slice(start, end);
     let cut = slice.lastIndexOf('. ');
     if (cut < maxLen * 0.6) cut = slice.lastIndexOf(' ');
@@ -395,62 +399,62 @@ function splitForSsml(str, maxLen) {
   return parts;
 }
 
-async function synthesizeOnce(ssml, { TTS_HOST, TOKEN_HOST, deploymentId, res, format }) {
-  // Auth Headers (Bearer first, fallback to key)
-  const headers = await buildAuthHeaders(TOKEN_HOST);
+async function synthesizeOnce(ssml, ctx) {
+  const { TTS_HOST, TOKEN_HOST, deploymentId, res, format } = ctx;
+
+  const baseUrl  = `https://${TTS_HOST}/cognitiveservices/v1`;
+  const endpoint = deploymentId ? `${baseUrl}?deploymentId=${encodeURIComponent(deploymentId)}` : baseUrl;
+
+  // First try with subscription key, then retry with bearer if 401/403
+  let headers = await buildAuthHeaders(TOKEN_HOST, false);
+  applyCommonTtsHeaders(headers, format);
+
+  let { bytesSent, needRetry } = await doTtsRequest(endpoint, headers, ssml, res);
+  if (needRetry) {
+    headers = await buildAuthHeaders(TOKEN_HOST, true);
+    applyCommonTtsHeaders(headers, format);
+    ({ bytesSent } = await doTtsRequest(endpoint, headers, ssml, res));
+  }
+  return { bytesSent };
+}
+
+function applyCommonTtsHeaders(headers, format) {
   headers['Content-Type'] = 'application/ssml+xml';
   headers['X-Microsoft-OutputFormat'] = format;
   headers['User-Agent'] = 'voice-agent/1.0';
+}
 
-  const baseTtsUrl = `https://${TTS_HOST}/cognitiveservices/v1`;
-  const endpoint   = deploymentId
-    ? `${baseTtsUrl}?deploymentId=${encodeURIComponent(deploymentId)}`
-    : baseTtsUrl;
+async function doTtsRequest(endpoint, headers, ssml, res) {
+  const { body, statusCode, headers: respHeaders } = await request(endpoint, {
+    method: 'POST',
+    headers,
+    body: ssml,
+    dispatcher: azureAgent
+  });
 
-  console.log('🔗 Azure TTS URL:', endpoint);
-  console.log('  • Headers set:', Object.keys(headers));
-
-  let bytesSent = 0;
-
-  try {
-    const { body, statusCode, headers: respHeaders } = await request(endpoint, {
-      method: 'POST',
-      headers,
-      body: ssml,
-      dispatcher: azureAgent
-    });
-
-    console.log('📥 Azure TTS HTTP status:', statusCode);
-    if (statusCode !== 200) {
-      const errorText = await safeReadBodyText(body);
-      console.error('❌ Azure TTS error body:', truncate(errorText, 800));
-      console.error('❌ Resp headers:', respHeaders);
-      throw new Error(`Azure TTS ${statusCode}: ${truncate(errorText, 500)}`);
-    }
-
-    for await (const chunk of body) {
-      if (!chunk?.length) continue;
-      bytesSent += chunk.length;
-      streamResponse(res, 'audio_chunk', {
-        base64: Buffer.from(chunk).toString('base64'),
-        format: 'wav'
-      });
-    }
-  } catch (err) {
-    console.error('🔴 Azure HD TTS failed:', err);
-    streamResponse(res, 'tts_engine', { engine: 'azure_hd', error: err.message });
-
-    // Fallback to GCP
-    try {
-      console.log('🟡 Falling back to GCP TTS…');
-      await generateAndStreamSpeechGCP(ssmlToPlainText(ssml), null, res);
-    } catch (fallbackErr) {
-      console.error('🔴 GCP fallback also failed:', fallbackErr);
-      streamResponse(res, 'error', { message: 'All TTS engines failed.' });
-    }
+  console.log('📥 Azure TTS HTTP status:', statusCode);
+  if (statusCode === 401 || statusCode === 403) {
+    console.error('Auth failed (will retry?):', respHeaders);
+    await safeReadBodyText(body); // drain
+    return { bytesSent: 0, needRetry: true };
+  }
+  if (statusCode !== 200) {
+    const errorText = await safeReadBodyText(body);
+    console.error('❌ Azure TTS error body:', truncate(errorText, 800));
+    console.error('❌ Resp headers:', respHeaders);
+    throw new Error(`Azure TTS ${statusCode}: ${truncate(errorText, 500)}`);
   }
 
-  return { bytesSent };
+  let bytesSent = 0;
+  for await (const chunk of body) {
+    if (!chunk?.length) continue;
+    bytesSent += chunk.length;
+    streamResponse(res, 'audio_chunk', {
+      base64: Buffer.from(chunk).toString('base64'),
+      format: 'wav'
+    });
+  }
+  return { bytesSent, needRetry: false };
 }
 
 function ssmlToPlainText(ssml) {
@@ -458,38 +462,33 @@ function ssmlToPlainText(ssml) {
 }
 
 let _voiceListCache = null;
-async function ensureVoiceAvailable(voiceName, host, authHeaders) {
-  if (_voiceListCache) {
-    if (voiceExists(_voiceListCache, voiceName)) return;
-  }
+async function ensureVoiceAvailable(voiceName, ttsHost, tokenHost) {
+  if (_voiceListCache && voiceExists(_voiceListCache, voiceName)) return voiceName;
+
   try {
-    const { body, statusCode } = await request(`https://${host}/cognitiveservices/voices/list`, {
+    const headers = await buildAuthHeaders(tokenHost, false);
+    const { body, statusCode } = await request(`https://${ttsHost}/cognitiveservices/voices/list`, {
       method: 'GET',
-      headers: authHeaders,
+      headers,
       dispatcher: azureAgent
     });
     if (statusCode !== 200) {
       console.warn('⚠️ voices/list returned', statusCode);
-      return;
+      return voiceName; // cannot verify
     }
     const list = await body.json();
     _voiceListCache = list;
-    const found = voiceExists(list, voiceName);
-    console.log('🔎 Voice present in list:', found);
-    if (!found) {
-      const fallback = findClosestVoice(list, voiceName);
-      if (fallback) {
-        console.warn(`⚠️ Voice "${voiceName}" not found. Falling back to "${fallback}".`);
-        // mutate outer scope by reference (hacky but fine here)
-        // will be picked up by buildSsml calls
-        // eslint-disable-next-line no-global-assign
-        voiceName = fallback;
-      } else {
-        console.warn(`⚠️ Voice "${voiceName}" not found and no fallback detected.`);
-      }
+    if (voiceExists(list, voiceName)) return voiceName;
+    const fallback = findClosestVoice(list, voiceName);
+    if (fallback) {
+      console.warn(`⚠️ Voice "${voiceName}" not found. Falling back to "${fallback}".`);
+      return fallback;
     }
+    console.warn(`⚠️ Voice "${voiceName}" not found and no fallback detected.`);
+    return voiceName;
   } catch (e) {
     console.warn('⚠️ Could not fetch voices/list:', e.message);
+    return voiceName;
   }
 }
 
@@ -501,14 +500,12 @@ function findClosestVoice(list, name) {
   const base = name.split(':')[0];
   const hit = list.find(v => v.ShortName === base || v.ShortName?.startsWith(base));
   if (hit) return hit.ShortName;
-  // fallback: first German male voice
   const deMale = list.find(v => /de-DE/i.test(v.Locale) && /Male/i.test(v.Gender));
   return deMale?.ShortName;
 }
 
-async function buildAuthHeaders(tokenHost) {
-  // Try bearer first
-  if (process.env.AZURE_TTS_USE_BEARER === 'true') {
+async function buildAuthHeaders(tokenHost, preferBearer) {
+  if (preferBearer || process.env.AZURE_TTS_USE_BEARER === 'true') {
     try {
       const token = await getAzureToken(tokenHost);
       return { Authorization: `Bearer ${token}` };
@@ -541,7 +538,7 @@ async function getAzureToken(tokenHost) {
 }
 
 function escapeXml(str = '') {
-  return str.replace(/[<>&'"]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;' }[c]));
+  return str.replace(/[<>&'"/]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;','/':'&#47;' }[c]));
 }
 
 async function safeReadBodyText(body) {
