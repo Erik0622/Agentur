@@ -315,114 +315,193 @@
    }
    
    // ---------------- Azure TTS (chunked REST stream) ----------------
-   async function generateAndStreamSpeechAzureHD(text, res) {
-     console.log('🔊 Azure HD TTS starting...');
-   
-     const endpoint = `https://${AZURE_SPEECH_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`;
-   
-     // Optional: get token once and cache; here we send key directly (simpler, works per docs)
-     // const token = await getAzureToken();  // if you prefer Authorization: Bearer
-   
-     const ssml = '<speak version="1.0" xml:lang="de-DE"><voice name="' + AZURE_VOICE_NAME + '">' + escapeXml(text) + '</voice></speak>';
-   
-     const { body, statusCode } = await request(endpoint, {
-       method: 'POST',
-       headers: {
-         'Ocp-Apim-Subscription-Key': AZURE_SPEECH_KEY,
-         // 'Authorization': `Bearer ${token}`,  // alternative
-         'Content-Type': 'application/ssml+xml',
-         'X-Microsoft-OutputFormat': 'riff-24000hz-16bit-mono-pcm',
-         'User-Agent': 'voice-agent/1.0'
-       },
-       body: ssml,
-       dispatcher: azureAgent
-     });
-   
-     if (statusCode !== 200) {
-       const txt = await body.text();
-       throw new Error(`Azure TTS ${statusCode}: ${txt}`);
-     }
-   
-     // Stream chunks as they arrive
-     for await (const chunk of body) {
-       if (!chunk || chunk.length === 0) continue;
-       streamResponse(res, 'audio_chunk', {
-         base64: Buffer.from(chunk).toString('base64'),
-         format: 'wav'
-       });
-     }
-     streamResponse(res, 'tts_engine', { engine: 'azure_hd', voice: AZURE_VOICE_NAME });
-   }
-   
-   async function getAzureToken() {
-     const { body, statusCode } = await request(
-       `https://${AZURE_SPEECH_REGION}.api.cognitive.microsoft.com/sts/v1.0/issueToken`,
-       {
-         method: 'POST',
-         headers: {
-           'Ocp-Apim-Subscription-Key': AZURE_SPEECH_KEY,
-           'Content-Type': 'application/x-www-form-urlencoded',
-           'Content-Length': '0'
-         },
-         dispatcher: azureAgent
-       }
-     );
-     if (statusCode !== 200) throw new Error('Azure token failed');
-     return await body.text();
-   }
-   
-   function escapeXml(str = '') {
-     return str.replace(/[<>&'"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;'}[c]));
-   }
-   
-   // ---------------- Google Auth & GCP TTS Fallback ----------------
-   async function generateAccessToken() {
-     const now = Math.floor(Date.now() / 1000);
-     const payload = {
-       iss: SERVICE_ACCOUNT_JSON.client_email,
-       scope: 'https://www.googleapis.com/auth/cloud-platform',
-       aud: SERVICE_ACCOUNT_JSON.token_uri,
-       exp: now + 3600,
-       iat: now
-     };
-     const header = { alg: 'RS256', typ: 'JWT' };
-     const toSign = `${Buffer.from(JSON.stringify(header)).toString('base64url')}.` +
-                    `${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
-     const signature = createSign('RSA-SHA256').update(toSign).sign(SERVICE_ACCOUNT_JSON.private_key, 'base64url');
-   
-     const { body, statusCode } = await request(SERVICE_ACCOUNT_JSON.token_uri, {
-       method: 'POST',
-       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-       body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${toSign}.${signature}`,
-       dispatcher: tokenAgent
-     });
-     if (statusCode !== 200) throw new Error(`Token exchange failed ${statusCode}`);
-     return (await body.json()).access_token;
-   }
-   
-   async function generateAndStreamSpeechGCP(text, voice, res) {
-     try {
-       const accessToken = await generateAccessToken();
-       const reqBody = {
-         input: { text },
-         voice: { languageCode: 'de-DE', name: 'de-DE-Neural2-B', ssmlGender: 'MALE' },
-         audioConfig: { audioEncoding: 'MP3', effectsProfileId: ['telephony-class-application'] }
-       };
-       const { body, statusCode } = await request('https://texttospeech.googleapis.com/v1/text:synthesize', {
-         method: 'POST',
-         headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-         body: JSON.stringify(reqBody),
-         dispatcher: tokenAgent
-       });
-       if (statusCode !== 200) throw new Error(`GCP TTS ${statusCode}`);
-       const result = await body.json();
-       streamResponse(res, 'audio_chunk', { base64: result.audioContent, format: 'mp3' });
-       streamResponse(res, 'tts_engine', { engine: 'gcp' });
-     } catch (e) {
-       console.error('GCP TTS error', e);
-       streamResponse(res, 'audio_chunk', { base64: 'SUQzBAAAAAAAI1RTU0UAAAAPAAADAE1wZWcgZ2VuZXJhdG9yAA==', format: 'mp3' });
-       streamResponse(res, 'tts_engine', { engine: 'silent', reason: e.message });
-     }
-   }
-   
-   export { processAndStreamLLMResponse, generateAndStreamSpeechGCP };
+async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
+  const voiceNameInput = opts.voice || AZURE_VOICE_NAME;
+  console.log('🔊 Azure HD TTS starting...');
+  console.log('  • Raw text length:', text?.length || 0);
+  console.log('  • Configured voice:', voiceNameInput);
+  console.log('  • Region:', AZURE_SPEECH_REGION);
+
+  // Handle DragonHD voice syntax: "<voiceId>:<deploymentId>"
+  let ssmlVoiceName = voiceNameInput;
+  let deploymentId = null;
+  if (voiceNameInput.includes(':')) {
+    const [vn, dep] = voiceNameInput.split(':');
+    ssmlVoiceName = vn;
+    deploymentId = dep;
+  }
+
+  const baseUrl = `https://${AZURE_SPEECH_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`;
+  const endpoint = deploymentId
+    ? `${baseUrl}?deploymentId=${encodeURIComponent(deploymentId)}`
+    : baseUrl;
+
+  const ssml =
+    `<speak version="1.0" xml:lang="de-DE">` +
+      `<voice name="${ssmlVoiceName}">${escapeXml(text)}</voice>` +
+    `</speak>`;
+
+  // Decide auth: key header (simple) or cached bearer token
+  let useBearer = false;
+  let authHeader = {};
+  try {
+    if (process.env.AZURE_TTS_USE_BEARER === 'true') {
+      const token = await getAzureToken();
+      useBearer = true;
+      authHeader = { Authorization: `Bearer ${token}` };
+    }
+  } catch (e) {
+    console.warn('⚠️ Bearer token retrieval failed, falling back to key. Reason:', e.message);
+  }
+
+  const headers = {
+    ...(useBearer ? authHeader : { 'Ocp-Apim-Subscription-Key': AZURE_SPEECH_KEY }),
+    'Content-Type': 'application/ssml+xml',
+    'X-Microsoft-OutputFormat': 'riff-24000hz-16bit-mono-pcm',
+    'User-Agent': 'voice-agent/1.0'
+  };
+
+  console.log('🔗 Azure TTS URL:', endpoint);
+  console.log('  • Using bearer token:', useBearer);
+  console.log('  • Headers set:', Object.keys(headers));
+
+  let bytesSent = 0;
+
+  try {
+    const { body, statusCode, headers: respHeaders } = await request(endpoint, {
+      method: 'POST',
+      headers,
+      body: ssml,
+      dispatcher: azureAgent
+    });
+
+    console.log('📥 Azure TTS HTTP status:', statusCode);
+    if (statusCode !== 200) {
+      const errorText = await safeReadBodyText(body);
+      console.error('❌ Azure TTS error body:', errorText);
+      throw new Error(`Azure TTS ${statusCode}: ${truncate(errorText, 500)}`);
+    }
+
+    // Stream chunks as NDJSON audio_chunk events
+    for await (const chunk of body) {
+      if (!chunk || chunk.length === 0) continue;
+      bytesSent += chunk.length;
+      streamResponse(res, 'audio_chunk', {
+        base64: Buffer.from(chunk).toString('base64'),
+        format: 'wav'
+      });
+    }
+
+    console.log('✅ Azure TTS streamed bytes:', bytesSent);
+    streamResponse(res, 'tts_engine', {
+      engine: 'azure_hd',
+      voice: voiceNameInput,
+      endpoint,
+      bytes: bytesSent
+    });
+  } catch (err) {
+    console.error('🔴 Azure HD TTS failed:', err);
+    streamResponse(res, 'tts_engine', {
+      engine: 'azure_hd',
+      error: err.message
+    });
+
+    // Fallback to GCP TTS
+    try {
+      console.log('🟡 Falling back to GCP TTS…');
+      await generateAndStreamSpeechGCP(text, null, res);
+    } catch (fallbackErr) {
+      console.error('🔴 GCP fallback also failed:', fallbackErr);
+      streamResponse(res, 'error', { message: 'All TTS engines failed.' });
+    }
+  }
+}
+
+async function getAzureToken() {
+  console.log('🔑 Requesting Azure token…');
+  const url = `https://${AZURE_SPEECH_REGION}.api.cognitive.microsoft.com/sts/v1.0/issueToken`;
+  const { body, statusCode } = await request(url, {
+    method: 'POST',
+    headers: {
+      'Ocp-Apim-Subscription-Key': AZURE_SPEECH_KEY,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Length': '0'
+    },
+    dispatcher: azureAgent
+  });
+  if (statusCode !== 200) {
+    const txt = await safeReadBodyText(body);
+    throw new Error(`Azure token failed (${statusCode}): ${truncate(txt, 300)}`);
+  }
+  const token = await body.text();
+  console.log('🔑 Azure token acquired (len):', token.length);
+  return token;
+}
+
+function escapeXml(str = '') {
+  return str.replace(/[<>&'"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]));
+}
+
+async function safeReadBodyText(body) {
+  try { return await body.text(); } catch { return '<unreadable body>'; }
+}
+
+function truncate(str = '', max = 200) {
+  if (str.length <= max) return str;
+  return str.slice(0, max) + '…';
+}
+
+// ---------------- Google Auth & GCP TTS Fallback ----------------
+async function generateAccessToken() {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iss: SERVICE_ACCOUNT_JSON.client_email,
+    scope: 'https://www.googleapis.com/auth/cloud-platform',
+    aud: SERVICE_ACCOUNT_JSON.token_uri,
+    exp: now + 3600,
+    iat: now
+  };
+  const header = { alg: 'RS256', typ: 'JWT' };
+  const toSign =
+    `${Buffer.from(JSON.stringify(header)).toString('base64url')}.` +
+    `${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
+  const signature = createSign('RSA-SHA256').update(toSign).sign(SERVICE_ACCOUNT_JSON.private_key, 'base64url');
+
+  const { body, statusCode } = await request(SERVICE_ACCOUNT_JSON.token_uri, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${toSign}.${signature}`,
+    dispatcher: tokenAgent
+  });
+  if (statusCode !== 200) throw new Error(`Token exchange failed ${statusCode}`);
+  return (await body.json()).access_token;
+}
+
+async function generateAndStreamSpeechGCP(text, voice, res) {
+  try {
+    const accessToken = await generateAccessToken();
+    const reqBody = {
+      input: { text },
+      voice: { languageCode: 'de-DE', name: 'de-DE-Neural2-B', ssmlGender: 'MALE' },
+      audioConfig: { audioEncoding: 'MP3', effectsProfileId: ['telephony-class-application'] }
+    };
+    const { body, statusCode } = await request('https://texttospeech.googleapis.com/v1/text:synthesize', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(reqBody),
+      dispatcher: tokenAgent
+    });
+    if (statusCode !== 200) throw new Error(`GCP TTS ${statusCode}`);
+    const result = await body.json();
+    streamResponse(res, 'audio_chunk', { base64: result.audioContent, format: 'mp3' });
+    streamResponse(res, 'tts_engine', { engine: 'gcp' });
+    console.log('✅ GCP TTS succeeded');
+  } catch (e) {
+    console.error('GCP TTS error', e);
+    // tiny silent mp3
+    streamResponse(res, 'audio_chunk', { base64: 'SUQzBAAAAAAAI1RTU0UAAAAPAAADAE1wZWcgZ2VuZXJhdG9yAA==', format: 'mp3' });
+    streamResponse(res, 'tts_engine', { engine: 'silent', reason: e.message });
+  }
+}
+
+export { processAndStreamLLMResponse, generateAndStreamSpeechGCP };
