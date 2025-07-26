@@ -331,6 +331,8 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
   // ----- Voice / deployment handling -----
   let ssmlVoiceName = requestedVoice;
   let deploymentId  = opts.deploymentId || null;
+
+  // treat suffix after ":" as deploymentId ONLY if it looks like a GUID
   if (ssmlVoiceName.includes(':')) {
     const [maybeName, maybeDep] = ssmlVoiceName.split(':');
     if (/^[0-9a-f-]{36}$/i.test(maybeDep)) {
@@ -339,7 +341,7 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
     }
   }
 
-  // Make sure the voice exists (or pick a fallback)
+  // verify or fallback voice
   try {
     ssmlVoiceName = await ensureVoiceAvailable(ssmlVoiceName, TTS_HOST, TOKEN_HOST) || ssmlVoiceName;
   } catch (e) {
@@ -362,7 +364,7 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
       TOKEN_HOST,
       deploymentId,
       res,
-      format: 'riff-24000hz-16bit-mono-pcm'
+      format: 'riff-24khz-16bit-mono-pcm'
     });
     totalBytes += bytesSent;
   }
@@ -376,11 +378,10 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
 }
 
 function buildSsml(text, lang, voice) {
-  return (
-    `<speak version="1.0" xml:lang="${lang}">` +
-      `<voice name="${voice}">${escapeXml(text)}</voice>` +
-    `</speak>`
-  );
+  return `
+<speak version="1.0" xml:lang="${lang}" xmlns="http://www.w3.org/2001/10/synthesis">
+  <voice name="${voice}">${escapeXml(text)}</voice>
+</speak>`;
 }
 
 function splitForSsml(str, maxLen) {
@@ -538,7 +539,9 @@ async function getAzureToken(tokenHost) {
 }
 
 function escapeXml(str = '') {
-  return str.replace(/[<>&'"/]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;','/':'&#47;' }[c]));
+  return str.replace(/[<>&'"/]/g, c => ({
+    '<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;','/':'&#47;'
+  }[c]));
 }
 
 async function safeReadBodyText(body) {
