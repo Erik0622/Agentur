@@ -316,7 +316,7 @@
    
   // ---------------- Azure TTS (chunked REST stream) ----------------
 async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
-  // Force new West Europe resource hosts (override old region)
+  // Hard switch to new West Europe resource (override env/old region safely)
   const TTS_HOST   = process.env.AZURE_TTS_HOST   || 'westeurope.tts.speech.microsoft.com';
   const TOKEN_HOST = process.env.AZURE_TOKEN_HOST || 'westeurope.api.cognitive.microsoft.com';
 
@@ -329,7 +329,6 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
   // ----- Voice / deployment handling -----
   let ssmlVoiceName = requestedVoice;
   let deploymentId  = opts.deploymentId || null;
-  // If someone passes "name:GUID" split, only treat second part as deploymentId when it's a real GUID
   if (ssmlVoiceName.includes(':')) {
     const [maybeName, maybeDep] = ssmlVoiceName.split(':');
     if (/^[0-9a-f-]{36}$/i.test(maybeDep)) {
