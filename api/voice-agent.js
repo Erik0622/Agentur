@@ -314,29 +314,27 @@
      }
    }
    
-   // ---------------- Azure TTS (chunked REST stream) ----------------
+  // ---------------- Azure TTS (chunked REST stream) ----------------
 async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
+  // Force new West Europe resource hosts (override old region)
+  const TTS_HOST   = process.env.AZURE_TTS_HOST   || 'westeurope.tts.speech.microsoft.com';
+  const TOKEN_HOST = process.env.AZURE_TOKEN_HOST || 'westeurope.api.cognitive.microsoft.com';
+
   const requestedVoice = opts.voice || AZURE_VOICE_NAME;
   console.log('🔊 Azure HD TTS starting...');
   console.log('  • Raw text length:', text?.length || 0);
   console.log('  • Configured voice:', requestedVoice);
-  console.log('  • Region:', AZURE_SPEECH_REGION);
+  console.log('  • Hosts -> TTS:', TTS_HOST, ' TOKEN:', TOKEN_HOST);
 
-  // Hostnames (resource now in West Europe)
-  const TTS_HOST   = process.env.AZURE_TTS_HOST   || `${AZURE_SPEECH_REGION}.tts.speech.microsoft.com`;
-  const TOKEN_HOST = process.env.AZURE_TOKEN_HOST || `${AZURE_SPEECH_REGION}.api.cognitive.microsoft.com`;
-
-  // Remove accidental deploymentId usage for stock/HD voices (colon syntax)
+  // ----- Voice / deployment handling -----
   let ssmlVoiceName = requestedVoice;
   let deploymentId  = opts.deploymentId || null;
+  // If someone passes "name:GUID" split, only treat second part as deploymentId when it's a real GUID
   if (ssmlVoiceName.includes(':')) {
-    // For DragonHD voices keep the full name inside SSML. Do NOT send as deploymentId.
-    // Only treat as deploymentId if it's a GUID.
-    const parts = ssmlVoiceName.split(':');
-    const maybeGuid = parts[1];
-    if (/^[0-9a-f-]{36}$/i.test(maybeGuid)) {
-      deploymentId = maybeGuid;
-      ssmlVoiceName = parts[0];
+    const [maybeName, maybeDep] = ssmlVoiceName.split(':');
+    if (/^[0-9a-f-]{36}$/i.test(maybeDep)) {
+      deploymentId = maybeDep;
+      ssmlVoiceName = maybeName;
     }
   }
 
@@ -350,19 +348,20 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
       `<voice name="${ssmlVoiceName}">${escapeXml(text)}</voice>` +
     `</speak>`;
 
-  // Auth: try bearer if env says so, else key header
+  // ----- Auth headers -----
   let useBearer = process.env.AZURE_TTS_USE_BEARER === 'true';
-  let headers = {
+  const headers = {
     'Content-Type': 'application/ssml+xml',
     'X-Microsoft-OutputFormat': 'riff-24000hz-16bit-mono-pcm',
     'User-Agent': 'voice-agent/1.0'
   };
+
   if (useBearer) {
     try {
       const token = await getAzureToken(TOKEN_HOST);
       headers.Authorization = `Bearer ${token}`;
     } catch (e) {
-      console.warn('⚠️ Bearer token failed, falling back to key:', e.message);
+      console.warn('⚠️ Bearer token retrieval failed, falling back to key:', e.message);
       useBearer = false;
     }
   }
@@ -375,7 +374,7 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
   let bytesSent = 0;
 
   try {
-    // Optional: voice availability check once per cold start
+    // Optional voice availability probe (cached)
     await ensureVoiceAvailable(ssmlVoiceName, TTS_HOST, headers);
 
     const { body, statusCode, headers: respHeaders } = await request(endpoint, {
@@ -389,6 +388,7 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
     if (statusCode !== 200) {
       const errorText = await safeReadBodyText(body);
       console.error('❌ Azure TTS error body:', truncate(errorText, 800));
+      console.error('❌ Resp headers:', respHeaders);
       throw new Error(`Azure TTS ${statusCode}: ${truncate(errorText, 500)}`);
     }
 
@@ -411,7 +411,7 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
     console.error('🔴 Azure HD TTS failed:', err);
     streamResponse(res, 'tts_engine', { engine: 'azure_hd', error: err.message });
 
-    // Fallback
+    // Fallback to GCP
     try {
       console.log('🟡 Falling back to GCP TTS…');
       await generateAndStreamSpeechGCP(text, null, res);
