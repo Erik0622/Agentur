@@ -316,50 +316,57 @@
    
    // ---------------- Azure TTS (chunked REST stream) ----------------
 async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
-  const voiceNameInput = opts.voice || AZURE_VOICE_NAME;
+  const requestedVoice = opts.voice || AZURE_VOICE_NAME;
   console.log('🔊 Azure HD TTS starting...');
   console.log('  • Raw text length:', text?.length || 0);
-  console.log('  • Configured voice:', voiceNameInput);
+  console.log('  • Configured voice:', requestedVoice);
   console.log('  • Region:', AZURE_SPEECH_REGION);
 
-  // Handle DragonHD voice syntax: "<voiceId>:<deploymentId>"
-  let ssmlVoiceName = voiceNameInput;
-  let deploymentId = null;
-  if (voiceNameInput.includes(':')) {
-    const [vn, dep] = voiceNameInput.split(':');
-    ssmlVoiceName = vn;
-    deploymentId = dep;
+  // Hostnames (resource now in West Europe)
+  const TTS_HOST   = process.env.AZURE_TTS_HOST   || `${AZURE_SPEECH_REGION}.tts.speech.microsoft.com`;
+  const TOKEN_HOST = process.env.AZURE_TOKEN_HOST || `${AZURE_SPEECH_REGION}.api.cognitive.microsoft.com`;
+
+  // Remove accidental deploymentId usage for stock/HD voices (colon syntax)
+  let ssmlVoiceName = requestedVoice;
+  let deploymentId  = opts.deploymentId || null;
+  if (ssmlVoiceName.includes(':')) {
+    // For DragonHD voices keep the full name inside SSML. Do NOT send as deploymentId.
+    // Only treat as deploymentId if it's a GUID.
+    const parts = ssmlVoiceName.split(':');
+    const maybeGuid = parts[1];
+    if (/^[0-9a-f-]{36}$/i.test(maybeGuid)) {
+      deploymentId = maybeGuid;
+      ssmlVoiceName = parts[0];
+    }
   }
 
-  const baseUrl = `https://${AZURE_SPEECH_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`;
-  const endpoint = deploymentId
-    ? `${baseUrl}?deploymentId=${encodeURIComponent(deploymentId)}`
-    : baseUrl;
+  const baseTtsUrl = `https://${TTS_HOST}/cognitiveservices/v1`;
+  const endpoint   = deploymentId
+    ? `${baseTtsUrl}?deploymentId=${encodeURIComponent(deploymentId)}`
+    : baseTtsUrl;
 
   const ssml =
     `<speak version="1.0" xml:lang="de-DE">` +
       `<voice name="${ssmlVoiceName}">${escapeXml(text)}</voice>` +
     `</speak>`;
 
-  // Decide auth: key header (simple) or cached bearer token
-  let useBearer = false;
-  let authHeader = {};
-  try {
-    if (process.env.AZURE_TTS_USE_BEARER === 'true') {
-      const token = await getAzureToken();
-      useBearer = true;
-      authHeader = { Authorization: `Bearer ${token}` };
-    }
-  } catch (e) {
-    console.warn('⚠️ Bearer token retrieval failed, falling back to key. Reason:', e.message);
-  }
-
-  const headers = {
-    ...(useBearer ? authHeader : { 'Ocp-Apim-Subscription-Key': AZURE_SPEECH_KEY }),
+  // Auth: try bearer if env says so, else key header
+  let useBearer = process.env.AZURE_TTS_USE_BEARER === 'true';
+  let headers = {
     'Content-Type': 'application/ssml+xml',
     'X-Microsoft-OutputFormat': 'riff-24000hz-16bit-mono-pcm',
     'User-Agent': 'voice-agent/1.0'
   };
+  if (useBearer) {
+    try {
+      const token = await getAzureToken(TOKEN_HOST);
+      headers.Authorization = `Bearer ${token}`;
+    } catch (e) {
+      console.warn('⚠️ Bearer token failed, falling back to key:', e.message);
+      useBearer = false;
+    }
+  }
+  if (!useBearer) headers['Ocp-Apim-Subscription-Key'] = AZURE_SPEECH_KEY;
 
   console.log('🔗 Azure TTS URL:', endpoint);
   console.log('  • Using bearer token:', useBearer);
@@ -368,6 +375,9 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
   let bytesSent = 0;
 
   try {
+    // Optional: voice availability check once per cold start
+    await ensureVoiceAvailable(ssmlVoiceName, TTS_HOST, headers);
+
     const { body, statusCode, headers: respHeaders } = await request(endpoint, {
       method: 'POST',
       headers,
@@ -378,13 +388,12 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
     console.log('📥 Azure TTS HTTP status:', statusCode);
     if (statusCode !== 200) {
       const errorText = await safeReadBodyText(body);
-      console.error('❌ Azure TTS error body:', errorText);
+      console.error('❌ Azure TTS error body:', truncate(errorText, 800));
       throw new Error(`Azure TTS ${statusCode}: ${truncate(errorText, 500)}`);
     }
 
-    // Stream chunks as NDJSON audio_chunk events
     for await (const chunk of body) {
-      if (!chunk || chunk.length === 0) continue;
+      if (!chunk?.length) continue;
       bytesSent += chunk.length;
       streamResponse(res, 'audio_chunk', {
         base64: Buffer.from(chunk).toString('base64'),
@@ -395,18 +404,14 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
     console.log('✅ Azure TTS streamed bytes:', bytesSent);
     streamResponse(res, 'tts_engine', {
       engine: 'azure_hd',
-      voice: voiceNameInput,
-      endpoint,
+      voice: requestedVoice,
       bytes: bytesSent
     });
   } catch (err) {
     console.error('🔴 Azure HD TTS failed:', err);
-    streamResponse(res, 'tts_engine', {
-      engine: 'azure_hd',
-      error: err.message
-    });
+    streamResponse(res, 'tts_engine', { engine: 'azure_hd', error: err.message });
 
-    // Fallback to GCP TTS
+    // Fallback
     try {
       console.log('🟡 Falling back to GCP TTS…');
       await generateAndStreamSpeechGCP(text, null, res);
@@ -417,9 +422,32 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
   }
 }
 
-async function getAzureToken() {
+let _voiceListCache = null;
+async function ensureVoiceAvailable(voiceName, host, authHeaders) {
+  if (_voiceListCache) return;
+  try {
+    const { body, statusCode } = await request(`https://${host}/cognitiveservices/voices/list`, {
+      method: 'GET',
+      headers: authHeaders,
+      dispatcher: azureAgent
+    });
+    if (statusCode !== 200) {
+      console.warn('⚠️ voices/list returned', statusCode);
+      return;
+    }
+    const list = await body.json();
+    _voiceListCache = list;
+    const found = list.some(v => v.ShortName === voiceName || v.Name === voiceName);
+    console.log('🔎 Voice present in list:', found);
+    if (!found) console.warn(`⚠️ Voice "${voiceName}" not found in region list. Check region or spelling.`);
+  } catch (e) {
+    console.warn('⚠️ Could not fetch voices/list:', e.message);
+  }
+}
+
+async function getAzureToken(tokenHost) {
   console.log('🔑 Requesting Azure token…');
-  const url = `https://${AZURE_SPEECH_REGION}.api.cognitive.microsoft.com/sts/v1.0/issueToken`;
+  const url = `https://${tokenHost}/sts/v1.0/issueToken`;
   const { body, statusCode } = await request(url, {
     method: 'POST',
     headers: {
@@ -439,7 +467,7 @@ async function getAzureToken() {
 }
 
 function escapeXml(str = '') {
-  return str.replace(/[<>&'"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]));
+  return str.replace(/[<>&'"]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;' }[c]));
 }
 
 async function safeReadBodyText(body) {
@@ -447,8 +475,7 @@ async function safeReadBodyText(body) {
 }
 
 function truncate(str = '', max = 200) {
-  if (str.length <= max) return str;
-  return str.slice(0, max) + '…';
+  return str.length <= max ? str : str.slice(0, max) + '…';
 }
 
 // ---------------- Google Auth & GCP TTS Fallback ----------------
