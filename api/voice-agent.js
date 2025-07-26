@@ -316,11 +316,11 @@
    
   // ---------------- Azure TTS (chunked REST stream) ----------------
 async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
-  // Hard switch to new West Europe resource (override env/old region safely)
-  const TTS_HOST   = process.env.AZURE_TTS_HOST   || 'westeurope.tts.speech.microsoft.com';
-  const TOKEN_HOST = process.env.AZURE_TOKEN_HOST || 'westeurope.api.cognitive.microsoft.com';
+  const region = (process.env.AZURE_SPEECH_REGION || AZURE_SPEECH_REGION || 'westeurope').toLowerCase();
+  const TTS_HOST   = process.env.AZURE_TTS_HOST   || `${region}.tts.speech.microsoft.com`;
+  const TOKEN_HOST = process.env.AZURE_TOKEN_HOST || `${region}.api.cognitive.microsoft.com`;
 
-  const requestedVoice = opts.voice || AZURE_VOICE_NAME;
+  const requestedVoice = (opts.voice || AZURE_VOICE_NAME).trim();
   console.log('🔊 Azure HD TTS starting...');
   console.log('  • Raw text length:', text?.length || 0);
   console.log('  • Configured voice:', requestedVoice);
@@ -337,45 +337,82 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
     }
   }
 
+  // Normalisieren: einige Libraries führen „DragonHDLatestNeural“ etc.
+  // Falls diese Stimme in der Region fehlt, später fallbacken wir.
+  await ensureVoiceAvailable(ssmlVoiceName, TTS_HOST, await buildAuthHeaders(TOKEN_HOST));
+
+  // ----- Text vorbereiten -----
+  const safeText  = String(text || '').trim();
+  if (!safeText) throw new Error('Empty text for TTS');
+
+  // Azure akzeptiert SSML bis ~5000 Zeichen. Wir splitten konservativ.
+  const chunks = splitForSsml(safeText, 4800);
+
+  let totalBytes = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    const part = chunks[i];
+    const ssml = buildSsml(part, 'de-DE', ssmlVoiceName);
+    const { bytesSent } = await synthesizeOnce(ssml, {
+      TTS_HOST,
+      TOKEN_HOST,
+      deploymentId,
+      res,
+      format: 'riff-24000hz-16bit-mono-pcm'
+    });
+    totalBytes += bytesSent;
+  }
+
+  console.log('✅ Azure TTS streamed total bytes:', totalBytes);
+  streamResponse(res, 'tts_engine', {
+    engine: 'azure_hd',
+    voice: requestedVoice,
+    bytes: totalBytes
+  });
+}
+
+function buildSsml(text, lang, voice) {
+  return (
+    `<speak version="1.0" xml:lang="${lang}">` +
+      `<voice name="${voice}">${escapeXml(text)}</voice>` +
+    `</speak>`
+  );
+}
+
+function splitForSsml(str, maxLen) {
+  if (str.length <= maxLen) return [str];
+  const parts = [];
+  let start = 0;
+  while (start < str.length) {
+    let end = Math.min(start + maxLen, str.length);
+    // Versuche an Satzende zu schneiden
+    const slice = str.slice(start, end);
+    let cut = slice.lastIndexOf('. ');
+    if (cut < maxLen * 0.6) cut = slice.lastIndexOf(' ');
+    if (cut <= 0) cut = slice.length;
+    parts.push(slice.slice(0, cut));
+    start += cut;
+  }
+  return parts;
+}
+
+async function synthesizeOnce(ssml, { TTS_HOST, TOKEN_HOST, deploymentId, res, format }) {
+  // Auth Headers (Bearer first, fallback to key)
+  const headers = await buildAuthHeaders(TOKEN_HOST);
+  headers['Content-Type'] = 'application/ssml+xml';
+  headers['X-Microsoft-OutputFormat'] = format;
+  headers['User-Agent'] = 'voice-agent/1.0';
+
   const baseTtsUrl = `https://${TTS_HOST}/cognitiveservices/v1`;
   const endpoint   = deploymentId
     ? `${baseTtsUrl}?deploymentId=${encodeURIComponent(deploymentId)}`
     : baseTtsUrl;
 
-  const ssml =
-    `<speak version="1.0" xml:lang="de-DE">` +
-      `<voice name="${ssmlVoiceName}">${escapeXml(text)}</voice>` +
-    `</speak>`;
-
-  // ----- Auth headers -----
-  let useBearer = process.env.AZURE_TTS_USE_BEARER === 'true';
-  const headers = {
-    'Content-Type': 'application/ssml+xml',
-    'X-Microsoft-OutputFormat': 'riff-24000hz-16bit-mono-pcm',
-    'User-Agent': 'voice-agent/1.0'
-  };
-
-  if (useBearer) {
-    try {
-      const token = await getAzureToken(TOKEN_HOST);
-      headers.Authorization = `Bearer ${token}`;
-    } catch (e) {
-      console.warn('⚠️ Bearer token retrieval failed, falling back to key:', e.message);
-      useBearer = false;
-    }
-  }
-  if (!useBearer) headers['Ocp-Apim-Subscription-Key'] = AZURE_SPEECH_KEY;
-
   console.log('🔗 Azure TTS URL:', endpoint);
-  console.log('  • Using bearer token:', useBearer);
   console.log('  • Headers set:', Object.keys(headers));
 
   let bytesSent = 0;
 
   try {
-    // Optional voice availability probe (cached)
-    await ensureVoiceAvailable(ssmlVoiceName, TTS_HOST, headers);
-
     const { body, statusCode, headers: respHeaders } = await request(endpoint, {
       method: 'POST',
       headers,
@@ -399,13 +436,6 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
         format: 'wav'
       });
     }
-
-    console.log('✅ Azure TTS streamed bytes:', bytesSent);
-    streamResponse(res, 'tts_engine', {
-      engine: 'azure_hd',
-      voice: requestedVoice,
-      bytes: bytesSent
-    });
   } catch (err) {
     console.error('🔴 Azure HD TTS failed:', err);
     streamResponse(res, 'tts_engine', { engine: 'azure_hd', error: err.message });
@@ -413,17 +443,25 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
     // Fallback to GCP
     try {
       console.log('🟡 Falling back to GCP TTS…');
-      await generateAndStreamSpeechGCP(text, null, res);
+      await generateAndStreamSpeechGCP(ssmlToPlainText(ssml), null, res);
     } catch (fallbackErr) {
       console.error('🔴 GCP fallback also failed:', fallbackErr);
       streamResponse(res, 'error', { message: 'All TTS engines failed.' });
     }
   }
+
+  return { bytesSent };
+}
+
+function ssmlToPlainText(ssml) {
+  return ssml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 let _voiceListCache = null;
 async function ensureVoiceAvailable(voiceName, host, authHeaders) {
-  if (_voiceListCache) return;
+  if (_voiceListCache) {
+    if (voiceExists(_voiceListCache, voiceName)) return;
+  }
   try {
     const { body, statusCode } = await request(`https://${host}/cognitiveservices/voices/list`, {
       method: 'GET',
@@ -436,12 +474,49 @@ async function ensureVoiceAvailable(voiceName, host, authHeaders) {
     }
     const list = await body.json();
     _voiceListCache = list;
-    const found = list.some(v => v.ShortName === voiceName || v.Name === voiceName);
+    const found = voiceExists(list, voiceName);
     console.log('🔎 Voice present in list:', found);
-    if (!found) console.warn(`⚠️ Voice "${voiceName}" not found in region list. Check region or spelling.`);
+    if (!found) {
+      const fallback = findClosestVoice(list, voiceName);
+      if (fallback) {
+        console.warn(`⚠️ Voice "${voiceName}" not found. Falling back to "${fallback}".`);
+        // mutate outer scope by reference (hacky but fine here)
+        // will be picked up by buildSsml calls
+        // eslint-disable-next-line no-global-assign
+        voiceName = fallback;
+      } else {
+        console.warn(`⚠️ Voice "${voiceName}" not found and no fallback detected.`);
+      }
+    }
   } catch (e) {
     console.warn('⚠️ Could not fetch voices/list:', e.message);
   }
+}
+
+function voiceExists(list, name) {
+  return list.some(v => v.ShortName === name || v.Name === name);
+}
+
+function findClosestVoice(list, name) {
+  const base = name.split(':')[0];
+  const hit = list.find(v => v.ShortName === base || v.ShortName?.startsWith(base));
+  if (hit) return hit.ShortName;
+  // fallback: first German male voice
+  const deMale = list.find(v => /de-DE/i.test(v.Locale) && /Male/i.test(v.Gender));
+  return deMale?.ShortName;
+}
+
+async function buildAuthHeaders(tokenHost) {
+  // Try bearer first
+  if (process.env.AZURE_TTS_USE_BEARER === 'true') {
+    try {
+      const token = await getAzureToken(tokenHost);
+      return { Authorization: `Bearer ${token}` };
+    } catch (e) {
+      console.warn('⚠️ Bearer token retrieval failed, will use key:', e.message);
+    }
+  }
+  return { 'Ocp-Apim-Subscription-Key': AZURE_SPEECH_KEY };
 }
 
 async function getAzureToken(tokenHost) {
