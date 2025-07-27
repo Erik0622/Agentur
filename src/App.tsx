@@ -58,6 +58,81 @@ function App() {
   const speechDetectionRef = useRef<boolean>(false);
   const currentAudioChunksRef = useRef<Blob[]>([]);
 
+  // ===== Streaming Audio (MSE) – Refs & Helper =====  // [F0]
+  const mseRef = useRef<MediaSource | null>(null);
+  const sourceBufferRef = useRef<SourceBuffer | null>(null);
+  const audioQueueRef = useRef<Uint8Array[]>([]);
+  const appendingRef = useRef(false);
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+
+  function b64ToUint8(b64: string) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  function appendNextChunk() {
+    if (!sourceBufferRef.current || appendingRef.current) return;
+    const next = audioQueueRef.current.shift();
+    if (!next) return;
+
+    appendingRef.current = true;
+    sourceBufferRef.current.appendBuffer(next);
+  }
+
+  function setupMse(mime: string) {
+    return new Promise<void>((resolve, reject) => {
+      const ms = new MediaSource();
+      mseRef.current = ms;
+
+      const audioEl = audioElRef.current || new Audio();
+      audioElRef.current = audioEl;
+      audioEl.src = URL.createObjectURL(ms);
+      audioEl.autoplay = true; // Achtung Autoplay-Policy!
+      audioEl.addEventListener('ended', () => setIsPlayingResponse(false));
+
+      ms.addEventListener('sourceopen', () => {
+        try {
+          const sb = ms.addSourceBuffer(mime);
+          sourceBufferRef.current = sb;
+
+          sb.addEventListener('updateend', () => {
+            appendingRef.current = false;
+            if (audioQueueRef.current.length) {
+              appendNextChunk();
+            } else if (!ms.readyState.includes('ended')) {
+              // nichts mehr in Queue, warten auf weitere
+            }
+          });
+
+          resolve();
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+  }
+
+  function endMseStream() {
+    const ms = mseRef.current;
+    if (ms && ms.readyState === 'open') {
+      try { ms.endOfStream(); } catch {}
+    }
+  }
+
+  // ===== Call once early after user click =====  // [F2]
+  async function unlockAudio() {
+    const audio = audioElRef.current || new Audio();
+    audioElRef.current = audio;
+    try {
+      await audio.play();
+      audio.pause();
+    } catch (e) {
+      console.warn('Autoplay unlock failed', e);
+    }
+  }
+
   // Lade gespeicherte Termine aus localStorage
   useEffect(() => {
     const savedBookings = localStorage.getItem('bookings');
@@ -237,6 +312,9 @@ function App() {
   // Kontinuierliche Gespräch-Funktionen
   const startConversationMode = async () => {
     try {
+      // Audio unlock für Autoplay
+      await unlockAudio();
+      
       console.log('🎯 Starte Gesprächsmodus');
       
       const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -345,6 +423,9 @@ function App() {
   // Voice Recording Functions (Original)
   const startRecording = async () => {
     try {
+      // Audio unlock für Autoplay
+      await unlockAudio();
+      
       setIsRecording(true);
       setTranscript('');
       setAiResponse('');
@@ -491,38 +572,56 @@ function App() {
             const event = JSON.parse(line);
             console.log('📨 Stream Event:', event.type, event.data);
             
+            // ===== NDJSON Event Handling (Streaming) =====  // [F1]
             switch (event.type) {
               case 'transcript':
                 setTranscript(event.data.text);
                 break;
+
               case 'llm_chunk':
                 setAiResponse(prev => prev + event.data.text);
                 break;
-              case 'audio_chunk':
-                // Audio abspielen
-                if (event.data.base64) {
+
+              case 'audio_header': {
+                // { mime: 'audio/webm;codecs=opus', format: 'webm' }
+                try {
+                  await setupMse(event.data.mime);
                   setIsPlayingResponse(true);
-                  const audio = new Audio(`data:audio/${event.data.format};base64,${event.data.base64}`);
-                  audio.onended = () => setIsPlayingResponse(false);
-                  audio.play().catch(e => console.error('Audio playback failed:', e));
+                } catch (e) {
+                  console.error('MSE setup failed, fallback to buffer+play:', e);
+                  // Fallback: hier könntest du wieder sammeln + Blob spielen
                 }
                 break;
+              }
+
+              case 'audio_chunk': {
+                if (event.data.base64) {
+                  const u8 = b64ToUint8(event.data.base64);
+                  audioQueueRef.current.push(u8);
+                  appendNextChunk();
+                }
+                break;
+              }
+
+              case 'tts_engine':
+                // optional: hier nichts tun, warten auf 'end'
+                break;
+
+              case 'end':
+                // Stream schließt – sag dem MSE Buffer, dass er fertig ist
+                endMseStream();
+                setIsProcessing(false);
+                break;
+
               case 'error':
-                // Spezielle Behandlung für "No speech detected" - das ist kein echter Fehler
                 if (event.data.message === 'No speech detected.') {
-                  console.log('🔇 Keine Sprache erkannt - bitte sprechen Sie lauter');
                   setTranscript('Keine Sprache erkannt. Bitte sprechen Sie lauter.');
                   setAiResponse('');
                 } else {
                   throw new Error(event.data.message || 'Voice processing error');
                 }
                 break;
-              case 'end':
-                console.log('✅ Stream beendet');
-                break;
-              case 'debug_sentence':
-                console.log('🎵 Debug Sentence:', event.data.text);
-                break;
+
               default:
                 console.log('📨 Unbekanntes Event:', event.type);
             }
@@ -1846,6 +1945,6 @@ function App() {
       )}
     </div>
   )
-}
-
-export default App 
+  }
+  
+  export default App 
