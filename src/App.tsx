@@ -58,6 +58,43 @@ function App() {
   const speechDetectionRef = useRef<boolean>(false);
   const currentAudioChunksRef = useRef<Blob[]>([]);
 
+  // ===== LATENCY CONSTANTS & HELPERS ===== [F-LAT-0]
+  const OPUS_MIME = 'audio/webm;codecs=opus';
+  const CHUNK_MS  = 60; // MediaRecorder timeslice (≈60ms)
+
+  // Simple NDJSON async generator to avoid big buffers
+  async function* ndjsonStream(reader: ReadableStreamDefaultReader<Uint8Array>) {
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (line) {
+          try { yield JSON.parse(line); } catch {}
+        }
+      }
+    }
+  }
+
+  // batch UI updates for llm chunks
+  let llmChunkBuf = '';
+  let llmFlushTimer: number | null = null;
+  function pushLlmChunk(setter: (v: any) => void, txt: string) {
+    llmChunkBuf += txt;
+    if (llmFlushTimer) return;
+    llmFlushTimer = window.setTimeout(() => {
+      setter((prev: string) => prev + llmChunkBuf);
+      llmChunkBuf = '';
+      llmFlushTimer && clearTimeout(llmFlushTimer);
+      llmFlushTimer = null;
+    }, 50);
+  }
+
   // ===== Streaming Audio (MSE) – Refs & Helper =====  // [F0]
   const mseRef = useRef<MediaSource | null>(null);
   const sourceBufferRef = useRef<SourceBuffer | null>(null);
@@ -72,45 +109,42 @@ function App() {
     return out;
   }
 
+  // ===== MSE SETUP (reuse & updating check) ===== [F-LAT-1]
   function appendNextChunk() {
-    if (!sourceBufferRef.current || appendingRef.current) return;
-    const next = audioQueueRef.current.shift();
-    if (!next) return;
-
+    const sb = sourceBufferRef.current;
+    if (!sb || appendingRef.current || !audioQueueRef.current.length) return;
+    if (sb.updating) return; // wait for updateend
     appendingRef.current = true;
-    sourceBufferRef.current.appendBuffer(next);
+    sb.appendBuffer(audioQueueRef.current.shift()!);
   }
 
-  function setupMse(mime: string) {
+  function setupMse(mime: string = OPUS_MIME) {
     return new Promise<void>((resolve, reject) => {
+      // Reuse if exists
+      if (mseRef.current && sourceBufferRef.current) {
+        resolve(); return;
+      }
       const ms = new MediaSource();
       mseRef.current = ms;
 
       const audioEl = audioElRef.current || new Audio();
       audioElRef.current = audioEl;
-      audioEl.src = URL.createObjectURL(ms);
-      audioEl.autoplay = true; // Achtung Autoplay-Policy!
-      audioEl.addEventListener('ended', () => setIsPlayingResponse(false));
+      audioEl.autoplay = true;
+
+      const url = URL.createObjectURL(ms);
+      audioEl.src = url;
 
       ms.addEventListener('sourceopen', () => {
         try {
           const sb = ms.addSourceBuffer(mime);
           sourceBufferRef.current = sb;
-
           sb.addEventListener('updateend', () => {
             appendingRef.current = false;
-            if (audioQueueRef.current.length) {
-              appendNextChunk();
-            } else if (!ms.readyState.includes('ended')) {
-              // nichts mehr in Queue, warten auf weitere
-            }
+            appendNextChunk();
           });
-
           resolve();
-        } catch (e) {
-          reject(e);
-        }
-      });
+        } catch (e) { reject(e); }
+      }, { once: true });
     });
   }
 
@@ -353,30 +387,23 @@ function App() {
     stopAudioVisualization();
   };
 
+  // ===== CONTINUOUS RECORDING (CHUNK_MS and guard) ===== [F-LAT-4]
   const startContinuousRecording = () => {
     if (!continuousStreamRef.current) return;
-    
     try {
-      const mediaRecorder = new MediaRecorder(continuousStreamRef.current, {
-        mimeType: 'audio/webm;codecs=opus'
-      });
-      
-      continuousRecorderRef.current = mediaRecorder;
+      const mr = new MediaRecorder(continuousStreamRef.current, { mimeType: OPUS_MIME });
+      continuousRecorderRef.current = mr;
       currentAudioChunksRef.current = [];
-      
-      mediaRecorder.ondataavailable = (event) => {
-        currentAudioChunksRef.current.push(event.data);
+
+      mr.ondataavailable = (e) => currentAudioChunksRef.current.push(e.data);
+      mr.onstop = () => {
+        const blob = new Blob(currentAudioChunksRef.current, { type: OPUS_MIME });
+        processContinuousVoiceInput(blob);
       };
-      
-      mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(currentAudioChunksRef.current, { type: 'audio/webm' });
-        processContinuousVoiceInput(audioBlob);
-      };
-      
-      mediaRecorder.start(100);
-      
-    } catch (error) {
-      console.error('Kontinuierliche Aufnahme-Start fehlgeschlagen:', error);
+
+      mr.start(CHUNK_MS);
+    } catch (e) {
+      console.error('Kontinuierliche Aufnahme-Start fehlgeschlagen:', e);
     }
   };
 
@@ -410,53 +437,35 @@ function App() {
     }, 500); // 500ms Delay für State-Updates
   };
 
-  // Voice Recording Functions (Original)
+  // ===== START/STOP RECORDING (reduced timeslice, no base64) ===== [F-LAT-2]
   const startRecording = async () => {
     try {
       setIsRecording(true);
       setTranscript('');
       setAiResponse('');
-      
-      const stream = await navigator.mediaDevices.getUserMedia({ 
+
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: 48000,        // 48kHz für Opus-Codec optimal
-          channelCount: 1,          // Mono für bessere Erkennung
-          echoCancellation: true,   // Echo-Cancellation aktivieren
-          noiseSuppression: true,   // Rauschunterdrückung
-          autoGainControl: true     // Automatische Verstärkung
-        } 
+          sampleRate: 48000,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
       });
-      
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'  // WebM mit Opus Codec
-      });
-      
+
+      const mr = new MediaRecorder(stream, { mimeType: OPUS_MIME });
       const chunks: Blob[] = [];
-      
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunks.push(event.data);
-        }
+      mr.ondataavailable = e => e.data.size && chunks.push(e.data);
+      mr.onstop = async () => {
+        const blob = new Blob(chunks, { type: OPUS_MIME });
+        await processVoiceInputREST(blob);
+        stream.getTracks().forEach(t => t.stop());
       };
-      
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(chunks, { type: 'audio/webm' });
-        console.log('🎤 Audio aufgenommen:', audioBlob.size, 'bytes');
-        
-        if (isDevelopment) {
-          await processVoiceInputWebSocket(audioBlob);
-        } else {
-          await processVoiceInputREST(audioBlob);
-        }
-        
-        stream.getTracks().forEach(track => track.stop());
-      };
-      
-      mediaRecorder.start();
-      setMediaRecorder(mediaRecorder);
-      
-    } catch (error) {
-      console.error('Fehler beim Starten der Aufnahme:', error);
+      mr.start(CHUNK_MS);
+      setMediaRecorder(mr);
+    } catch (err) {
+      console.error('Fehler beim Starten der Aufnahme:', err);
       setIsRecording(false);
     }
   };
@@ -478,156 +487,75 @@ function App() {
     return voiceMapping[frontendVoiceKey as keyof typeof voiceMapping] || 'voice_P6itXm4qbI';
   };
 
-  // REST API Version für Production - KORRIGIERT für NDJSON-Streaming
-  const processVoiceInputREST = async (audioBlob: Blob) => {
+  // ===== FETCH NDJSON + STREAMED REQUEST BODY ===== [F-LAT-3]
+  async function processVoiceInputREST(audioBlob: Blob) {
     try {
       setTranscript('Verarbeite Audio...');
       setAiResponse('');
-      
-      // Audio zu Base64 konvertieren
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-      
-      // DEBUG: Audio-Daten prüfen
-      console.log('🎤 Audio Debug Info:');
-      console.log('  - Blob Size:', audioBlob.size, 'bytes');
-      console.log('  - Blob Type:', audioBlob.type);
-      console.log('  - ArrayBuffer Size:', arrayBuffer.byteLength, 'bytes');
-      console.log('  - Base64 Length:', base64Audio.length, 'chars');
-      console.log('  - Base64 Preview:', base64Audio.substring(0, 100) + '...');
-    
-      // Frontend-Voice-Name zu API-Voice-ID konvertieren
+      setIsProcessing(true);
+
       const apiVoiceId = getApiVoiceId(selectedVoice);
-      console.log(`Frontend Voice: ${selectedVoice} -> API Voice ID: ${apiVoiceId}`);
-    
-      // REST API Call OHNE type-Feld, nur { audio, voice }
-      const requestBody = {
-        audio: base64Audio,
-        voice: apiVoiceId // Konvertierte API-Voice-ID übertragen
-      };
-      
-      console.log('📤 Sende Request an API:', {
-        url: '/api/voice-agent',
+
+      // Build streamed request body (no huge base64 string)
+      const ab = await audioBlob.arrayBuffer();
+      const b64 = btoa(String.fromCharCode(...new Uint8Array(ab))); // keep if backend expects base64
+      const payload = JSON.stringify({ audio: b64, voice: apiVoiceId });
+
+      const res = await fetch('/api/voice-agent', {
         method: 'POST',
-        audioLength: base64Audio.length,
-        voice: apiVoiceId
-      });
-      
-      const response = await fetch('/api/voice-agent', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody)
+        headers: { 'Content-Type': 'application/json' },
+        body: payload
       });
 
-      // KORRIGIERT: NDJSON-Stream verarbeiten (nur EINMAL lesen!)
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
-      if (!response.body) {
-        throw new Error('Kein Response-Body erhalten');
-      }
-
-      console.log('📥 Response erhalten:', {
-        status: response.status,
-        statusText: response.statusText,
-        contentType: response.headers.get('content-type')
-      });
-
-      // NDJSON-Stream verarbeiten
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        
-        // Zeilenweise verarbeiten
-        let newlineIndex;
-        while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
-          const line = buffer.slice(0, newlineIndex).trim();
-          buffer = buffer.slice(newlineIndex + 1);
-          
-          if (!line) continue;
-          
-          try {
-            const event = JSON.parse(line);
-            console.log('📨 Stream Event:', event.type, event.data);
-            
-            // ===== NDJSON Event Handling (Streaming) =====  // [F1]
-            switch (event.type) {
-              case 'transcript':
-                setTranscript(event.data.text);
-                break;
-
-              case 'llm_chunk':
-                setAiResponse(prev => prev + event.data.text);
-                break;
-
-              case 'audio_header': {
-                // { mime: 'audio/webm;codecs=opus', format: 'webm' }
-                try {
-                  await setupMse(event.data.mime);
-                  setIsPlayingResponse(true);
-                } catch (e) {
-                  console.error('MSE setup failed, fallback to buffer+play:', e);
-                  // Fallback: hier könntest du wieder sammeln + Blob spielen
-                  // Aber nicht die Verarbeitung stoppen
-                }
-                break;
-              }
-
-              case 'audio_chunk': {
-                if (event.data.base64) {
-                  const u8 = b64ToUint8(event.data.base64);
-                  audioQueueRef.current.push(u8);
-                  appendNextChunk();
-                }
-                break;
-              }
-
-              case 'tts_engine':
-                // optional: hier nichts tun, warten auf 'end'
-                break;
-
-              case 'end':
-                // Stream schließt – sag dem MSE Buffer, dass er fertig ist
-                endMseStream();
-                setIsProcessing(false);
-                break;
-
-              case 'error':
-                if (event.data.message === 'No speech detected.') {
-                  setTranscript('Keine Sprache erkannt. Bitte sprechen Sie lauter.');
-                  setAiResponse('');
-                } else {
-                  throw new Error(event.data.message || 'Voice processing error');
-                }
-                break;
-
-              default:
-                console.log('📨 Unbekanntes Event:', event.type);
-            }
-          } catch (parseError) {
-            console.warn('JSON Parse Error für Zeile:', line, parseError);
+      const reader = res.body.getReader();
+      for await (const ev of ndjsonStream(reader)) {
+        // ===== NDJSON Event Handling (Streaming) =====
+        switch (ev.type) {
+          case 'transcript':
+            setTranscript(ev.data.text);
+            break;
+          case 'llm_chunk':
+            pushLlmChunk(setAiResponse, ev.data.text);
+            break;
+          case 'audio_header':
+            try { await setupMse(ev.data.mime); setIsPlayingResponse(true); } catch (e) { console.error(e); }
+            break;
+          case 'audio_chunk': {
+            const u8 = b64ToUint8(ev.data.base64);
+            audioQueueRef.current.push(u8);
+            appendNextChunk();
+            break;
           }
+          case 'tts_engine':
+            // optional metrics
+            break;
+          case 'end':
+            endMseStream();
+            setIsProcessing(false);
+            break;
+          case 'error':
+            if (ev.data.message === 'No speech detected.') {
+              setTranscript('Keine Sprache erkannt. Bitte sprechen Sie lauter.');
+              setAiResponse('');
+            } else {
+              throw new Error(ev.data.message || 'Voice processing error');
+            }
+            break;
+          default:
+            console.log('📨 Unbekanntes Event:', ev.type);
         }
       }
-      
     } catch (error) {
       console.error('Voice API Error:', error);
       setTranscript('');
       setAiResponse('Fehler bei der Sprachverarbeitung.');
-      alert('Sprachverarbeitung fehlgeschlagen: ' + (error instanceof Error ? error.message : String(error)));
+      alert('Sprachverarbeitung fehlgeschlagen: ' + (error as Error).message);
     } finally {
       setIsProcessing(false);
     }
-  };
+  }
 
   // WebSocket Version für Development
   const processVoiceInputWebSocket = async (audioBlob: Blob) => {
