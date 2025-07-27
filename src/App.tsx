@@ -130,8 +130,12 @@ function App() {
       audio.pause();
     } catch (e) {
       console.warn('Autoplay unlock failed', e);
+      // Nicht re-throwen - das sollte die Aufnahme nicht blockieren
     }
   }
+
+  // Development-Modus Erkennung
+  const isDevelopment = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
   // Lade gespeicherte Termine aus localStorage
   useEffect(() => {
@@ -312,8 +316,12 @@ function App() {
   // Kontinuierliche Gespräch-Funktionen
   const startConversationMode = async () => {
     try {
-      // Audio unlock für Autoplay
-      await unlockAudio();
+      // Audio unlock für Autoplay (optional, nicht kritisch)
+      try {
+        await unlockAudio();
+      } catch (e) {
+        console.warn('Audio unlock failed, continuing anyway:', e);
+      }
       
       console.log('🎯 Starte Gesprächsmodus');
       
@@ -423,8 +431,12 @@ function App() {
   // Voice Recording Functions (Original)
   const startRecording = async () => {
     try {
-      // Audio unlock für Autoplay
-      await unlockAudio();
+      // Audio unlock für Autoplay (optional, nicht kritisch)
+      try {
+        await unlockAudio();
+      } catch (e) {
+        console.warn('Audio unlock failed, continuing anyway:', e);
+      }
       
       setIsRecording(true);
       setTranscript('');
@@ -590,6 +602,7 @@ function App() {
                 } catch (e) {
                   console.error('MSE setup failed, fallback to buffer+play:', e);
                   // Fallback: hier könntest du wieder sammeln + Blob spielen
+                  // Aber nicht die Verarbeitung stoppen
                 }
                 break;
               }
@@ -899,9 +912,6 @@ function App() {
       </div>
     );
   };
-
-  // Development-Modus Erkennung
-  const isDevelopment = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
   return (
     <div className="min-h-screen bg-white">
