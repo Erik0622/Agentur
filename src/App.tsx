@@ -121,18 +121,7 @@ function App() {
     }
   }
 
-  // ===== Call once early after user click =====  // [F2]
-  async function unlockAudio() {
-    const audio = audioElRef.current || new Audio();
-    audioElRef.current = audio;
-    try {
-      await audio.play();
-      audio.pause();
-    } catch (e) {
-      console.warn('Autoplay unlock failed', e);
-      // Nicht re-throwen - das sollte die Aufnahme nicht blockieren
-    }
-  }
+
 
   // Development-Modus Erkennung
   const isDevelopment = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
@@ -316,13 +305,6 @@ function App() {
   // Kontinuierliche Gespräch-Funktionen
   const startConversationMode = async () => {
     try {
-      // Audio unlock für Autoplay (optional, nicht kritisch)
-      try {
-        await unlockAudio();
-      } catch (e) {
-        console.warn('Audio unlock failed, continuing anyway:', e);
-      }
-      
       console.log('🎯 Starte Gesprächsmodus');
       
       const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -431,13 +413,6 @@ function App() {
   // Voice Recording Functions (Original)
   const startRecording = async () => {
     try {
-      // Audio unlock für Autoplay (optional, nicht kritisch)
-      try {
-        await unlockAudio();
-      } catch (e) {
-        console.warn('Audio unlock failed, continuing anyway:', e);
-      }
-      
       setIsRecording(true);
       setTranscript('');
       setAiResponse('');
