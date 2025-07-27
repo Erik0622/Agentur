@@ -157,8 +157,7 @@ function App() {
 
 
 
-  // Development-Modus Erkennung
-  const isDevelopment = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
 
   // Lade gespeicherte Termine aus localStorage
   useEffect(() => {
@@ -557,45 +556,7 @@ function App() {
     }
   }
 
-  // WebSocket Version für Development
-  const processVoiceInputWebSocket = async (audioBlob: Blob) => {
-    try {
-      setTranscript('Verarbeite Audio...');
-      setAiResponse('');
-      
-      // WebSocket Verbindung herstellen
-      const ws = new WebSocket('ws://localhost:3001');
-      
-      ws.onopen = () => {
-        console.log('WebSocket verbunden');
-        // Audio-Daten senden
-        const reader = new FileReader();
-        reader.onload = () => {
-          ws.send(JSON.stringify({
-            type: 'audio',
-            data: reader.result
-          }));
-        };
-        reader.readAsDataURL(audioBlob);
-      };
-      
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === 'transcript') {
-          setTranscript(data.text);
-        } else if (data.type === 'response') {
-          setAiResponse(data.text);
-        }
-      };
-      
-      ws.onerror = (error) => {
-        console.error('WebSocket Fehler:', error);
-      };
-      
-    } catch (error) {
-      console.error('WebSocket Verarbeitung fehlgeschlagen:', error);
-    }
-  };
+
 
   const isSlotAvailable = (date: string, time: string) => {
     return !bookings.some(booking => 
