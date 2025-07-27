@@ -316,9 +316,9 @@
    
  // ---------------- Azure TTS (chunked REST stream) ----------------
 async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
-  const region    = (process.env.AZURE_SPEECH_REGION || AZURE_SPEECH_REGION || 'westeurope').toLowerCase();
-  const TTS_HOST  = process.env.AZURE_TTS_HOST   || `${region}.tts.speech.microsoft.com`;
-  const TOKEN_HOST= process.env.AZURE_TOKEN_HOST || `${region}.api.cognitive.microsoft.com`;
+  const region     = (process.env.AZURE_SPEECH_REGION || AZURE_SPEECH_REGION || 'westeurope').toLowerCase();
+  const TTS_HOST   = process.env.AZURE_TTS_HOST   || `${region}.tts.speech.microsoft.com`;
+  const TOKEN_HOST = process.env.AZURE_TOKEN_HOST || `${region}.api.cognitive.microsoft.com`;
 
   // requested voice (can be overridden via opts.voice)
   let requestedVoice = (opts.voice || AZURE_VOICE_NAME || 'de-DE-FlorianMultilingualNeural').trim();
@@ -332,38 +332,36 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
   let ssmlVoiceName = requestedVoice;
   let deploymentId  = opts.deploymentId || null;
 
-  if (ssmlVoiceName.includes(':')) {
+  const isDragonHd = /:DragonHDLatestNeural$/i.test(ssmlVoiceName); // HD-BYPASS zuerst prüfen
+  if (!isDragonHd && ssmlVoiceName.includes(':')) {
     const [maybeName, maybeDep] = ssmlVoiceName.split(':');
     if (/^[0-9a-f-]{36}$/i.test(maybeDep)) {
       deploymentId   = maybeDep;
       ssmlVoiceName  = maybeName;
-    } else {
-      ssmlVoiceName  = maybeName; // alles nach ":" verwerfen
     }
   }
 
-  // HD-Voices (…:DragonHDLatestNeural) werden ggf. nicht gelistet -> nicht ersetzen!
-  if (!needsHdBypass(ssmlVoiceName)) {
+  if (isDragonHd) {
+    console.log('🔵 HD voice bypass active for', ssmlVoiceName);
+  } else {
     try {
       ssmlVoiceName = await ensureVoiceAvailable(ssmlVoiceName, TTS_HOST, TOKEN_HOST) || ssmlVoiceName;
     } catch (e) {
       console.warn('⚠️ ensureVoiceAvailable failed:', e.message);
     }
-  } else {
-    console.log('🔵 HD voice bypass active for', ssmlVoiceName);
   }
 
   const safeText = String(text || '').trim();
   if (!safeText) throw new Error('Empty text for TTS');
 
   // *** STREAMING-FORMAT: WebM/Opus für MSE ***
-  const AUDIO_FORMAT = 'webm-24khz-16bit-mono-opus'; // Azure format string
-  const MSE_MIME     = 'audio/webm;codecs=opus';     // Browser MIME
+  const AUDIO_FORMAT = 'webm-24khz-16bit-mono-opus';
+  const MSE_MIME     = 'audio/webm;codecs=opus';
 
-  // Aufteilen (für sehr lange Antworten)
+  // Aufteilen (für lange Antworten)
   const chunks = splitForSsml(safeText, 4800);
 
-  // Informiere Frontend einmalig über Format (Header-Event)
+  // Frontend über Format informieren
   streamResponse(res, 'audio_header', { mime: MSE_MIME, format: 'webm' });
 
   let totalBytes = 0;
@@ -401,7 +399,7 @@ function splitForSsml(str, maxLen) {
   const parts = [];
   let start = 0;
   while (start < str.length) {
-    let end  = Math.min(start + maxLen, str.length);
+    let end = Math.min(start + maxLen, str.length);
     const slice = str.slice(start, end);
     let cut = slice.lastIndexOf('. ');
     if (cut < maxLen * 0.6) cut = slice.lastIndexOf(' ');
@@ -433,9 +431,9 @@ async function synthesizeOnce(ssml, ctx) { // [B3]
 
 // ---------------- Common TTS Headers ----------------
 function applyCommonTtsHeaders(headers, format) { // [B4]
-  headers['Content-Type']            = 'application/ssml+xml';
-  headers['X-Microsoft-OutputFormat']= format; // e.g. webm-24khz-16bit-mono-opus
-  headers['User-Agent']              = 'voice-agent/1.0';
+  headers['Content-Type']             = 'application/ssml+xml';
+  headers['X-Microsoft-OutputFormat'] = format;
+  headers['User-Agent']               = 'voice-agent/1.0';
 }
 
 // ---------------- Azure Request & stream chunks ----------------
@@ -498,7 +496,7 @@ async function ensureVoiceAvailable(voiceName, ttsHost, tokenHost) {
     });
     if (statusCode !== 200) {
       console.warn('⚠️ voices/list returned', statusCode);
-      return voiceName; // cannot verify
+      return voiceName;
     }
     const list = await body.json();
     _voiceListCache = list;
