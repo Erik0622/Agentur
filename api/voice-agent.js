@@ -316,9 +316,9 @@
    
  // ---------------- Azure TTS (chunked REST stream) ----------------
 async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
-  const region = (process.env.AZURE_SPEECH_REGION || AZURE_SPEECH_REGION || 'westeurope').toLowerCase();
-  const TTS_HOST   = process.env.AZURE_TTS_HOST   || `${region}.tts.speech.microsoft.com`;
-  const TOKEN_HOST = process.env.AZURE_TOKEN_HOST || `${region}.api.cognitive.microsoft.com`;
+  const region    = (process.env.AZURE_SPEECH_REGION || AZURE_SPEECH_REGION || 'westeurope').toLowerCase();
+  const TTS_HOST  = process.env.AZURE_TTS_HOST   || `${region}.tts.speech.microsoft.com`;
+  const TOKEN_HOST= process.env.AZURE_TOKEN_HOST || `${region}.api.cognitive.microsoft.com`;
 
   // requested voice (can be overridden via opts.voice)
   let requestedVoice = (opts.voice || AZURE_VOICE_NAME || 'de-DE-FlorianMultilingualNeural').trim();
@@ -335,24 +335,29 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
   if (ssmlVoiceName.includes(':')) {
     const [maybeName, maybeDep] = ssmlVoiceName.split(':');
     if (/^[0-9a-f-]{36}$/i.test(maybeDep)) {
-      deploymentId = maybeDep;
-      ssmlVoiceName = maybeName;
+      deploymentId   = maybeDep;
+      ssmlVoiceName  = maybeName;
     } else {
-      ssmlVoiceName = maybeName; // alles nach ":" verwerfen
+      ssmlVoiceName  = maybeName; // alles nach ":" verwerfen
     }
   }
 
-  try {
-    ssmlVoiceName = await ensureVoiceAvailable(ssmlVoiceName, TTS_HOST, TOKEN_HOST) || ssmlVoiceName;
-  } catch (e) {
-    console.warn('⚠️ ensureVoiceAvailable failed:', e.message);
+  // HD-Voices (…:DragonHDLatestNeural) werden ggf. nicht gelistet -> nicht ersetzen!
+  if (!needsHdBypass(ssmlVoiceName)) {
+    try {
+      ssmlVoiceName = await ensureVoiceAvailable(ssmlVoiceName, TTS_HOST, TOKEN_HOST) || ssmlVoiceName;
+    } catch (e) {
+      console.warn('⚠️ ensureVoiceAvailable failed:', e.message);
+    }
+  } else {
+    console.log('🔵 HD voice bypass active for', ssmlVoiceName);
   }
 
   const safeText = String(text || '').trim();
   if (!safeText) throw new Error('Empty text for TTS');
 
   // *** STREAMING-FORMAT: WebM/Opus für MSE ***
-  const AUDIO_FORMAT = 'webm-24khz-16bit-mono-opus'; // Azure Format-String
+  const AUDIO_FORMAT = 'webm-24khz-16bit-mono-opus'; // Azure format string
   const MSE_MIME     = 'audio/webm;codecs=opus';     // Browser MIME
 
   // Aufteilen (für sehr lange Antworten)
@@ -369,8 +374,7 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
       TOKEN_HOST,
       deploymentId,
       res,
-      format: AUDIO_FORMAT,
-      frontendFormat: 'webm' // nur für Event payload
+      format: AUDIO_FORMAT
     });
     totalBytes += bytesSent;
   }
@@ -397,7 +401,7 @@ function splitForSsml(str, maxLen) {
   const parts = [];
   let start = 0;
   while (start < str.length) {
-    let end = Math.min(start + maxLen, str.length);
+    let end  = Math.min(start + maxLen, str.length);
     const slice = str.slice(start, end);
     let cut = slice.lastIndexOf('. ');
     if (cut < maxLen * 0.6) cut = slice.lastIndexOf(' ');
@@ -429,9 +433,9 @@ async function synthesizeOnce(ssml, ctx) { // [B3]
 
 // ---------------- Common TTS Headers ----------------
 function applyCommonTtsHeaders(headers, format) { // [B4]
-  headers['Content-Type'] = 'application/ssml+xml';
-  headers['X-Microsoft-OutputFormat'] = format; // webm-24khz-16bit-mono-opus
-  headers['User-Agent'] = 'voice-agent/1.0';
+  headers['Content-Type']            = 'application/ssml+xml';
+  headers['X-Microsoft-OutputFormat']= format; // e.g. webm-24khz-16bit-mono-opus
+  headers['User-Agent']              = 'voice-agent/1.0';
 }
 
 // ---------------- Azure Request & stream chunks ----------------
@@ -460,8 +464,6 @@ async function doTtsRequest(endpoint, headers, ssml, res) { // [B5]
   for await (const chunk of body) {
     if (!chunk?.length) continue;
     bytesSent += chunk.length;
-
-    // Base64 kodieren und direkt rausschicken
     streamResponse(res, 'audio_chunk', {
       base64: Buffer.from(chunk).toString('base64'),
       format: 'webm'
@@ -475,7 +477,16 @@ function ssmlToPlainText(ssml) {
 }
 
 let _voiceListCache = null;
+
+// ---------------- HD bypass helper ----------------
+function needsHdBypass(name) {
+  return /:DragonHDLatestNeural$/i.test(name);
+}
+
+// ---------------- Voice list helpers ----------------
 async function ensureVoiceAvailable(voiceName, ttsHost, tokenHost) {
+  if (needsHdBypass(voiceName)) return voiceName;
+
   if (_voiceListCache && voiceExists(_voiceListCache, voiceName)) return voiceName;
 
   try {
