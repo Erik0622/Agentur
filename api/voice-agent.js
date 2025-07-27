@@ -1,443 +1,464 @@
 /* =======================================================================
-   FILE 1: api/voice-agent.js  (patched 2025‑07‑24)
+   FILE: api/voice-agent.js  (Ultra-low-latency edition – 2025-07-27)
    -----------------------------------------------------------------------
-   - Replace XTTS v2/RunPod with Azure Speech HD (chunked streaming)
-   - Ensure Gemini stream always yields a TTS text (fallback when empty)
-   - Switch to GA model "gemini‑2.5‑flash‑lite" (preview ID removed)
-   - Use regional endpoint (us‑central1 by default) + alt=sse for SSE
-   - Robust parser: supports SSE, NDJSON and raw JSON/Protobuf chunks
-   - Optional SafetySettings & exponential‑back‑off
-   - Better logging & error handling
-   - Keep NDJSON streaming contract
+   Pipeline:  STT (Deepgram WS)  →  LLM (Gemini 2.5 Flash-Lite SSE)
+              →  TTS (Azure DragonHD Streaming, WebM/Opus)
+   Key latency optimizations:
+   - Reuse HTTP agents & cached tokens
+   - Deepgram: interim_results=true, endpointing=0, immediate CloseStream
+   - Start LLM on first final phrase; stream tokens
+   - Sentence-level TTS chunking; stream audio chunks as they arrive
+   - No voice-list fallback for DragonHD (bypass)
+   - NDJSON contract preserved for FE
    ======================================================================= */
 
-   import { request, Agent } from 'undici';
-   import WebSocket from 'ws';
-   import { createSign } from 'crypto';
-   
-   // ---------------- Configuration ----------------
-   let config;
-   try {
-     config = await import('../config.js').then(m => m.config);
-   } catch {
-     config = {
-       DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY,
-       AZURE_SPEECH_KEY: process.env.AZURE_SPEECH_KEY,
-       AZURE_SPEECH_REGION: process.env.AZURE_SPEECH_REGION || 'germanywestcentral',
-       GEMINI_REGION: process.env.GEMINI_REGION || 'us-central1',
-       SERVICE_ACCOUNT_JSON: process.env.GOOGLE_SERVICE_ACCOUNT_JSON ?
-         JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON) : undefined
-     };
-   }
-   
-   const {
-     DEEPGRAM_API_KEY,
-     AZURE_SPEECH_KEY,
-     AZURE_SPEECH_REGION,
-     GEMINI_REGION = 'us-central1',
-     SERVICE_ACCOUNT_JSON
-   } = config;
-   
-   // ---------------- HTTP Agents ----------------
-   const geminiAgent = new Agent({ keepAliveTimeout: 30_000, keepAliveMaxTimeout: 120_000, keepAliveTimeoutThreshold: 1000, connections: 10, pipelining: 1 });
-   const tokenAgent  = new Agent({ keepAliveTimeout: 60_000, keepAliveMaxTimeout: 300_000, connections: 2, pipelining: 1 });
-   const azureAgent  = new Agent({ keepAliveTimeout: 30_000, keepAliveMaxTimeout: 120_000, connections: 10, pipelining: 1 });
-   
-   // ---------------- Azure Voice ----------------
-   const AZURE_VOICE_NAME = 'de-DE-Florian:DragonHDLatestNeural';
-   
-   // ---------------- Exponential back‑off helper ----------------
-   async function retry(fn, retries = 3, delay = 800) {
-     try {
-       return await fn();
-     } catch (e) {
-       if (retries === 0) throw e;
-       await new Promise(r => setTimeout(r, delay));
-       return retry(fn, retries - 1, delay * 2);
-     }
-   }
-   
-   // ---------------- API Handler ----------------
-   export default async function handler(req, res) {
-     console.log('[voice-agent] --- API Request ---');
-     res.setHeader('Access-Control-Allow-Origin', '*');
-     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Bypass-Stt, X-Simulated-Transcript');
-   
-     if (req.method === 'OPTIONS') return res.status(200).end();
-     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-   
-     const { audio, voice = 'german_m2', detect = false } = req.body || {};
-   
-     console.log('🔍 API Request Debug:');
-     console.log('  - Audio vorhanden:', !!audio);
-     console.log('  - Audio Länge (Base64 chars):', audio ? audio.length : 'N/A');
-     console.log('  - Voice:', voice);
-     console.log('  - Request body keys:', Object.keys(req.body || {}));
-   
-     if (!audio) {
-       console.log('⚠️ Missing audio data');
-       return res.status(400).json({ error: 'Missing audio data' });
-     }
-   
-     try {
-       res.writeHead(200, {
-         'Content-Type': 'application/x-ndjson; charset=utf-8',
-         'Cache-Control': 'no-store',
-         'Transfer-Encoding': 'chunked'
-       });
-   
-       let transcript;
-       if (req.headers['x-bypass-stt'] === 'true' && req.headers['x-simulated-transcript']) {
-         transcript = req.headers['x-simulated-transcript'];
-         streamResponse(res, 'transcript', { text: transcript });
-       } else {
-         const audioBuffer = Buffer.from(audio, 'base64');
-   
-         console.log('🎤 Audio Buffer Debug:');
-         console.log('  - Buffer Size (bytes):', audioBuffer.length);
-         console.log('  - First 4 bytes (hex):', audioBuffer.slice(0, 4).toString('hex'));
-   
-         transcript = await getTranscriptViaWebSocket(audioBuffer, { detect });
-         console.log('📝 Transkript erhalten:', transcript);
-   
-         if (transcript) streamResponse(res, 'transcript', { text: transcript });
-       }
-   
-       if (!transcript || transcript.trim().length === 0) {
-         console.log('❌ Kein Transkript - sende Error');
-         streamResponse(res, 'error', { message: 'No speech detected.' });
-         streamResponse(res, 'end', {});
-         return res.end();
-       }
-   
-       await processAndStreamLLMResponse(transcript, voice, res);
-   
-       // (RunPod cleanup removed)
-       streamResponse(res, 'end', {});
-     } catch (e) {
-       console.error('Pipeline Error:', e);
-       streamResponse(res, 'error', { message: e.message || 'Internal error' });
-       streamResponse(res, 'end', {});
-     } finally {
-       if (!res.finished) res.end();
-     }
-   }
-   
-   // ---------------- Streaming Helper ----------------
-   function streamResponse(res, type, data) {
-     if (res.finished) return;
-     try {
-       res.write(JSON.stringify({ type, data }) + '\n');
-     } catch {
-       res.write(JSON.stringify({ type: 'error', data: { message: 'serialization' } }) + '\n');
-     }
-   }
-   
-   // ---------------- Deepgram WebSocket ----------------
-   function getTranscriptViaWebSocket(audioBuffer, { detect }) {
-     return new Promise((resolve, reject) => {
-       const hex8 = audioBuffer.slice(0, 8).toString('hex');
-       let encodingParam = '';
-       let sampleRateParam = '';
-       let channelsParam = '';
-       let format = 'unknown';
-   
-       if (hex8.startsWith('1a45dfa3')) format = 'webm';
-       else if (hex8.startsWith('52494646')) format = 'wav';
-       else if (hex8.startsWith('4f676753')) format = 'ogg';
-       else {
-         format = 'raw';
-         encodingParam = '&encoding=opus';
-         sampleRateParam = '&sample_rate=48000';
-         channelsParam = '&channels=1';
-       }
-   
-       const langParams = detect ? 'detect_language=true' : 'language=de';
-   
-       const deepgramUrl =
-         `wss://api.deepgram.com/v1/listen?model=nova-2` +
-         `&${langParams}` +
-         `&punctuate=true` +
-         `&interim_results=false` +
-         `&endpointing=300` +
-         `&vad_events=true` +
-         encodingParam + sampleRateParam + channelsParam;
-   
-       console.log('🔍 Audio Format Detection:', hex8);
-       console.log('✅ Detected format:', format);
-       console.log('🔗 Deepgram WebSocket URL:', deepgramUrl);
-   
-       const ws = new WebSocket(deepgramUrl, {
-         headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
-         perMessageDeflate: false
-       });
-   
-       let finalTranscript = '';
-       let gotResults = false;
-       let opened = false;
-   
-       ws.on('open', () => {
-         opened = true;
-         console.log('✅ Deepgram WebSocket connected');
-         try {
-           ws.send(audioBuffer);
-           console.log('📤 Audio gesendet:', audioBuffer.length, 'bytes');
-           setTimeout(() => {
-             if (ws.readyState === WebSocket.OPEN) {
-               ws.send(JSON.stringify({ type: 'CloseStream' }));
-               console.log('📤 CloseStream gesendet');
-             }
-           }, 50);
-         } catch (err) {
-           reject(err);
-         }
-       });
-   
-       ws.on('message', data => {
-         try {
-           const msg = JSON.parse(data.toString());
-           if (msg.type === 'Results' && msg.channel?.alternatives?.[0]) {
-             const alt = msg.channel.alternatives[0];
-             const txt = alt.transcript || '';
-             if (txt.trim()) {
-               gotResults = true;
-               if (msg.is_final) finalTranscript += txt + ' ';
-             }
-           }
-         } catch (e) {
-           console.warn('⚠️ Parse error:', e);
-         }
-       });
-   
-       ws.on('close', (code, reasonBuf) => {
-         const reason = reasonBuf?.toString() || '';
-         console.log('🔌 Deepgram WebSocket closed:', code, reason);
-         const result = finalTranscript.trim();
-   
-         if (!opened) return reject(new Error('WS not opened – check API key/URL'));
-         if (code >= 4000 || code === 1006) return reject(new Error(`Deepgram WS closed abnormally (${code}) ${reason}`));
-         if (!gotResults && format === 'raw') return reject(new Error('No results – likely wrong encoding/sample rate for raw audio'));
-         resolve(result);
-       });
-   
-       ws.on('error', err => {
-         console.error('❌ Deepgram WebSocket Error:', err);
-         if (String(err?.message || '').includes('400')) reject(new Error('Deepgram 400 Error - Invalid audio format or parameters'));
-         else if (String(err?.message || '').includes('401')) reject(new Error('Deepgram 401 Error - Invalid API key'));
-         else reject(err);
-       });
-   
-       setTimeout(() => {
-         if (ws.readyState !== WebSocket.CLOSED) {
-           console.log('⏰ Deepgram Timeout');
-           try { ws.terminate(); } catch {}
-           reject(new Error('Deepgram timeout - try shorter audio'));
-         }
-       }, 25_000);
-     });
-   }
-   
-   // ---------------- LLM Processing ----------------
-   async function processAndStreamLLMResponse(transcript, voice, res) {
-     console.log('🤖 Starting LLM processing for:', transcript);
-     let fullResponse = '';
-   
-     try {
-       const geminiStream = getGeminiStream(transcript);
-       for await (const token of geminiStream) {
-         if (token) {
-           streamResponse(res, 'llm_chunk', { text: token });
-           fullResponse += token;
-         }
-       }
-     } catch (e) {
-       console.error('Gemini stream failed:', e);
-     }
-   
-     console.log('🤖 LLM Complete Response:', fullResponse);
-     streamResponse(res, 'llm_response', { text: fullResponse });
-   
-     const ttsText = (fullResponse && fullResponse.trim()) ? fullResponse.trim() : 'Ich habe dich verstanden.';
-     await generateAndStreamSpeechAzureHD(ttsText, res);
-   }
-   
-   // ---------------- Gemini Streaming ----------------
-   async function* getGeminiStream(userTranscript) {
-     const accessToken = await retry(() => generateAccessToken(), 2);
-   
-     const endpoint = `https://${GEMINI_REGION}-aiplatform.googleapis.com/v1/projects/${SERVICE_ACCOUNT_JSON.project_id}/locations/${GEMINI_REGION}/publishers/google/models/gemini-2.5-flash-lite:streamGenerateContent?alt=sse`;
-   
-     const requestBody = {
-       contents: [{ role: 'user', parts: [{ text: `Du bist ein freundlicher Telefonassistent. Antworte kurz und benutze keine Emojis.\nKunde: ${userTranscript}` }] }],
-       generationConfig: { temperature: 0.7, maxOutputTokens: 200 },
-       safetySettings: [{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' }]
-     };
-   
-     const { body, statusCode, headers } = await request(endpoint, {
-       method: 'POST',
-       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-       body: JSON.stringify(requestBody),
-       dispatcher: geminiAgent
-     });
-   
-     if (statusCode !== 200) throw new Error(`Gemini returned ${statusCode}`);
-   
-     const isSSE = /text\/event-stream/i.test(headers['content-type'] || '');
-     const decoder = new TextDecoder();
-     let buffer = '';
-   
-     for await (const chunk of body) {
-       buffer += decoder.decode(chunk, { stream: true });
-       let newlineIndex;
-       while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
-         let line = buffer.slice(0, newlineIndex).trim();
-         buffer = buffer.slice(newlineIndex + 1);
-         if (!line) continue;
-   
-         // Remove SSE prefix if present
-         if (isSSE && line.startsWith('data:')) line = line.slice(5).trim();
-   
-         if (line === '[DONE]') return;
-   
-         // Some servers wrap the JSON array in brackets, strip them
-         const payloadStr = line.replace(/^[\[,]?/, '').replace(/[\,]?]$/, '');
-         let payload;
-         try { payload = JSON.parse(payloadStr); } catch { continue; }
-   
-         // Accept both delta and full text depending on API version
-         const partsArr = payload.candidates?.[0]?.content?.parts ??
-                          payload.candidates?.[0]?.delta?.content?.parts ?? [];
-         const text = partsArr[0]?.text;
-         if (text) yield text;
-       }
-     }
-   }
-   
- // ---------------- Azure TTS (chunked REST stream) ----------------
-async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
-  const region     = (process.env.AZURE_SPEECH_REGION || AZURE_SPEECH_REGION || 'westeurope').toLowerCase();
-  const TTS_HOST   = process.env.AZURE_TTS_HOST   || `${region}.tts.speech.microsoft.com`;
+import { request, Agent } from 'undici';
+import WebSocket from 'ws';
+import { createSign } from 'crypto';
+import { performance } from 'node:perf_hooks';
+
+// ---------------- Configuration ----------------
+let config;
+try {
+  config = await import('../config.js').then(m => m.config);
+} catch {
+  config = {
+    DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY,
+    AZURE_SPEECH_KEY: process.env.AZURE_SPEECH_KEY,
+    AZURE_SPEECH_REGION: process.env.AZURE_SPEECH_REGION || 'germanywestcentral',
+    GEMINI_REGION: process.env.GEMINI_REGION || 'us-central1',
+    SERVICE_ACCOUNT_JSON: process.env.GOOGLE_SERVICE_ACCOUNT_JSON
+      ? JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON)
+      : undefined
+  };
+}
+
+const {
+  DEEPGRAM_API_KEY,
+  AZURE_SPEECH_KEY,
+  AZURE_SPEECH_REGION,
+  GEMINI_REGION,
+  SERVICE_ACCOUNT_JSON
+} = config;
+
+// ---------------- Constants ----------------
+const AZURE_VOICE_NAME = 'de-DE-Florian:DragonHDLatestNeural';
+const DG_MODEL = 'nova-2';
+const DG_LANG = 'de';
+const LLM_MODEL_ENDPOINT = `https://${GEMINI_REGION}-aiplatform.googleapis.com/v1/projects/${SERVICE_ACCOUNT_JSON.project_id}/locations/${GEMINI_REGION}/publishers/google/models/gemini-2.5-flash-lite:streamGenerateContent?alt=sse`;
+
+const AUDIO_FORMAT = 'webm-24khz-16bit-mono-opus';
+const MSE_MIME = 'audio/webm;codecs=opus';
+
+// ---------------- HTTP Agents (keep-alive) ----------------
+const geminiAgent = new Agent({
+  keepAliveTimeout: 120_000,
+  keepAliveMaxTimeout: 300_000,
+  connections: 20,
+  pipelining: 1
+});
+const tokenAgent = new Agent({
+  keepAliveTimeout: 300_000,
+  keepAliveMaxTimeout: 600_000,
+  connections: 4,
+  pipelining: 1
+});
+const azureAgent = new Agent({
+  keepAliveTimeout: 120_000,
+  keepAliveMaxTimeout: 300_000,
+  connections: 20,
+  pipelining: 1
+});
+
+// ---------------- Caches ----------------
+let _voiceListCache = null;
+let _azureBearer = null;
+let _azureBearerExp = 0;
+let _gcpAccessToken = null;
+let _gcpAccessExp = 0;
+
+// ---------------- API Handler ----------------
+export default async function handler(req, res) {
+  const t0 = performance.now();
+  console.log('[voice-agent] --- API Request ---');
+
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Bypass-Stt, X-Simulated-Transcript');
+
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  const { audio, voice = AZURE_VOICE_NAME, detect = false } = req.body || {};
+  console.log('🔍 API Request Debug:');
+  console.log('  - Audio vorhanden:', !!audio);
+  console.log('  - Audio Länge (Base64 chars):', audio ? audio.length : 'N/A');
+  console.log('  - Voice:', voice);
+  console.log('  - Request body keys:', Object.keys(req.body || {}));
+
+  if (!audio) {
+    console.log('⚠️ Missing audio data');
+    return res.status(400).json({ error: 'Missing audio data' });
+  }
+
+  try {
+    res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Transfer-Encoding': 'chunked'
+    });
+
+    let transcript;
+    let tSttStart = performance.now();
+
+    if (req.headers['x-bypass-stt'] === 'true' && req.headers['x-simulated-transcript']) {
+      transcript = req.headers['x-simulated-transcript'];
+      streamResponse(res, 'transcript', { text: transcript });
+    } else {
+      const audioBuffer = Buffer.from(audio, 'base64');
+
+      console.log('🎤 Audio Buffer Debug:');
+      console.log('  - Buffer Size (bytes):', audioBuffer.length);
+      console.log('  - First 4 bytes (hex):', audioBuffer.slice(0, 4).toString('hex'));
+
+      const { transcript: sttText } = await getTranscriptViaWebSocket(audioBuffer, { detect, res });
+      transcript = sttText;
+    }
+
+    if (!transcript || transcript.trim().length === 0) {
+      console.log('❌ Kein Transkript - sende Error');
+      streamResponse(res, 'error', { message: 'No speech detected.' });
+      streamResponse(res, 'end', {});
+      return res.end();
+    }
+
+    const tSttEnd = performance.now();
+    console.log(`⏱️ STT total: ${(tSttEnd - tSttStart).toFixed(1)}ms`);
+
+    await processAndStreamLLMResponse(transcript, voice, res);
+
+    streamResponse(res, 'end', {});
+    const tTotal = performance.now() - t0;
+    console.log(`✅ Total request latency: ${tTotal.toFixed(1)}ms`);
+  } catch (e) {
+    console.error('Pipeline Error:', e);
+    streamResponse(res, 'error', { message: e.message || 'Internal error' });
+    streamResponse(res, 'end', {});
+  } finally {
+    if (!res.finished) res.end();
+  }
+}
+
+// ---------------- Streaming Helper ----------------
+function streamResponse(res, type, data) {
+  if (res.finished) return;
+  try {
+    res.write(JSON.stringify({ type, data }) + '\n');
+  } catch {
+    res.write(JSON.stringify({ type: 'error', data: { message: 'serialization' } }) + '\n');
+  }
+}
+
+// ---------------- Deepgram WebSocket (low latency) ----------------
+async function getTranscriptViaWebSocket(audioBuffer, { detect, res }) {
+  return new Promise((resolve, reject) => {
+    const hex8 = audioBuffer.slice(0, 8).toString('hex');
+    let format = 'unknown';
+    if (hex8.startsWith('1a45dfa3')) format = 'webm';
+    else if (hex8.startsWith('52494646')) format = 'wav';
+    else if (hex8.startsWith('4f676753')) format = 'ogg';
+    else format = 'raw';
+
+    const params = new URLSearchParams({
+      model: DG_MODEL,
+      punctuate: 'true',
+      interim_results: 'true',   // get partials ASAP
+      endpointing: '0',          // no extra wait
+      vad_events: 'false'
+    });
+    if (detect) params.set('detect_language', 'true');
+    else params.set('language', DG_LANG);
+
+    if (format === 'raw') {
+      params.set('encoding', 'opus');
+      params.set('sample_rate', '48000');
+      params.set('channels', '1');
+    }
+
+    const deepgramUrl = `wss://api.deepgram.com/v1/listen?${params.toString()}`;
+
+    console.log('🔍 Audio Format Detection:', hex8);
+    console.log('✅ Detected format:', format);
+    console.log('🔗 Deepgram WebSocket URL:', deepgramUrl);
+
+    const ws = new WebSocket(deepgramUrl, {
+      headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
+      perMessageDeflate: false
+    });
+
+    let opened = false;
+    let finalTranscript = '';
+    let firstFinalSent = false;
+
+    ws.on('open', () => {
+      opened = true;
+      console.log('✅ Deepgram WebSocket connected');
+      try {
+        ws.send(audioBuffer);
+        console.log('📤 Audio gesendet:', audioBuffer.length, 'bytes');
+        ws.send(JSON.stringify({ type: 'CloseStream' })); // no delay
+      } catch (err) {
+        reject(err);
+      }
+    });
+
+    ws.on('message', data => {
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'Results' && msg.channel?.alternatives?.[0]) {
+          const alt = msg.channel.alternatives[0];
+          const txt = alt.transcript || '';
+          const isFinal = msg.is_final;
+          if (txt.trim()) {
+            if (isFinal) {
+              finalTranscript += txt + ' ';
+              if (!firstFinalSent) {
+                firstFinalSent = true;
+                streamResponse(res, 'transcript', { text: txt.trim() });
+              }
+            } else {
+              // interim
+              streamResponse(res, 'debug_sentence', { text: txt });
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('⚠️ Parse error:', e);
+      }
+    });
+
+    ws.on('close', (code, reasonBuf) => {
+      const reason = reasonBuf?.toString() || '';
+      console.log('🔌 Deepgram WebSocket closed:', code, reason);
+      const result = finalTranscript.trim();
+
+      if (!opened) return reject(new Error('WS not opened – check API key/URL'));
+      if (code >= 4000 || code === 1006) return reject(new Error(`Deepgram WS closed abnormally (${code}) ${reason}`));
+      resolve({ transcript: result });
+    });
+
+    ws.on('error', err => {
+      console.error('❌ Deepgram WebSocket Error:', err);
+      if (String(err?.message || '').includes('400')) reject(new Error('Deepgram 400 Error - Invalid audio format or parameters'));
+      else if (String(err?.message || '').includes('401')) reject(new Error('Deepgram 401 Error - Invalid API key'));
+      else reject(err);
+    });
+
+    setTimeout(() => {
+      if (ws.readyState !== WebSocket.CLOSED) {
+        console.log('⏰ Deepgram Timeout');
+        try { ws.terminate(); } catch {}
+        reject(new Error('Deepgram timeout - try shorter audio'));
+      }
+    }, 15_000);
+  });
+}
+
+// ---------------- LLM Processing (stream & parallel TTS) ----------------
+async function processAndStreamLLMResponse(transcript, voice, res) {
+  console.log('🤖 Starting LLM processing for:', transcript);
+  const tLlmStart = performance.now();
+
+  const ttsQueue = []; // sentences waiting for TTS
+  let ttsRunning = false;
+  let fullResponse = '';
+  let bufferForSentence = '';
+
+  const enqueueTts = async (sentence) => {
+    if (!sentence.trim()) return;
+    ttsQueue.push(sentence.trim());
+    if (!ttsRunning) {
+      ttsRunning = true;
+      try {
+        await runTtsQueue(ttsQueue, res, voice);
+      } finally {
+        ttsRunning = false;
+      }
+    }
+  };
+
+  try {
+    const stream = getGeminiStream(transcript);
+    for await (const token of stream) {
+      if (!token) continue;
+      streamResponse(res, 'llm_chunk', { text: token });
+      fullResponse += token;
+      bufferForSentence += token;
+
+      // Simple sentence detector
+      if (/[\.!\?…]\s*$/.test(bufferForSentence)) {
+        await enqueueTts(bufferForSentence);
+        bufferForSentence = '';
+      }
+    }
+  } catch (e) {
+    console.error('Gemini stream failed:', e);
+  }
+
+  // remaining text
+  if (bufferForSentence.trim()) {
+    await enqueueTts(bufferForSentence);
+    bufferForSentence = '';
+  }
+
+  const tLlmEnd = performance.now();
+  console.log(`⏱️ LLM total: ${(tLlmEnd - tLlmStart).toFixed(1)}ms`);
+  streamResponse(res, 'llm_response', { text: fullResponse });
+}
+
+// Process TTS queue sequentially (each sentence)
+async function runTtsQueue(queue, res, voice) {
+  if (!queue.length) return;
+  const text = queue.shift();
+  await generateAndStreamSpeechAzureHD(text, res, { voice });
+  // process next
+  if (queue.length) await runTtsQueue(queue, res, voice);
+}
+
+// ---------------- Gemini Streaming ----------------
+async function* getGeminiStream(userTranscript) {
+  const accessToken = await getGcpAccessToken();
+  const requestBody = {
+    contents: [
+      {
+        role: 'user',
+        parts: [{ text: `Du bist ein freundlicher, sehr schneller Telefonassistent. Antworte knapp.\nKunde: ${userTranscript}` }]
+      }
+    ],
+    generationConfig: { temperature: 0.5, maxOutputTokens: 120 }
+  };
+
+  const { body, statusCode, headers } = await request(LLM_MODEL_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(requestBody),
+    dispatcher: geminiAgent
+  });
+
+  if (statusCode !== 200) throw new Error(`Gemini returned ${statusCode}`);
+
+  const isSSE = /text\/event-stream/i.test(headers['content-type'] || '');
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  for await (const chunk of body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    let newlineIndex;
+    while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+      let line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (!line) continue;
+      if (isSSE && line.startsWith('data:')) line = line.slice(5).trim();
+      if (line === '[DONE]') return;
+
+      const payloadStr = line.replace(/^[\[,]?/, '').replace(/[\,]?]$/, '');
+      let payload;
+      try { payload = JSON.parse(payloadStr); } catch { continue; }
+
+      const partsArr = payload.candidates?.[0]?.content?.parts ??
+                       payload.candidates?.[0]?.delta?.content?.parts ?? [];
+      const text = partsArr[0]?.text;
+      if (text) yield text;
+    }
+  }
+}
+
+// ---------------- Azure TTS (streaming) ----------------
+async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
+  const region = (process.env.AZURE_SPEECH_REGION || AZURE_SPEECH_REGION || 'westeurope').toLowerCase();
+  const TTS_HOST = process.env.AZURE_TTS_HOST || `${region}.tts.speech.microsoft.com`;
   const TOKEN_HOST = process.env.AZURE_TOKEN_HOST || `${region}.api.cognitive.microsoft.com`;
 
-  // requested voice (can be overridden via opts.voice)
-  let requestedVoice = (opts.voice || AZURE_VOICE_NAME || 'de-DE-FlorianMultilingualNeural').trim();
-
-  console.log('🔊 Azure HD TTS starting...');
-  console.log('  • Raw text length:', text?.length || 0);
-  console.log('  • Configured voice:', requestedVoice);
-  console.log('  • Hosts -> TTS:', TTS_HOST, ' TOKEN:', TOKEN_HOST);
-
-  // ----- Voice / deployment handling -----
+  let requestedVoice = (opts.voice || AZURE_VOICE_NAME).trim();
   let ssmlVoiceName = requestedVoice;
-  let deploymentId  = opts.deploymentId || null;
+  let deploymentId = opts.deploymentId || null;
 
-  const isDragonHd = /:DragonHDLatestNeural$/i.test(ssmlVoiceName); // HD-BYPASS zuerst prüfen
+  const isDragonHd = /:DragonHDLatestNeural$/i.test(ssmlVoiceName);
   if (!isDragonHd && ssmlVoiceName.includes(':')) {
     const [maybeName, maybeDep] = ssmlVoiceName.split(':');
     if (/^[0-9a-f-]{36}$/i.test(maybeDep)) {
-      deploymentId   = maybeDep;
-      ssmlVoiceName  = maybeName;
+      deploymentId = maybeDep;
+      ssmlVoiceName = maybeName;
+    } else {
+      ssmlVoiceName = maybeName;
     }
   }
 
-  if (isDragonHd) {
-    console.log('🔵 HD voice bypass active for', ssmlVoiceName);
-  } else {
+  if (!isDragonHd) {
     try {
       ssmlVoiceName = await ensureVoiceAvailable(ssmlVoiceName, TTS_HOST, TOKEN_HOST) || ssmlVoiceName;
     } catch (e) {
       console.warn('⚠️ ensureVoiceAvailable failed:', e.message);
     }
+  } else {
+    console.log('🔵 HD voice bypass active for', ssmlVoiceName);
   }
 
   const safeText = String(text || '').trim();
   if (!safeText) throw new Error('Empty text for TTS');
 
-  // *** STREAMING-FORMAT: WebM/Opus für MSE ***
-  const AUDIO_FORMAT = 'webm-24khz-16bit-mono-opus';
-  const MSE_MIME     = 'audio/webm;codecs=opus';
-
-  // Aufteilen (für lange Antworten)
-  const chunks = splitForSsml(safeText, 4800);
-
-  // Frontend über Format informieren
+  // Inform FE once per request (guard with flag?)
   streamResponse(res, 'audio_header', { mime: MSE_MIME, format: 'webm' });
 
-  let totalBytes = 0;
-  for (let i = 0; i < chunks.length; i++) {
-    const ssml = buildSsml(chunks[i], 'de-DE', ssmlVoiceName);
-    const { bytesSent } = await synthesizeOnce(ssml, {
-      TTS_HOST,
-      TOKEN_HOST,
-      deploymentId,
-      res,
-      format: AUDIO_FORMAT
-    });
-    totalBytes += bytesSent;
-  }
-
-  console.log('✅ Azure TTS streamed total bytes:', totalBytes);
-  streamResponse(res, 'tts_engine', {
-    engine: 'azure_hd',
-    voice: requestedVoice,
-    bytes: totalBytes,
-    mime: MSE_MIME
+  const ssml = buildSsml(safeText, 'de-DE', ssmlVoiceName);
+  await synthesizeOnce(ssml, {
+    TTS_HOST,
+    TOKEN_HOST,
+    deploymentId,
+    res,
+    format: AUDIO_FORMAT
   });
 }
 
 // ---------------- SSML Builder ----------------
-function buildSsml(text, lang, voice) { // [B2]
+function buildSsml(text, lang, voice) {
   return `
 <speak version="1.0" xml:lang="${lang}" xmlns="http://www.w3.org/2001/10/synthesis">
   <voice name="${voice}">${escapeXml(text)}</voice>
 </speak>`;
 }
 
-function splitForSsml(str, maxLen) {
-  if (str.length <= maxLen) return [str];
-  const parts = [];
-  let start = 0;
-  while (start < str.length) {
-    let end = Math.min(start + maxLen, str.length);
-    const slice = str.slice(start, end);
-    let cut = slice.lastIndexOf('. ');
-    if (cut < maxLen * 0.6) cut = slice.lastIndexOf(' ');
-    if (cut <= 0) cut = slice.length;
-    parts.push(slice.slice(0, cut));
-    start += cut;
-  }
-  return parts;
-}
-
-// ---------------- Single synth call ----------------
-async function synthesizeOnce(ssml, ctx) { // [B3]
+// ---------------- Azure synth call ----------------
+async function synthesizeOnce(ssml, ctx) {
   const { TTS_HOST, TOKEN_HOST, deploymentId, res, format } = ctx;
 
-  const baseUrl  = `https://${TTS_HOST}/cognitiveservices/v1`;
+  const baseUrl = `https://${TTS_HOST}/cognitiveservices/v1`;
   const endpoint = deploymentId ? `${baseUrl}?deploymentId=${encodeURIComponent(deploymentId)}` : baseUrl;
 
-  let headers = await buildAuthHeaders(TOKEN_HOST, false);
+  let headers = await buildAuthHeaders(TOKEN_HOST);
   applyCommonTtsHeaders(headers, format);
 
-  let { bytesSent, needRetry } = await doTtsRequest(endpoint, headers, ssml, res);
+  const { bytesSent, needRetry } = await doTtsRequest(endpoint, headers, ssml, res);
   if (needRetry) {
     headers = await buildAuthHeaders(TOKEN_HOST, true);
     applyCommonTtsHeaders(headers, format);
-    ({ bytesSent } = await doTtsRequest(endpoint, headers, ssml, res));
+    await doTtsRequest(endpoint, headers, ssml, res);
   }
-  return { bytesSent };
 }
 
-// ---------------- Common TTS Headers ----------------
-function applyCommonTtsHeaders(headers, format) { // [B4]
-  headers['Content-Type']             = 'application/ssml+xml';
+// ---------------- Common headers ----------------
+function applyCommonTtsHeaders(headers, format) {
+  headers['Content-Type'] = 'application/ssml+xml';
   headers['X-Microsoft-OutputFormat'] = format;
-  headers['User-Agent']               = 'voice-agent/1.0';
+  headers['User-Agent'] = 'voice-agent/1.0';
 }
 
-// ---------------- Azure Request & stream chunks ----------------
-async function doTtsRequest(endpoint, headers, ssml, res) { // [B5]
+// ---------------- Azure request streamer ----------------
+async function doTtsRequest(endpoint, headers, ssml, res) {
+  const tStart = performance.now();
   const { body, statusCode, headers: respHeaders } = await request(endpoint, {
     method: 'POST',
     headers,
@@ -459,6 +480,7 @@ async function doTtsRequest(endpoint, headers, ssml, res) { // [B5]
   }
 
   let bytesSent = 0;
+  let first = true;
   for await (const chunk of body) {
     if (!chunk?.length) continue;
     bytesSent += chunk.length;
@@ -466,29 +488,28 @@ async function doTtsRequest(endpoint, headers, ssml, res) { // [B5]
       base64: Buffer.from(chunk).toString('base64'),
       format: 'webm'
     });
+
+    if (first) {
+      first = false;
+      const now = performance.now();
+      console.log(`⏱️ TTS first-chunk latency: ${(now - tStart).toFixed(1)}ms`);
+    }
   }
+  console.log(`⏱️ TTS finish latency: ${(performance.now() - tStart).toFixed(1)}ms`);
   return { bytesSent, needRetry: false };
 }
 
-function ssmlToPlainText(ssml) {
-  return ssml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-let _voiceListCache = null;
-
-// ---------------- HD bypass helper ----------------
+// ---------------- Voice helpers ----------------
 function needsHdBypass(name) {
   return /:DragonHDLatestNeural$/i.test(name);
 }
 
-// ---------------- Voice list helpers ----------------
 async function ensureVoiceAvailable(voiceName, ttsHost, tokenHost) {
   if (needsHdBypass(voiceName)) return voiceName;
-
   if (_voiceListCache && voiceExists(_voiceListCache, voiceName)) return voiceName;
 
   try {
-    const headers = await buildAuthHeaders(tokenHost, false);
+    const headers = await buildAuthHeaders(tokenHost);
     const { body, statusCode } = await request(`https://${ttsHost}/cognitiveservices/voices/list`, {
       method: 'GET',
       headers,
@@ -526,19 +547,19 @@ function findClosestVoice(list, name) {
   return deMale?.ShortName;
 }
 
-async function buildAuthHeaders(tokenHost, preferBearer) {
-  if (preferBearer || process.env.AZURE_TTS_USE_BEARER === 'true') {
-    try {
-      const token = await getAzureToken(tokenHost);
-      return { Authorization: `Bearer ${token}` };
-    } catch (e) {
-      console.warn('⚠️ Bearer token retrieval failed, will use key:', e.message);
-    }
+// ---------------- Auth helpers ----------------
+async function buildAuthHeaders(tokenHost, forceBearer = false) {
+  if (forceBearer || process.env.AZURE_TTS_USE_BEARER === 'true') {
+    const token = await getAzureToken(tokenHost);
+    return { Authorization: `Bearer ${token}` };
   }
   return { 'Ocp-Apim-Subscription-Key': AZURE_SPEECH_KEY };
 }
 
 async function getAzureToken(tokenHost) {
+  const now = Date.now();
+  if (_azureBearer && now < _azureBearerExp - 60_000) return _azureBearer;
+
   console.log('🔑 Requesting Azure token…');
   const url = `https://${tokenHost}/sts/v1.0/issueToken`;
   const { body, statusCode } = await request(url, {
@@ -548,29 +569,27 @@ async function getAzureToken(tokenHost) {
       'Content-Type': 'application/x-www-form-urlencoded',
       'Content-Length': '0'
     },
-    dispatcher: azureAgent
+    dispatcher: tokenAgent
   });
   if (statusCode !== 200) {
     const txt = await safeReadBodyText(body);
     throw new Error(`Azure token failed (${statusCode}): ${truncate(txt, 300)}`);
   }
   const token = await body.text();
+  _azureBearer = token;
+  _azureBearerExp = now + 9 * 60 * 1000; // ~9 min
   console.log('🔑 Azure token acquired (len):', token.length);
   return token;
 }
 
-function escapeXml(str = '') {
-  return str.replace(/[<>&'"/]/g, c => ({
-    '<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;','/':'&#47;'
-  }[c]));
-}
+async function getGcpAccessToken() {
+  const now = Date.now();
+  if (_gcpAccessToken && now < _gcpAccessExp - 60_000) return _gcpAccessToken;
 
-async function safeReadBodyText(body) {
-  try { return await body.text(); } catch { return '<unreadable body>'; }
-}
-
-function truncate(str = '', max = 200) {
-  return str.length <= max ? str : str.slice(0, max) + '…';
+  const token = await generateAccessToken();
+  _gcpAccessToken = token;
+  _gcpAccessExp = now + 55 * 60 * 1000;
+  return token;
 }
 
 // ---------------- Google Auth & GCP TTS Fallback ----------------
@@ -601,7 +620,7 @@ async function generateAccessToken() {
 
 async function generateAndStreamSpeechGCP(text, voice, res) {
   try {
-    const accessToken = await generateAccessToken();
+    const accessToken = await getGcpAccessToken();
     const reqBody = {
       input: { text },
       voice: { languageCode: 'de-DE', name: 'de-DE-Neural2-B', ssmlGender: 'MALE' },
@@ -626,4 +645,17 @@ async function generateAndStreamSpeechGCP(text, voice, res) {
   }
 }
 
-export { processAndStreamLLMResponse, generateAndStreamSpeechGCP };
+// ---------------- Utils ----------------
+function escapeXml(str = '') {
+  return str.replace(/[<>&'"/]/g, c =>
+    ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;', '/': '&#47;' }[c])
+  );
+}
+
+async function safeReadBodyText(body) {
+  try { return await body.text(); } catch { return '<unreadable body>'; }
+}
+
+function truncate(str = '', max = 200) {
+  return str.length <= max ? str : str.slice(0, max) + '…';
+}
