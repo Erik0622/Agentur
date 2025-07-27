@@ -315,7 +315,7 @@
    }
    
  // ---------------- Azure TTS (chunked REST stream) ----------------
-async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
+async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
   const region = (process.env.AZURE_SPEECH_REGION || AZURE_SPEECH_REGION || 'westeurope').toLowerCase();
   const TTS_HOST   = process.env.AZURE_TTS_HOST   || `${region}.tts.speech.microsoft.com`;
   const TOKEN_HOST = process.env.AZURE_TOKEN_HOST || `${region}.api.cognitive.microsoft.com`;
@@ -332,39 +332,45 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
   let ssmlVoiceName = requestedVoice;
   let deploymentId  = opts.deploymentId || null;
 
-  // treat suffix after ":" as deploymentId ONLY if it looks like a GUID
   if (ssmlVoiceName.includes(':')) {
     const [maybeName, maybeDep] = ssmlVoiceName.split(':');
     if (/^[0-9a-f-]{36}$/i.test(maybeDep)) {
       deploymentId = maybeDep;
       ssmlVoiceName = maybeName;
+    } else {
+      ssmlVoiceName = maybeName; // alles nach ":" verwerfen
     }
   }
 
-  // verify or fallback voice
   try {
     ssmlVoiceName = await ensureVoiceAvailable(ssmlVoiceName, TTS_HOST, TOKEN_HOST) || ssmlVoiceName;
   } catch (e) {
     console.warn('⚠️ ensureVoiceAvailable failed:', e.message);
   }
 
-  // ----- Text prep -----
   const safeText = String(text || '').trim();
   if (!safeText) throw new Error('Empty text for TTS');
 
-  // Azure SSML payload limit ~5k chars. Split to be safe.
+  // *** STREAMING-FORMAT: WebM/Opus für MSE ***
+  const AUDIO_FORMAT = 'webm-24khz-16bit-mono-opus'; // Azure Format-String
+  const MSE_MIME     = 'audio/webm;codecs=opus';     // Browser MIME
+
+  // Aufteilen (für sehr lange Antworten)
   const chunks = splitForSsml(safeText, 4800);
+
+  // Informiere Frontend einmalig über Format (Header-Event)
+  streamResponse(res, 'audio_header', { mime: MSE_MIME, format: 'webm' });
 
   let totalBytes = 0;
   for (let i = 0; i < chunks.length; i++) {
-    const part = chunks[i];
-    const ssml = buildSsml(part, 'de-DE', ssmlVoiceName);
+    const ssml = buildSsml(chunks[i], 'de-DE', ssmlVoiceName);
     const { bytesSent } = await synthesizeOnce(ssml, {
       TTS_HOST,
       TOKEN_HOST,
       deploymentId,
       res,
-      format: 'riff-24khz-16bit-mono-pcm'
+      format: AUDIO_FORMAT,
+      frontendFormat: 'webm' // nur für Event payload
     });
     totalBytes += bytesSent;
   }
@@ -373,11 +379,13 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) {
   streamResponse(res, 'tts_engine', {
     engine: 'azure_hd',
     voice: requestedVoice,
-    bytes: totalBytes
+    bytes: totalBytes,
+    mime: MSE_MIME
   });
 }
 
-function buildSsml(text, lang, voice) {
+// ---------------- SSML Builder ----------------
+function buildSsml(text, lang, voice) { // [B2]
   return `
 <speak version="1.0" xml:lang="${lang}" xmlns="http://www.w3.org/2001/10/synthesis">
   <voice name="${voice}">${escapeXml(text)}</voice>
@@ -400,13 +408,13 @@ function splitForSsml(str, maxLen) {
   return parts;
 }
 
-async function synthesizeOnce(ssml, ctx) {
+// ---------------- Single synth call ----------------
+async function synthesizeOnce(ssml, ctx) { // [B3]
   const { TTS_HOST, TOKEN_HOST, deploymentId, res, format } = ctx;
 
   const baseUrl  = `https://${TTS_HOST}/cognitiveservices/v1`;
   const endpoint = deploymentId ? `${baseUrl}?deploymentId=${encodeURIComponent(deploymentId)}` : baseUrl;
 
-  // First try with subscription key, then retry with bearer if 401/403
   let headers = await buildAuthHeaders(TOKEN_HOST, false);
   applyCommonTtsHeaders(headers, format);
 
@@ -419,13 +427,15 @@ async function synthesizeOnce(ssml, ctx) {
   return { bytesSent };
 }
 
-function applyCommonTtsHeaders(headers, format) {
+// ---------------- Common TTS Headers ----------------
+function applyCommonTtsHeaders(headers, format) { // [B4]
   headers['Content-Type'] = 'application/ssml+xml';
-  headers['X-Microsoft-OutputFormat'] = format;
+  headers['X-Microsoft-OutputFormat'] = format; // webm-24khz-16bit-mono-opus
   headers['User-Agent'] = 'voice-agent/1.0';
 }
 
-async function doTtsRequest(endpoint, headers, ssml, res) {
+// ---------------- Azure Request & stream chunks ----------------
+async function doTtsRequest(endpoint, headers, ssml, res) { // [B5]
   const { body, statusCode, headers: respHeaders } = await request(endpoint, {
     method: 'POST',
     headers,
@@ -436,7 +446,7 @@ async function doTtsRequest(endpoint, headers, ssml, res) {
   console.log('📥 Azure TTS HTTP status:', statusCode);
   if (statusCode === 401 || statusCode === 403) {
     console.error('Auth failed (will retry?):', respHeaders);
-    await safeReadBodyText(body); // drain
+    await safeReadBodyText(body);
     return { bytesSent: 0, needRetry: true };
   }
   if (statusCode !== 200) {
@@ -450,9 +460,11 @@ async function doTtsRequest(endpoint, headers, ssml, res) {
   for await (const chunk of body) {
     if (!chunk?.length) continue;
     bytesSent += chunk.length;
+
+    // Base64 kodieren und direkt rausschicken
     streamResponse(res, 'audio_chunk', {
       base64: Buffer.from(chunk).toString('base64'),
-      format: 'wav'
+      format: 'webm'
     });
   }
   return { bytesSent, needRetry: false };
