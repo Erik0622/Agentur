@@ -25,11 +25,11 @@
    };
    
    // ---------------- Configuration ----------------
-   let config;
+   let appConfig;
    try {
-     config = await import('../config.js').then(m => m.config);
+     appConfig = await import('../config.js').then(m => m.config);
    } catch {
-     config = {
+     appConfig = {
        DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY,
        AZURE_SPEECH_KEY: process.env.AZURE_SPEECH_KEY,
        AZURE_SPEECH_REGION: process.env.AZURE_SPEECH_REGION || 'germanywestcentral',
@@ -45,7 +45,7 @@
      AZURE_SPEECH_REGION,
      GEMINI_REGION = 'us-central1',
      SERVICE_ACCOUNT_JSON
-   } = config;
+   } = appConfig;
    
    // ---------------- HTTP Agents (Optimized for Low Latency) ----------------
    const geminiAgent = new Agent({ 
