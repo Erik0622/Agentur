@@ -109,6 +109,13 @@ function App() {
 
   function setupMse(mime: string = OPUS_MIME) {
     return new Promise<void>((resolve, reject) => {
+      // MIME Type Support Check
+      if (!MediaSource.isTypeSupported(mime)) {
+        console.error('❌ MIME Type nicht unterstützt:', mime);
+        reject(new Error(`MIME Type nicht unterstützt: ${mime}`));
+        return;
+      }
+      
       // Reuse if exists
       if (mseRef.current && sourceBufferRef.current) {
         resolve(); return;
