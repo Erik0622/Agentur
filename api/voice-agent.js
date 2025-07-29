@@ -418,13 +418,15 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
   // HD-Voices beibehalten; nur GUID abschneiden
   const parts = ssmlVoiceName.split(':');
   if (parts.length === 2 && /^[0-9a-f-]{36}$/i.test(parts[1])) {
-    deploymentId = parts[1];
-    ssmlVoiceName = parts[0];
+    deploymentId = parts[1];        // nur GUID abtrennen
+    ssmlVoiceName = parts[0];       // HD-Suffix bleibt erhalten
   }
   // Ansonsten: Kompletten Voice-Namen beibehalten (inkl. DragonHDLatestNeural)
 
   // Kein Voice-Fallback für niedrigere Latenz
   console.log('🚀 Verwende feste Voice-ID ohne Fallback:', ssmlVoiceName);
+  console.log('🔍 SSML Voice Name für Azure:', ssmlVoiceName);
+  console.log('🔍 Deployment ID (falls vorhanden):', deploymentId);
 
   // Voice-Fallback entfernt für niedrigere Latenz
   console.log('⚡ Verwende feste Voice-ID ohne Fallback-Check');
@@ -445,6 +447,7 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
   let totalBytes = 0;
   for (let i = 0; i < chunks.length; i++) {
     const ssml = buildSsml(chunks[i], 'de-DE', ssmlVoiceName);
+    console.log('🔍 SSML für Azure:', ssml.replace(/\n/g, ' ').trim());
     const { bytesSent } = await synthesizeOnce(ssml, {
       TTS_HOST,
       TOKEN_HOST,
