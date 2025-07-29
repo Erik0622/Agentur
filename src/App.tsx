@@ -38,7 +38,7 @@ function App() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [conversationHistory, setConversationHistory] = useState<Array<{user: string, ai: string, timestamp: Date}>>([]);
   const [isSpeechDetected, setIsSpeechDetected] = useState(false);
-  const [silenceCount, setSilenceCount] = useState(0);
+  const silenceCountRef = useRef(0);
   
   // Deutsche Stimmenauswahl für Bella Vista (nur geklonte deutsche Stimmen)
   const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('bella_vista_german_voice');
@@ -59,14 +59,9 @@ function App() {
 
   // ===== LATENCY CONSTANTS & HELPERS ===== [F-LAT-0]
   const OPUS_MIME = 'audio/webm;codecs=opus';
-  const CHUNK_MS  = 20; // MediaRecorder timeslice (20ms für niedrige Latenz)
+  const CHUNK_MS  = 50; // MediaRecorder timeslice (50ms für optimale Performance)
   // -------- Laufzeit-Schalter --------------------------------
-  const isProd  = window.location.hostname !== 'localhost';
-  const USE_WS  = !isProd;                 // DEV = WebSocket, PROD = REST
-  
-  const WS_URL  = USE_WS
-    ? 'ws://localhost:3001'
-    : null;  // in Prod nicht benötigt
+  const WS_URL  = 'ws://localhost:3001';   // WebSocket URL
 
 
 
@@ -155,8 +150,6 @@ function App() {
   const wsStreamRef = useRef<WebSocket | null>(null);
 
   const startWebSocketStream = async () => {
-    if (!USE_WS) return;   // Production: kein WS
-    
     if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
       console.log('🔗 WebSocket bereits verbunden');
       return;
@@ -164,7 +157,7 @@ function App() {
 
     try {
       console.log('🔗 Verbinde zu WebSocket Stream:', WS_URL);
-      const ws = new WebSocket(WS_URL!);
+      const ws = new WebSocket(WS_URL);
       wsStreamRef.current = ws;
 
       ws.onopen = () => {
@@ -230,7 +223,7 @@ function App() {
   };
 
   const sendAudioChunk = (chunk: Blob) => {
-    if (USE_WS && wsStreamRef.current?.readyState === WebSocket.OPEN) {
+    if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
       wsStreamRef.current.send(chunk);
     }
   };
@@ -374,18 +367,23 @@ function App() {
               console.log('🎤 Sprache erkannt - starte Aufnahme');
               speechDetectionRef.current = true;
               setIsSpeechDetected(true);
-              setSilenceCount(0);
+              silenceCountRef.current = 0;
               startContinuousRecording();
             } else if (!isSpeaking && wasSpeaking) {
-              // Stille erkannt - zähle Frames
-              setSilenceCount(prev => prev + 1);
-            } else if (!isSpeaking && wasSpeaking && silenceCount >= SILENCE_FRAMES_NEEDED) {
-              // Genug Stille - beende Aufnahme
-              console.log('🔇 Stille erkannt - beende Aufnahme');
-              speechDetectionRef.current = false;
-              setIsSpeechDetected(false);
-              setSilenceCount(0);
-              stopContinuousRecording();
+              // Schritt 1: Zähler hoch
+              silenceCountRef.current += 1;
+              
+              // Schritt 2: Timeout erreicht?
+              if (silenceCountRef.current >= SILENCE_FRAMES_NEEDED) {
+                console.log('🔇 0,5 s Stille – stoppe Aufnahme');
+                speechDetectionRef.current = false;
+                setIsSpeechDetected(false);
+                silenceCountRef.current = 0;
+                stopContinuousRecording();
+              }
+            } else if (isSpeaking) {
+              // Sobald wieder Sprache: Zähler zurücksetzen
+              silenceCountRef.current = 0;
             }
           }
 
@@ -420,6 +418,11 @@ function App() {
   // Kontinuierliche Gespräch-Funktionen
   const startConversationMode = async () => {
     try {
+      // Browser-Kompatibilität Check
+      if (!MediaRecorder.isTypeSupported(OPUS_MIME)) {
+        throw new Error('Browser unterstützt WebM/Opus nicht');
+      }
+      
       console.log('🎯 Starte Gesprächsmodus');
       
       const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -451,7 +454,7 @@ function App() {
     
     setIsListening(false);
     setIsSpeechDetected(false);
-    setSilenceCount(0);
+    silenceCountRef.current = 0;
     speechDetectionRef.current = false;
     
     // Aktuelle Aufnahme stoppen falls läuft
@@ -482,18 +485,9 @@ function App() {
         }
       });
 
-      if (USE_WS) {
-        mr.ondataavailable = e => e.data.size && sendAudioChunk(e.data);
-      } else {
-        const parts: Blob[] = [];
-        mr.ondataavailable = e => parts.push(e.data);
-        mr.onstop = () => {
-          const blob = new Blob(parts, { type: OPUS_MIME });
-          processVoiceInputREST(blob);
-        };
-      }
+      mr.ondataavailable = e => e.data.size && sendAudioChunk(e.data);
 
-      mr.start(CHUNK_MS); // 20ms Chunks für niedrige Latenz
+      mr.start(CHUNK_MS); // 50ms Chunks für optimale Performance
     } catch (e) {
       console.error('Kontinuierliche Aufnahme-Start fehlgeschlagen:', e);
     }
@@ -503,107 +497,27 @@ function App() {
     if (continuousRecorderRef.current && continuousRecorderRef.current.state === 'recording') {
       continuousRecorderRef.current.stop();
     }
-    // WebSocket Stream beenden (nur wenn WS aktiv)
-    if (USE_WS) {
-      endWebSocketStream();
-    }
+    // WebSocket Stream beenden
+    endWebSocketStream();
   };
 
-  // ===== REST API Processing (Production) ===== [F-LAT-3]
-  async function processVoiceInputREST(audioBlob: Blob) {
-    try {
-      setTranscript('Verarbeite Audio...');
-      setAiResponse('');
-      setIsProcessing(true);
-
-      const ab = await audioBlob.arrayBuffer();
-      const b64 = btoa(String.fromCharCode(...new Uint8Array(ab)));
-      const payload = JSON.stringify({ audio: b64, voice: 'german_m2' });
-
-      const res = await fetch('/api/voice-agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload
-      });
-
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        let newlineIndex;
-        while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
-          const line = buffer.slice(0, newlineIndex).trim();
-          buffer = buffer.slice(newlineIndex + 1);
-          
-          if (!line) continue;
-          
-          try {
-            const event = JSON.parse(line);
-            console.log('📨 Stream Event:', event.type);
-            
-            switch (event.type) {
-              case 'transcript':
-                setTranscript(event.data.text);
-                break;
-              case 'llm_chunk':
-                pushLlmChunk(setAiResponse, event.data.text);
-                break;
-              case 'audio_header':
-                try { await setupMse(event.data.mime); setIsPlayingResponse(true); } catch (e) { console.error(e); }
-                break;
-              case 'audio_chunk': {
-                const u8 = b64ToUint8(event.data.base64);
-                audioQueueRef.current.push(u8);
-                appendNextChunk();
-                break;
-              }
-              case 'end':
-                endMseStream();
-                setIsProcessing(false);
-                break;
-              case 'error':
-                if (event.data.message === 'No speech detected.') {
-                  setTranscript('Keine Sprache erkannt. Bitte sprechen Sie lauter.');
-                  setAiResponse('');
-                } else {
-                  throw new Error(event.data.message || 'Voice processing error');
-                }
-                break;
-              default:
-                console.log('📨 Unbekanntes Event:', event.type);
-            }
-          } catch (error) {
-            console.error('Stream parse error:', error);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Voice API Error:', error);
-      setTranscript('');
-      setAiResponse('Fehler bei der Sprachverarbeitung.');
-      alert('Sprachverarbeitung fehlgeschlagen: ' + (error as Error).message);
-    } finally {
-      setIsProcessing(false);
-    }
-  }
+  
 
   // ===== START/STOP RECORDING (WebSocket Streaming) ===== [F-LAT-2]
   const startRecording = async () => {
     try {
+      // Browser-Kompatibilität Check
+      if (!MediaRecorder.isTypeSupported(OPUS_MIME)) {
+        throw new Error('Browser unterstützt WebM/Opus nicht');
+      }
+      
       setIsRecording(true);
       setTranscript('');
       setAiResponse('');
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: 48000,
+          sampleRate: 16000, // 16kHz für optimale STT-Performance
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
@@ -613,25 +527,14 @@ function App() {
 
       const mr = new MediaRecorder(stream, { mimeType: OPUS_MIME });
       
-      if (USE_WS) {
-        // --- Low-Latency WS ---
-        await startWebSocketStream();
-        if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-          wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
-        }
-        mr.ondataavailable = e => e.data.size && sendAudioChunk(e.data);
-        mr.onstop = () => { endWebSocketStream(); stream.getTracks().forEach(t => t.stop()); };
-      } else {
-        // --- Production-REST: 20 ms Chunks sammeln, danach EIN Blob schicken ---
-        const parts: Blob[] = [];
-        mr.ondataavailable = e => parts.push(e.data);
-        mr.onstop = async () => {
-          const blob = new Blob(parts, { type: OPUS_MIME });
-          await processVoiceInputREST(blob);   // existiert bereits
-          stream.getTracks().forEach(t => t.stop());
-        };
+      // --- Low-Latency WebSocket Streaming ---
+      await startWebSocketStream();
+      if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
+        wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
       }
-      mr.start(CHUNK_MS); // 20ms Chunks für niedrige Latenz
+      mr.ondataavailable = e => e.data.size && sendAudioChunk(e.data);
+      mr.onstop = () => { endWebSocketStream(); stream.getTracks().forEach(t => t.stop()); };
+      mr.start(CHUNK_MS); // 50ms Chunks für optimale Performance
       setMediaRecorder(mr);
     } catch (err) {
       console.error('Fehler beim Starten der Aufnahme:', err);
