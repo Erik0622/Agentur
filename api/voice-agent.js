@@ -181,7 +181,9 @@
          channelsParam = '&channels=1';
        }
    
-       const langParams = detect ? 'detect_language=true' : 'language=de';
+       const langParams = detect
+         ? 'detect_language=true'
+         : 'language=multi'; // multi = auto-detect innerhalb 10 Sprachen
    
        // Optimierte Deepgram-Parameter für niedrige Latenz
        const deepgramUrl =
