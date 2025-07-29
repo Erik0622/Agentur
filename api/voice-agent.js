@@ -415,15 +415,13 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
   let ssmlVoiceName = requestedVoice;
   let deploymentId  = opts.deploymentId || null;
 
-  if (ssmlVoiceName.includes(':')) {
-    const [maybeName, maybeDep] = ssmlVoiceName.split(':');
-    if (/^[0-9a-f-]{36}$/i.test(maybeDep)) {
-      deploymentId = maybeDep;
-      ssmlVoiceName = maybeName;
-    } else {
-      ssmlVoiceName = maybeName; // alles nach ":" verwerfen
-    }
+  // HD-Voices beibehalten; nur GUID abschneiden
+  const parts = ssmlVoiceName.split(':');
+  if (parts.length === 2 && /^[0-9a-f-]{36}$/i.test(parts[1])) {
+    deploymentId = parts[1];
+    ssmlVoiceName = parts[0];
   }
+  // Ansonsten: Kompletten Voice-Namen beibehalten (inkl. DragonHDLatestNeural)
 
   // Kein Voice-Fallback für niedrigere Latenz
   console.log('🚀 Verwende feste Voice-ID ohne Fallback:', ssmlVoiceName);
@@ -435,14 +433,14 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
   if (!safeText) throw new Error('Empty text for TTS');
 
   // *** STREAMING-FORMAT: Optimiert für niedrige Latenz ***
-  const AUDIO_FORMAT = 'riff-16khz-16bit-mono-pcm'; // Kleinere Pakete (16kHz statt 24kHz)
-  const MSE_MIME     = 'audio/wav';                  // Browser MIME
+  const AUDIO_FORMAT = 'webm-16khz-16bit-mono-opus'; // MSE-kompatibel
+  const MSE_MIME     = 'audio/webm;codecs=opus';     // Browser MIME
 
   // Aufteilen (für sehr lange Antworten)
   const chunks = splitForSsml(safeText, 4800);
 
   // Informiere Frontend einmalig über Format (Header-Event)
-  streamResponse(res, 'audio_header', { mime: MSE_MIME, format: 'webm' });
+  streamResponse(res, 'audio_header', { mime: MSE_MIME, format: 'webm-opus' });
 
   let totalBytes = 0;
   for (let i = 0; i < chunks.length; i++) {
@@ -453,7 +451,7 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
       deploymentId,
       res,
       format: AUDIO_FORMAT,
-      frontendFormat: 'webm' // nur für Event payload
+      frontendFormat: 'webm-opus' // nur für Event payload
     });
     totalBytes += bytesSent;
   }
@@ -548,7 +546,7 @@ async function doTtsRequest(endpoint, headers, ssml, res) { // [B5]
     // Base64 kodieren und direkt rausschicken
     streamResponse(res, 'audio_chunk', {
       base64: Buffer.from(chunk).toString('base64'),
-      format: 'webm'
+      format: 'webm-opus'
     });
   }
   return { bytesSent, needRetry: false };
@@ -613,7 +611,11 @@ async function buildAuthHeaders(tokenHost, preferBearer) {
   return { 'Ocp-Apim-Subscription-Key': AZURE_SPEECH_KEY };
 }
 
-async function getAzureToken(tokenHost) {
+// Token 10 min cachen
+let _azureToken = null, _azureExp = 0;
+async function getAzureTokenCached(tokenHost) {
+  if (Date.now() < _azureExp) return _azureToken;
+  
   console.log('🔑 Requesting Azure token…');
   const url = `https://${tokenHost}/sts/v1.0/issueToken`;
   const { body, statusCode } = await request(url, {
@@ -631,7 +633,15 @@ async function getAzureToken(tokenHost) {
   }
   const token = await body.text();
   console.log('🔑 Azure token acquired (len):', token.length);
+  
+  // Cache für 9 Minuten (Azure Token ist 10 min gültig)
+  _azureToken = token;
+  _azureExp = Date.now() + 9 * 60 * 1000;
   return token;
+}
+
+async function getAzureToken(tokenHost) {
+  return getAzureTokenCached(tokenHost);
 }
 
 function escapeXml(str = '') {
