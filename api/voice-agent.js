@@ -15,6 +15,15 @@
    import WebSocket from 'ws';
    import { createSign } from 'crypto';
    
+   // Body-Size Limit für große Audio-Blobs (≈30s Opus @ 48kHz)
+   export const config = {
+     api: {
+       bodyParser: {
+         sizeLimit: '6mb',  // ≈30 s Opus @ 48 kHz
+       },
+     },
+   };
+   
    // ---------------- Configuration ----------------
    let config;
    try {
