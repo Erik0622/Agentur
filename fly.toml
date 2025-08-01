@@ -3,21 +3,20 @@
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'agentur'
-primary_region = 'fra'
+# fly.toml
+app            = "agentur"
+primary_region = "fra"
 
-[build]
+[build]        # bleibt leer, weil Fly dein Dockerfile erkennt
 
 [http_service]
-  internal_port = 80
-  force_https = true
-  auto_stop_machines = 'stop'
+  internal_port      = 3000        # MUSS dem Port aus server.js entsprechen
   auto_start_machines = true
+  auto_stop_machines  = true       # 👉 nur `true`/`false`, nicht "stop"
   min_machines_running = 0
-  processes = ['app']
+  processes = ["app"]
 
 [[vm]]
-  memory = '1gb'
-  cpu_kind = 'shared'
-  cpus = 1
-  memory_mb = 1024
+  cpu_kind = "shared"
+  cpus     = 1
+  memory   = "256mb"               # reicht, spart $$ (≈ 0,73 $/Monat idle)
