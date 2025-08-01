@@ -58,11 +58,14 @@ function App() {
   const speechDetectionRef = useRef<boolean>(false);
 
   // ===== LATENCY CONSTANTS & HELPERS ===== [F-LAT-0]
-  const OPUS_MIME = 'audio/webm;codecs=opus';
-  const CHUNK_MS  = 50; // MediaRecorder timeslice (50ms für optimale Performance)
-  // -------- Laufzeit-Schalter --------------------------------
-  const WS_URL  = 'ws://localhost:3001';   // WebSocket URL
+const WS_URL =
+  import.meta.env.VITE_WS_URL        // Vite-Builds (.env, Fly, Vercel …)
+  ?? process.env.NEXT_PUBLIC_WS_URL  // Next-Kompatibilität
+  ?? 'ws://localhost:3001';          // Dev-Fallback
 
+const OPUS_MIME = 'audio/webm;codecs=opus';
+const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
+// -------- Laufzeit-Schalter --------------------------------
 
 
   // batch UI updates for llm chunks
