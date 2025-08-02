@@ -61,7 +61,7 @@ function App() {
 const WS_URL =
   import.meta.env.VITE_WS_URL        // Vite-Builds (.env, Fly, Vercel …)
   ?? process.env.NEXT_PUBLIC_WS_URL  // Next-Kompatibilität
-  ?? 'ws://localhost:3001';          // Dev-Fallback
+  ?? 'ws://localhost:8080';          // Dev-Fallback
 
 const OPUS_MIME = 'audio/webm;codecs=opus';
 const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
@@ -252,15 +252,21 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
       const isProduction = window.location.hostname !== 'localhost';
       
       if (isProduction) {
-        // In Production: REST API verwenden statt WebSocket
-        console.log('🌐 Production-Modus: REST API wird verwendet');
-        setWsConnected(true); // Simuliere Verbindung für UI
-        return;
+        // In Production: WebSocket über die gleiche Domain verwenden
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws/voice`;
+        console.log('🌐 Production-Modus: WebSocket über', wsUrl);
+      } else {
+        // Development: WebSocket verwenden
+        const wsUrl = 'ws://localhost:8080/ws/voice';
+        console.log('🔗 Verbinde zu Voice Agent:', wsUrl);
       }
       
-      // Development: WebSocket verwenden
-      const wsUrl = 'ws://localhost:3001';
-      console.log('🔗 Verbinde zu Voice Agent:', wsUrl);
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = isProduction 
+        ? `${protocol}//${window.location.host}`
+        : 'ws://localhost:8080';
+      
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
