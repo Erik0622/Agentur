@@ -10,7 +10,7 @@ primary_region = "fra"
 [build]        # bleibt leer, weil Fly dein Dockerfile erkennt
 
 [http_service]
-  internal_port      = 3000        # MUSS dem Port aus server.js entsprechen
+  internal_port      = 8080        # MUSS dem Port aus server.js entsprechen
   auto_start_machines = true
   auto_stop_machines  = true       # 👉 nur `true`/`false`, nicht "stop"
   min_machines_running = 0
