@@ -10,14 +10,17 @@ WORKDIR /app
 # Package.json und Package-lock.json kopieren
 COPY package*.json ./
 
-# Dependencies installieren
-RUN npm ci --only=production
+# Alle Dependencies installieren (inkl. Dev-Dependencies für Build)
+RUN npm ci
 
 # Anwendungscode kopieren
 COPY . .
 
-# Build der React App (falls nötig)
+# Build der React App
 RUN npm run build
+
+# Dev-Dependencies entfernen (nur Production behalten)
+RUN npm prune --production
 
 # Port exponieren (muss mit fly.toml übereinstimmen)
 EXPOSE 8080
