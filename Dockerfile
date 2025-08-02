@@ -1,45 +1,30 @@
-# syntax = docker/dockerfile:1
+# Dockerfile für Fly.io Deployment
+FROM node:18-alpine
 
-# Adjust NODE_VERSION as desired
-ARG NODE_VERSION=20.18.0
-FROM node:${NODE_VERSION}-slim AS base
+# curl für Health Check installieren
+RUN apk add --no-cache curl
 
-LABEL fly_launch_runtime="Vite"
-
-# Vite app lives here
+# Arbeitsverzeichnis setzen
 WORKDIR /app
 
-# Set production environment
-ENV NODE_ENV="production"
+# Package.json und Package-lock.json kopieren
+COPY package*.json ./
 
+# Dependencies installieren
+RUN npm ci --only=production
 
-# Throw-away build stage to reduce size of final image
-FROM base AS build
-
-# Install packages needed to build node modules
-RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y build-essential node-gyp pkg-config python-is-python3
-
-# Install node modules
-COPY package-lock.json package.json ./
-RUN npm ci --include=dev
-
-# Copy application code
+# Anwendungscode kopieren
 COPY . .
 
-# Build application
+# Build der React App (falls nötig)
 RUN npm run build
 
-# Remove development dependencies
-RUN npm prune --omit=dev
+# Port exponieren (muss mit fly.toml übereinstimmen)
+EXPOSE 8080
 
+# Health Check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8080/ || exit 1
 
-# Final stage for app image
-FROM nginx
-
-# Copy built application
-COPY --from=build /app/dist /usr/share/nginx/html
-
-# Start the server by default, this can be overwritten at runtime
-EXPOSE 80
-CMD [ "/usr/sbin/nginx", "-g", "daemon off;" ]
+# Anwendung starten
+CMD ["node", "gateway.js"] 
