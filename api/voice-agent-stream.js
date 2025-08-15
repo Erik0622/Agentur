@@ -69,17 +69,30 @@ export default function handler(req, res) {
       
       let deepgramSocket = null;
       let isProcessing = false;
+      let interimKickTimer = null;
       let currentTranscript = '';
       let audioChunks = [];
       
       // Deepgram WebSocket starten
       const startDeepgram = () => {
-        const deepgramUrl = `wss://api.deepgram.com/v1/listen?model=nova-3&language=de&punctuate=true&interim_results=true&endpointing=100&vad_events=true&smart_format=true`;
-        
-        deepgramSocket = new WebSocket(deepgramUrl, {
-          headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
-          perMessageDeflate: false
-        });
+  const deepgramUrl =
+    `wss://api.deepgram.com/v1/listen?model=nova-3`
+    + `&language=multi`
+    + `&punctuate=true`
+    + `&interim_results=true`
+    + `&endpointing=100`
+    + `&utterance_end_ms=250`      // <— NEU
+    + `&vad_events=true`
+    + `&smart_format=true`
+    + `&encoding=opus`             // <— WICHTIG für MediaRecorder/WebM-Opus
+    + `&sample_rate=48000`
+    + `&channels=1`;
+
+  deepgramSocket = new WebSocket(deepgramUrl, {
+    headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
+    perMessageDeflate: false
+  });
+};
         
         deepgramSocket.on('open', () => {
           console.log('✅ Deepgram WebSocket verbunden');
@@ -87,44 +100,45 @@ export default function handler(req, res) {
         });
         
         deepgramSocket.on('message', async (data) => {
-          try {
-            const msg = JSON.parse(data.toString());
-            
-            if (msg.type === 'Results' && msg.channel?.alternatives?.[0]) {
-              const alt = msg.channel.alternatives[0];
-              const txt = alt.transcript || '';
-              
-              if (txt.trim()) {
-                if (msg.is_final) {
-                  currentTranscript = txt;
-                  console.log('📝 Final transcript:', txt);
-                  
-                  // LLM Processing starten
-                  if (!isProcessing) {
-                    isProcessing = true;
-                    await processWithLLM(txt, ws);
-                  }
-                } else {
-                  // Interim transcript senden
-                  ws.send(JSON.stringify({ 
-                    type: 'transcript', 
-                    text: txt,
-                    isFinal: false 
-                  }));
-                  
-                  // LLM nach 10+ Zeichen früh starten
-                  if (!isProcessing && txt.length >= 10) {
-                    isProcessing = true;
-                    console.log('🚀 LLM früh gestartet mit interim transcript');
-                    await processWithLLM(txt, ws);
-                  }
-                }
+  try {
+    const msg = JSON.parse(data.toString());
+    if (msg.type === 'Results' && msg.channel?.alternatives?.[0]) {
+      const alt = msg.channel.alternatives[0];
+      const txt = (alt.transcript || '').trim();
+
+      if (txt) {
+        if (msg.is_final) {
+          currentTranscript = txt;
+          ws.send(JSON.stringify({ type: 'transcript', text: txt, isFinal: true }));
+          if (!isProcessing) { isProcessing = true; await processWithLLM(txt, ws); }
+        } else {
+          ws.send(JSON.stringify({ type: 'transcript', text: txt, isFinal: false }));
+
+          // Zeit-Fallback: falls nur kurze Wörter kommen
+          if (!isProcessing && !interimKickTimer) {
+            interimKickTimer = setTimeout(async () => {
+              if (!isProcessing) {
+                isProcessing = true;
+                console.log('⏱️ LLM per Timer-Interim gestartet');
+                await processWithLLM(txt, ws);
               }
-            }
-          } catch (e) {
-            console.error('Deepgram message error:', e);
+            }, 200);
           }
-        });
+
+          // Früher Trigger ab 6 Zeichen stabil
+          if (!isProcessing && txt.length >= 6) {
+            isProcessing = true;
+            if (interimKickTimer) { clearTimeout(interimKickTimer); interimKickTimer = null; }
+            console.log('🚀 LLM früh gestartet (≥6 Zeichen Interim)');
+            await processWithLLM(txt, ws);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Deepgram message error:', e);
+  }
+});
         
         deepgramSocket.on('close', () => {
           console.log('🔌 Deepgram WebSocket geschlossen');
