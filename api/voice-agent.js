@@ -185,16 +185,18 @@
          ? 'detect_language=true'
          : 'language=multi'; // multi = auto-detect innerhalb 10 Sprachen
    
-       // Optimierte Deepgram-Parameter für niedrige Latenz
-       const deepgramUrl =
-         `wss://api.deepgram.com/v1/listen?model=nova-3` + // Nova-3 für bessere Qualität
-         `&${langParams}` +
-         `&punctuate=true` +
-         `&interim_results=true` + // Interim-Results für früheren LLM-start
-         `&endpointing=100` + // Reduziert von 300ms auf 100ms
-         `&vad_events=true` +
-         `&smart_format=true` +
-         encodingParam + sampleRateParam + channelsParam;
+       // [BEGIN PATCH: voice-agent.js – Deepgram params ergänzen]
+const deepgramUrl =
+  `wss://api.deepgram.com/v1/listen?model=nova-3`
+  + `&${langParams}`
+  + `&punctuate=true`
+  + `&interim_results=true`
+  + `&endpointing=100`
+  + `&utterance_end_ms=250`   // <— NEU: Tail deutlich kürzer
+  + `&vad_events=true`
+  + `&smart_format=true`
+  + encodingParam + sampleRateParam + channelsParam;
+// [END PATCH: voice-agent.js – Deepgram params ergänzen]
    
        console.log('🔍 Audio Format Detection:', hex8);
        console.log('✅ Detected format:', format);
@@ -210,6 +212,7 @@
        let gotResults = false;
        let opened = false;
        let llmStarted = false;
+       let interimTimer = null;
    
        ws.on('open', () => {
          opened = true;
@@ -245,7 +248,15 @@
              
              if (txt.trim()) {
                gotResults = true;
-               
+               if (!llmStarted && !interimTimer) {
+  interimTimer = setTimeout(() => {
+    if (!llmStarted && txt.length > 0) {
+      llmStarted = true;
+      console.log('⏱️ LLM per Timer-Interim gestartet');
+      resolve(txt); // startet LLM auch bei kurzen Interims
+    }
+  }, 200);
+}
                if (msg.is_final) {
                  finalTranscript += txt + ' ';
                  console.log('📝 Final transcript:', txt);
@@ -254,11 +265,12 @@
                  console.log('📝 Interim transcript:', txt);
                  
                  // LLM nach 10+ Zeichen oder 300ms starten (nicht auf final warten)
-                 if (!llmStarted && txt.length >= 10) {
-                   llmStarted = true;
-                   console.log('🚀 LLM früh gestartet mit interim transcript');
-                   resolve(txt); // Sofort mit interim transcript auflösen
-                   return;
+                 if (!llmStarted && txt.length >= 6) {
+  llmStarted = true;
+  if (interimTimer) { clearTimeout(interimTimer); interimTimer = null; }
+  console.log('🚀 LLM früh gestartet (≥6 Zeichen Interim)');
+  resolve(txt); // Sofort mit Interim loslegen
+  return;
                  }
                }
              }
