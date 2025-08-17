@@ -64,7 +64,7 @@ const WS_URL =
         : 'ws://localhost:8080/ws/voice');
 
 const OPUS_MIME = 'audio/webm;codecs=opus';
-const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
+const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
 // -------- Laufzeit-Schalter --------------------------------
 
   // ===== PCM Streaming Nodes =====
@@ -106,7 +106,9 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
     if (!sb || appendingRef.current || !audioQueueRef.current.length) return;
     if (sb.updating) return; // wait for updateend
     appendingRef.current = true;
-    sb.appendBuffer(audioQueueRef.current.shift()!);
+    const next = audioQueueRef.current.shift()!;
+    // Übergabe als ArrayBuffer für sauberes DOM-Typing
+    sb.appendBuffer(next.buffer as ArrayBuffer);
   }
 
   function setupMse(mime: string = OPUS_MIME) {
@@ -187,43 +189,41 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
       ws.onopen = () => {
         console.log('🔗 WebSocket Stream verbunden');
         setWsConnected(true);
-        // Sende Sample-Rate für PCM-Streaming
-        const sr = (audioContextRef.current && audioContextRef.current.sampleRate) || 48000;
-        ws.send(JSON.stringify({ type: 'start_recording', sample_rate: sr }));
       };
 
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
           console.log('📨 Stream Event:', data.type);
+          const payload = (data && (data.data ?? data)) as any;
 
           switch (data.type) {
             case 'transcript':
-              setTranscript(data.text);
+              setTranscript(payload.text || '');
               break;
             case 'llm_chunk':
-              pushLlmChunk(setAiResponse, data.text);
+              if (payload?.text) pushLlmChunk(setAiResponse, payload.text);
               break;
             case 'audio_chunk':
-              if (data.base64) {
-                const u8 = b64ToUint8(data.base64);
+              if (payload?.base64) {
+                const u8 = b64ToUint8(payload.base64);
                 audioQueueRef.current.push(u8);
                 appendNextChunk();
               }
               break;
             case 'audio_header':
-              setupMse(data.mime).then(() => setIsPlayingResponse(true));
+              setupMse(payload?.mime || OPUS_MIME).then(() => setIsPlayingResponse(true));
               break;
             case 'end':
               endMseStream();
               setIsProcessing(false);
               break;
             case 'error':
-              if (data.message === 'No speech detected.') {
+              if ((payload?.message || data.message) === 'No speech detected.') {
                 setTranscript('Keine Sprache erkannt. Bitte sprechen Sie lauter.');
                 setAiResponse('');
               } else {
-                throw new Error(data.message || 'Voice processing error');
+                throw new Error(payload?.message || data.message || 'Voice processing error');
               }
               break;
           }
@@ -368,7 +368,7 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
     const dataArray = new Uint8Array(bufferLength);
 
     const SPEECH_THRESHOLD = 25; // Anpassen je nach Umgebung
-    const SILENCE_FRAMES_NEEDED = 30; // ~0.5 Sekunden bei 60fps
+    const SILENCE_FRAMES_NEEDED = 18; // ~0.3 Sekunden bei 60fps
 
     const updateAudioLevel = () => {
       const isActive = isForVAD ? isListening : isRecording;
@@ -398,7 +398,7 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
               
               // Schritt 2: Timeout erreicht?
               if (silenceCountRef.current >= SILENCE_FRAMES_NEEDED) {
-                console.log('🔇 0,5 s Stille – stoppe Aufnahme');
+                console.log('🔇 0,3 s Stille – stoppe Aufnahme');
                 speechDetectionRef.current = false;
                 setIsSpeechDetected(false);
                 silenceCountRef.current = 0;
@@ -576,6 +576,9 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
 
       // Starte WebSocket-Stream
       await startWebSocketStream();
+      if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
+        wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
+      }
       
       console.log('🎤 PCM-Streaming gestartet mit Sample-Rate:', pcmSampleRateRef.current);
       
@@ -597,9 +600,9 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
         sourceNodeRef.current = null;
       }
       
-      // Sende stop_recording an Server
+      // Sende end_audio an Server
       if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-        wsStreamRef.current.send(JSON.stringify({ type: 'stop_recording' }));
+        wsStreamRef.current.send(JSON.stringify({ type: 'end_audio' }));
       }
       
       setIsRecording(false);
@@ -1197,7 +1200,7 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
               className="bg-white p-4 sm:p-6 lg:p-8 rounded-2xl shadow-xl"
             >
               <h3 className="text-xl sm:text-2xl font-bold text-gray-900 mb-4 sm:mb-6 text-center">
-                🎙️ Voice-Agent Demo
+                Voice-Agent Demo
               </h3>
               
               <div className="space-y-4 sm:space-y-6">
@@ -1252,40 +1255,38 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
                         // Gespräch-Modus Status
                         isListening
                           ? isSpeechDetected
-                            ? '🎤 Nehme auf...'
-                            : '👂 Höre zu...'
+                            ? 'Nehme auf...'
+                            : 'Höre zu...'
                           : isProcessing 
-                            ? '🧠 Denkt nach...'
+                            ? 'Denkt nach...'
                             : isPlayingResponse
-                              ? '🔊 Spricht...'
-                              : '💬 Bereit für Gespräch'
+                              ? 'Spricht...'
+                              : 'Bereit für Gespräch'
                       ) : (
                         // Klassischer Modus Status
                         isRecording 
-                        ? '🎤 Hört zu...' 
+                        ? 'Hört zu...' 
                         : isProcessing 
-                        ? '🧠 Denkt nach...'
+                        ? 'Denkt nach...'
                         : isPlayingResponse
-                        ? '🔊 Spricht...'
+                        ? 'Spricht...'
                         : !wsConnected
-                        ? '🔄 Verbinde...'
-                        : '🤖 Bereit zum Sprechen'
+                        ? 'Verbinde...'
+                        : 'Bereit zum Sprechen'
                       )}
                     </div>
                     <div className="text-sm text-gray-500 mt-1">
                       {conversationMode ? (
-                        // Gespräch-Modus Beschreibung
                         isListening
                           ? isSpeechDetected
                             ? 'Ihre Worte werden aufgenommen...'
-                            : 'Sprechen Sie einfach - ich höre automatisch zu'
+                            : 'Sprechen Sie einfach – ich höre automatisch zu'
                           : isProcessing 
                             ? 'KI verarbeitet Ihre Anfrage...'
                             : isPlayingResponse
                               ? 'KI-Agent antwortet...'
-                              : 'Klicken Sie "Gespräch starten" für natürliche Unterhaltung'
+                              : 'Klicken Sie „Gespräch starten" für eine natürliche Unterhaltung'
                       ) : (
-                        // Klassischer Modus Beschreibung
                         isRecording 
                         ? 'Sprechen Sie deutlich ins Mikrofon' 
                         : isProcessing 
@@ -1303,7 +1304,7 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
                 {/* Deutsche Stimmenauswahl für Bella Vista */}
                 <div className="mb-4 sm:mb-6">
                   <h4 className="text-base sm:text-lg font-semibold text-gray-700 mb-2 sm:mb-3 text-center">
-                    🗣️ Deutsche Stimme wählen
+                    Deutsche Stimme wählen
                   </h4>
                   <div className="grid grid-cols-2 gap-1.5 sm:gap-2">
                     {Object.entries(germanVoices).map(([voiceKey, voice]) => (
@@ -1342,7 +1343,7 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
                             : 'bg-gray-100 text-gray-600 border-2 border-gray-200'
                         }`}
                       >
-                        📝 Klassisch
+                        Klassisch
                       </button>
                       <button 
                         onClick={() => setConversationMode(true)}
@@ -1352,7 +1353,7 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
                             : 'bg-gray-100 text-gray-600 border-2 border-gray-200'
                         }`}
                       >
-                        💬 Gespräch
+                        Gespräch
                       </button>
                     </div>
                     <div className="text-xs sm:text-sm text-gray-600 text-center">
@@ -1378,8 +1379,8 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
                       }`}
                     >
                       {isListening 
-                        ? '🔴 Gespräch beenden' 
-                        : '🎯 Gespräch starten'
+                        ? 'Gespräch beenden' 
+                        : 'Gespräch starten'
                       }
                     </motion.button>
                   ) : (
@@ -1400,12 +1401,12 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
                     }`}
                   >
                     {isRecording 
-                      ? '🛑 Stoppen' 
+                      ? 'Stoppen' 
                       : isProcessing
                       ? 'Verarbeite...'
                       : !wsConnected
                       ? 'Verbinde...'
-                      : '🎤 Sprechen'
+                      : 'Sprechen'
                     }
                   </motion.button>
                   )}
@@ -1417,7 +1418,7 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
                       <div className="flex justify-center items-center space-x-2">
                         <div className={`w-3 h-3 rounded-full ${isSpeechDetected ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}></div>
                         <span className={`text-xs sm:text-sm font-medium ${isSpeechDetected ? 'text-red-600' : 'text-green-600'}`}>
-                          {isSpeechDetected ? '🎤 Nehme auf...' : '👂 Höre zu...'}
+                          {isSpeechDetected ? 'Nehme auf...' : 'Höre zu...'}
                         </span>
                       </div>
                     )}
@@ -1525,7 +1526,7 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
                           onClick={() => setConversationHistory([])}
                           className="text-sm text-red-600 hover:text-red-700 transition-colors"
                         >
-                          🗑️ Verlauf löschen
+                          Verlauf löschen
                         </button>
                       </div>
                     )}
@@ -1543,7 +1544,7 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
             >
               <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg">
                 <h4 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 sm:mb-4">
-                  🚀 Unsere Technologie
+                  Unsere Technologie
                 </h4>
                 <div className="space-y-3 sm:space-y-4">
                   <div className="flex items-center">
@@ -1563,7 +1564,7 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
 
               <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg">
                 <h4 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 sm:mb-4">
-                  ⚡ Performance
+                  Performance
                 </h4>
                 <div className="grid grid-cols-2 gap-3 sm:gap-4">
                   <div className="text-center">
@@ -1587,7 +1588,7 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
 
               <div className="bg-gradient-to-r from-green-50 to-blue-50 p-6 rounded-xl border border-green-200">
                 <h4 className="text-lg font-bold text-green-800 mb-2">
-                  ✅ Demo-Ergebnis garantiert:
+                  Demo-Ergebnis:
                 </h4>
                 <p className="text-green-700 text-sm">
                   Nach der Demo sind 95% unserer Interessenten überzeugt von der Qualität und buchen unser System.

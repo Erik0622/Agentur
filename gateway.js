@@ -58,6 +58,9 @@ const wss = new WebSocketServer({
 });
 
 wss.on('connection', ws => {
+  // Informiere Client über erfolgreichen Verbindungsaufbau
+  try { ws.send(JSON.stringify({ type: 'connected', message: 'Stream bereit' })); } catch {}
+
   let chunks = [];
 
   ws.on('message', msg => {
@@ -77,7 +80,23 @@ async function relay(buffer, ws) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ audio: buffer.toString('base64') })
     });
-    for await (const line of res.body) ws.send(line);
+
+    // NDJSON/Chunk-Stream korrekt in Zeilen zerlegen und als Text senden
+    const decoder = new TextDecoder();
+    let buf = '';
+    for await (const chunk of res.body) {
+      buf += decoder.decode(chunk, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        try {
+          // Als Text senden (kein Binär-Frame), damit der Browser JSON.parse nutzen kann
+          ws.send(line);
+        } catch {}
+      }
+    }
   } catch (e) {
     ws.send(JSON.stringify({ type: 'error', message: e.message }));
   }
