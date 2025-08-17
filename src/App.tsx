@@ -59,9 +59,10 @@ function App() {
 
   // ===== LATENCY CONSTANTS & HELPERS ===== [F-LAT-0]
 const WS_URL =
-  import.meta.env.VITE_WS_URL        // Vite-Builds (.env, Fly, Vercel …)
-  ?? process.env.NEXT_PUBLIC_WS_URL  // Next-Kompatibilität
-  ?? 'ws://localhost:8080';          // Dev-Fallback
+  (import.meta.env.VITE_WS_URL ?? process.env.NEXT_PUBLIC_WS_URL)
+  ?? ((typeof window !== 'undefined' && window.location.hostname !== 'localhost')
+        ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/voice`
+        : 'ws://localhost:8080/ws/voice');
 
 const OPUS_MIME = 'audio/webm;codecs=opus';
 const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
@@ -246,29 +247,17 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
   }, []);
 
   // WebSocket Verbindung für Voice Agent
-  useEffect(() => {
-    const connectWebSocket = () => {
-      // Production erkennen
-      const isProduction = window.location.hostname !== 'localhost';
-      
-      if (isProduction) {
-        // In Production: WebSocket über die gleiche Domain verwenden
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws/voice`;
-        console.log('🌐 Production-Modus: WebSocket über', wsUrl);
-      } else {
-        // Development: WebSocket verwenden
-        const wsUrl = 'ws://localhost:8080/ws/voice';
-        console.log('🔗 Verbinde zu Voice Agent:', wsUrl);
-      }
-      
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = isProduction 
-        ? `${protocol}//${window.location.host}`
-        : 'ws://localhost:8080';
-      
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
+  const connectWebSocket = () => {
+  const isProduction = window.location.hostname !== 'localhost';
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const wsUrl = isProduction
+    ? `${protocol}://${window.location.host}/ws/voice`
+    : 'ws://localhost:8080/ws/voice';
+
+  console.log('🔗 Verbinde zu Voice Agent:', wsUrl);
+
+  const ws = new WebSocket(wsUrl);
+  wsRef.current = ws;
 
       ws.onopen = () => {
         console.log('🔗 Voice Agent verbunden');
