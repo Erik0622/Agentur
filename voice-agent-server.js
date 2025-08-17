@@ -5,6 +5,11 @@ import { createServer } from 'http';
 import { v4 as uuidv4 } from 'uuid';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import fetch from 'node-fetch';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const app = express();
 const server = createServer(app);
@@ -12,6 +17,12 @@ const wss = new WebSocketServer({ server });
 
 app.use(cors());
 app.use(express.json());
+
+// Static-Serving für dist/ (SPA)
+app.use(express.static(join(__dirname, 'dist')));
+app.get('*', (req, res) => {
+  res.sendFile(join(__dirname, 'dist', 'index.html'));
+});
 
 // API Keys - In Production über Umgebungsvariablen
 const DEEPGRAM_API_KEY = '3e69806feb52b90f01f2e47f9e778fc87b6d811a';
@@ -32,6 +43,7 @@ class VoiceAgent {
     this.currentTranscript = '';
     this.isProcessing = false;
     this.startTime = Date.now();
+    this.sampleRate = 48000; // Standard Sample-Rate
   }
 
   sendToClient(data) {
@@ -46,20 +58,20 @@ class VoiceAgent {
 
   async startDeepgramStream() {
     try {
-      console.log('🎤 Starte Deepgram Stream für Client:', this.clientId);
+      console.log('🎤 Starte Deepgram Stream für Client:', this.clientId, 'Sample-Rate:', this.sampleRate);
       
-      // Optimierte Deepgram-Konfiguration für niedrige Latenz
-          const deepgramUrl = `wss://api.deepgram.com/v1/listen?` + new URLSearchParams({
-            language: 'multi',
-      model: 'nova-3',
+      // Optimierte Deepgram-Konfiguration für PCM-Streaming und niedrige Latenz
+      const deepgramUrl = `wss://api.deepgram.com/v1/listen?` + new URLSearchParams({
+        language: 'multi',
+        model: 'nova-3',
         punctuate: 'true',
         interim_results: 'true',
-        endpointing: '300', // Schnelle Erkennung von Satzende
+        endpointing: '300', // 300ms für schnelle Erkennung von Satzende
         vad_events: 'true', // Voice Activity Detection
         smart_format: 'true',
-        utterance_end_ms: '1000', // 1 Sekunde für Utterance End
-        encoding: 'linear16',
-        sample_rate: '16000'
+        utterance_end_ms: '400', // 400ms für Utterance End (TTFA <1s)
+        encoding: 'linear16', // PCM-Streaming
+        sample_rate: this.sampleRate.toString() // Dynamische Sample-Rate vom Client
       });
 
       const headers = { 
@@ -71,7 +83,7 @@ class VoiceAgent {
       this.deepgramSocket = new WebSocketDG(deepgramUrl, { headers });
 
       this.deepgramSocket.on('open', () => {
-        console.log('✅ Deepgram WebSocket verbunden');
+        console.log('✅ Deepgram WebSocket verbunden mit Sample-Rate:', this.sampleRate);
         this.sendToClient({
           type: 'status',
           message: 'Spracherkennung bereit - sprechen Sie jetzt!'
@@ -355,7 +367,7 @@ wss.on('connection', (ws) => {
   ws.on('message', async (data, isBinary) => {
     try {
       if (isBinary) {
-        // Raw Audio Data (direkt von MediaRecorder)
+        // Raw PCM Audio Data (direkt vom Client)
         await agent.handleAudioChunk(data);
         return;
       }
@@ -364,13 +376,17 @@ wss.on('connection', (ws) => {
       
       switch (message.type) {
         case 'start_recording':
-          console.log('🎤 Start Recording für Client:', clientId);
+          console.log('🎤 Start Recording für Client:', clientId, 'Sample-Rate:', message.sample_rate);
+          // Setze Sample-Rate vom Client
+          if (message.sample_rate) {
+            agent.sampleRate = message.sample_rate;
+          }
           agent.resetConversation();
           await agent.startDeepgramStream();
           break;
           
         case 'audio_data':
-          // Audio als Base64 String
+          // Audio als Base64 String (Legacy)
           if (message.audio) {
             const audioBuffer = Buffer.from(message.audio, 'base64');
             await agent.handleAudioChunk(audioBuffer);
@@ -496,7 +512,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 8080;
 const HOST = '0.0.0.0';
 
 server.listen(PORT, HOST, () => {
