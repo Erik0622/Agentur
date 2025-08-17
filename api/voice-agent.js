@@ -176,7 +176,8 @@
        else if (hex8.startsWith('4f676753')) format = 'ogg';
        else {
          format = 'raw';
-         encodingParam = '&encoding=opus';
+         // Rohdaten stammen aus 16-bit PCM Frames (float32 -> int16) im Frontend
+         encodingParam = '&encoding=linear16';
          sampleRateParam = '&sample_rate=48000';
          channelsParam = '&channels=1';
        }
