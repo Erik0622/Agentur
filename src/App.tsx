@@ -55,6 +55,9 @@ function App() {
   const continuousStreamRef = useRef<MediaStream | null>(null);
   const continuousRecorderRef = useRef<MediaRecorder | null>(null);
   const speechDetectionRef = useRef<boolean>(false);
+  const usePcmContinuousRef = useRef<boolean>(false);
+  const continuousSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const continuousProcessorRef = useRef<ScriptProcessorNode | null>(null);
 
   // ===== LATENCY CONSTANTS & HELPERS ===== [F-LAT-0]
 const WS_URL =
@@ -441,19 +444,18 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
   // Kontinuierliche Gespräch-Funktionen
   const startConversationMode = async () => {
     try {
-      // Browser-Kompatibilität Check
-      if (!MediaRecorder.isTypeSupported(OPUS_MIME)) {
-        throw new Error('Browser unterstützt WebM/Opus nicht');
-      }
+      // Browser-Kompatibilität ermitteln (kein Throw mehr)
+      const canOpus = typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(OPUS_MIME);
+      usePcmContinuousRef.current = !canOpus;
       
-      console.log('🎯 Starte Gesprächsmodus');
+      console.log('🎯 Starte Gesprächsmodus (Fallback PCM?:', usePcmContinuousRef.current, ')');
       
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          sampleRate: 16000,
+          sampleRate: 48000,
           channelCount: 1
         } 
       });
@@ -466,9 +468,16 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
       // Voice Activity Detection starten
       startAudioVisualization(stream, true);
       
-    } catch (error) {
+    } catch (error: any) {
       console.error('Gesprächsmodus-Start fehlgeschlagen:', error);
-      alert('Mikrofonzugriff fehlgeschlagen. Bitte überprüfen Sie Ihre Browser-Einstellungen.');
+      const name = error?.name || '';
+      if (name === 'NotAllowedError') {
+        alert('Mikrofonzugriff verweigert. Bitte erlauben Sie den Zugriff in den Browser-Einstellungen.');
+      } else if (name === 'NotFoundError') {
+        alert('Kein Mikrofon gefunden. Bitte prüfen Sie Ihre Geräteverbindung.');
+      } else {
+        alert('Konnte den Gesprächsmodus nicht starten. Bitte versuchen Sie es erneut oder nutzen Sie den klassischen Modus.');
+      }
     }
   };
 
@@ -484,6 +493,14 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
     if (continuousRecorderRef.current && continuousRecorderRef.current.state === 'recording') {
       continuousRecorderRef.current.stop();
     }
+    if (continuousProcessorRef.current) {
+      try { continuousProcessorRef.current.disconnect(); } catch {}
+      continuousProcessorRef.current = null;
+    }
+    if (continuousSourceNodeRef.current) {
+      try { continuousSourceNodeRef.current.disconnect(); } catch {}
+      continuousSourceNodeRef.current = null;
+    }
     
     // Stream stoppen
     if (continuousStreamRef.current) {
@@ -498,25 +515,72 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
   const startContinuousRecording = () => {
     if (!continuousStreamRef.current) return;
     try {
-      const mr = new MediaRecorder(continuousStreamRef.current, { mimeType: OPUS_MIME });
-      continuousRecorderRef.current = mr;
-      
-      // WebSocket Stream starten
-      startWebSocketStream().then(() => {
-        if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-          wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
+      if (usePcmContinuousRef.current) {
+        // PCM-Fallback (Safari & Co.)
+        const ac = audioContextRef.current || new (window.AudioContext || (window as any).webkitAudioContext)();
+        audioContextRef.current = ac;
+        
+        // Vorherige Nodes sicher trennen
+        if (continuousProcessorRef.current) {
+          try { continuousProcessorRef.current.disconnect(); } catch {}
+          continuousProcessorRef.current = null;
         }
-      });
+        if (continuousSourceNodeRef.current) {
+          try { continuousSourceNodeRef.current.disconnect(); } catch {}
+          continuousSourceNodeRef.current = null;
+        }
 
-      mr.ondataavailable = e => e.data.size && sendAudioChunk(e.data);
+        const sourceNode = ac.createMediaStreamSource(continuousStreamRef.current);
+        const processor = ac.createScriptProcessor(1024, 1, 1);
+        continuousSourceNodeRef.current = sourceNode;
+        continuousProcessorRef.current = processor;
 
-      mr.start(CHUNK_MS); // 50ms Chunks für optimale Performance
+        processor.onaudioprocess = (event) => {
+          const input = event.inputBuffer.getChannelData(0);
+          sendPCMFrame(input);
+        };
+
+        sourceNode.connect(processor);
+        processor.connect(ac.destination);
+
+        // WebSocket Stream starten
+        startWebSocketStream().then(() => {
+          if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
+            wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
+          }
+        });
+      } else {
+        // OPUS/WebM via MediaRecorder
+        const mr = new MediaRecorder(continuousStreamRef.current, { mimeType: OPUS_MIME });
+        continuousRecorderRef.current = mr;
+        
+        // WebSocket Stream starten
+        startWebSocketStream().then(() => {
+          if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
+            wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
+          }
+        });
+
+        mr.ondataavailable = e => e.data.size && sendAudioChunk(e.data);
+
+        mr.start(CHUNK_MS); // 50ms Chunks für optimale Performance
+      }
     } catch (e) {
       console.error('Kontinuierliche Aufnahme-Start fehlgeschlagen:', e);
     }
   };
 
   const stopContinuousRecording = () => {
+    if (usePcmContinuousRef.current) {
+      if (continuousProcessorRef.current) {
+        try { continuousProcessorRef.current.disconnect(); } catch {}
+        continuousProcessorRef.current = null;
+      }
+      if (continuousSourceNodeRef.current) {
+        try { continuousSourceNodeRef.current.disconnect(); } catch {}
+        continuousSourceNodeRef.current = null;
+      }
+    }
     if (continuousRecorderRef.current && continuousRecorderRef.current.state === 'recording') {
       continuousRecorderRef.current.stop();
     }
