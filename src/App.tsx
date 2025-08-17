@@ -42,7 +42,6 @@ function App() {
   
   // Deutsche Stimmenauswahl für Bella Vista (nur geklonte deutsche Stimmen)
   const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('bella_vista_german_voice');
-  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const germanVoices = {
     'bella_vista_german_voice': { name: 'Bella Vista Original', gender: 'Weiblich', description: 'Authentische deutsche Stimme (geklont, Standard)' }
   } as const;
@@ -68,6 +67,10 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
 const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
 // -------- Laufzeit-Schalter --------------------------------
 
+  // ===== PCM Streaming Nodes =====
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const pcmSampleRateRef = useRef<number>(16000);
 
   // batch UI updates for llm chunks
   let llmChunkBuf = '';
@@ -153,6 +156,23 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
   // ===== WebSocket Streaming (Low Latency) ===== [F-LAT-1]
   const wsStreamRef = useRef<WebSocket | null>(null);
 
+  // ===== PCM Helper Functions =====
+  function floatTo16BitPCM(float32: Float32Array): ArrayBuffer {
+    const buffer = new ArrayBuffer(float32.length * 2);
+    const view = new DataView(buffer);
+    for (let i = 0; i < float32.length; i++) {
+      let s = Math.max(-1, Math.min(1, float32[i]));
+      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return buffer;
+  }
+
+  function sendPCMFrame(float32: Float32Array) {
+    if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
+      wsStreamRef.current.send(floatTo16BitPCM(float32)); // binär
+    }
+  }
+
   const startWebSocketStream = async () => {
     if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
       console.log('🔗 WebSocket bereits verbunden');
@@ -167,6 +187,9 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
       ws.onopen = () => {
         console.log('🔗 WebSocket Stream verbunden');
         setWsConnected(true);
+        // Sende Sample-Rate für PCM-Streaming
+        const sr = (audioContextRef.current && audioContextRef.current.sampleRate) || 48000;
+        ws.send(JSON.stringify({ type: 'start_recording', sample_rate: sr }));
       };
 
       ws.onmessage = (event) => {
@@ -503,21 +526,17 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
 
   
 
-  // ===== START/STOP RECORDING (WebSocket Streaming) ===== [F-LAT-2]
+  // ===== START/STOP RECORDING (PCM Streaming) ===== [F-LAT-2]
   const startRecording = async () => {
     try {
-      // Browser-Kompatibilität Check
-      if (!MediaRecorder.isTypeSupported(OPUS_MIME)) {
-        throw new Error('Browser unterstützt WebM/Opus nicht');
-      }
-      
       setIsRecording(true);
       setTranscript('');
       setAiResponse('');
 
+      // iOS-freundlicher getUserMedia
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: 16000, // 16kHz für optimale STT-Performance
+          sampleRate: 48000, // Höhere Sample-Rate für bessere Qualität
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
@@ -525,27 +544,66 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
         }
       });
 
-      const mr = new MediaRecorder(stream, { mimeType: OPUS_MIME });
-      
-      // --- Low-Latency WebSocket Streaming ---
-      await startWebSocketStream();
-      if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-        wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
+      // AudioContext für PCM-Streaming
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
       }
-      mr.ondataavailable = e => e.data.size && sendAudioChunk(e.data);
-      mr.onstop = () => { endWebSocketStream(); stream.getTracks().forEach(t => t.stop()); };
-      mr.start(CHUNK_MS); // 50ms Chunks für optimale Performance
-      setMediaRecorder(mr);
+      
+      const audioContext = audioContextRef.current;
+      pcmSampleRateRef.current = audioContext.sampleRate;
+
+      // Source Node vom Stream
+      const sourceNode = audioContext.createMediaStreamSource(stream);
+      sourceNodeRef.current = sourceNode;
+
+      // ScriptProcessor für PCM-Sampling (1024 Samples)
+      const bufferSize = 1024;
+      const processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
+      processorRef.current = processor;
+
+      // PCM-Frame-Verarbeitung
+      processor.onaudioprocess = (event) => {
+        const inputBuffer = event.inputBuffer;
+        const inputData = inputBuffer.getChannelData(0);
+        
+        // Sende PCM-Frame sofort
+        sendPCMFrame(inputData);
+      };
+
+      // Verbinde Nodes
+      sourceNode.connect(processor);
+      processor.connect(audioContext.destination);
+
+      // Starte WebSocket-Stream
+      await startWebSocketStream();
+      
+      console.log('🎤 PCM-Streaming gestartet mit Sample-Rate:', pcmSampleRateRef.current);
+      
     } catch (err) {
-      console.error('Fehler beim Starten der Aufnahme:', err);
+      console.error('Fehler beim Starten der PCM-Aufnahme:', err);
       setIsRecording(false);
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      mediaRecorder.stop();
+    if (isRecording) {
+      // PCM-Streaming stoppen
+      if (processorRef.current) {
+        processorRef.current.disconnect();
+        processorRef.current = null;
+      }
+      if (sourceNodeRef.current) {
+        sourceNodeRef.current.disconnect();
+        sourceNodeRef.current = null;
+      }
+      
+      // Sende stop_recording an Server
+      if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
+        wsStreamRef.current.send(JSON.stringify({ type: 'stop_recording' }));
+      }
+      
       setIsRecording(false);
+      console.log('🛑 PCM-Streaming gestoppt');
     }
   };
 
