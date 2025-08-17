@@ -1,5 +1,8 @@
-/.git
-/node_modules
-.dockerignore
+node_modules
+.git
+.gitignore
+.DS_Store
+npm-debug.log
+dist
+*.local
 .env
-Dockerfile
