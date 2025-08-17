@@ -8,8 +8,9 @@ COPY package*.json ./
 RUN npm ci
 
 # 2) Anwendungscode + Build
-COPY . .                 # <— das hat gefehlt
-RUN npm run build        # erzeugt /app/dist
+# Quellcode ins Image kopieren (ohne Kommentar am Zeilenende!)
+COPY . .
+RUN npm run build   # erzeugt /app/dist
 
 # 3) Prod only
 RUN npm prune --production
