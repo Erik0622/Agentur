@@ -314,14 +314,16 @@ const CHUNK_MS  = 50; // MediaRecorder-Timeslice (50 ms)
       };
     };
 
-    connectWebSocket();
+    useEffect(() => {
 
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-    };
-  }, []);
+  connectWebSocket();
+
+  return () => {
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+  };
+}, []);
 
   // Audio Visualizer & Voice Activity Detection
   const startAudioVisualization = (stream: MediaStream, isForVAD = false) => {
