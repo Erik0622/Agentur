@@ -46,6 +46,15 @@ app.use('/api/voice-agent', async (req, res) => {
   }
 });
 
+// Fly.io Health Check
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy', 
+    timestamp: new Date().toISOString(),
+    websocket_clients: 'WebSocket server ready'
+  });
+});
+
 // Fallback für SPA Routing
 app.get('*', (req, res) => {
   res.sendFile(join(__dirname, 'dist', 'index.html'));
@@ -54,7 +63,11 @@ app.get('*', (req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ 
   server, 
-  perMessageDeflate: false 
+  perMessageDeflate: false,
+  // Fly.io optimierte Einstellungen
+  maxPayload: 6 * 1024 * 1024, // 6MB für Audio-Daten
+  skipUTF8Validation: true,     // Performance-Optimierung für Binary Data
+  clientTracking: true         // Client-Tracking für Health Checks
 });
 
 wss.on('connection', ws => {
