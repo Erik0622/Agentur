@@ -74,111 +74,109 @@ export const ContinuousVoiceChat: React.FC = () => {
       const ws = await manager.connect(WS_URL);
       wsRef.current = ws;
 
-      // Event Listeners nur setzen wenn wir eine neue Verbindung haben
-      if (ws.onopen === null) {
-        ws.onopen = () => {
-          console.log('✅ WebSocket connected via Manager');
-          setIsConnected(true);
-          setError(null);
-        };
+      // Event Listeners setzen/überschreiben
+      ws.onopen = () => {
+        console.log('✅ WebSocket connected via Manager');
+        setIsConnected(true);
+        setError(null);
+      };
 
-        ws.onmessage = (event) => {
-      try {
-        const data: VoiceResponse = JSON.parse(event.data);
-        console.log('📥 Received:', data.type);
+      ws.onmessage = (event) => {
+        try {
+          const data: VoiceResponse = JSON.parse(event.data);
+          console.log('📥 Received:', data.type);
 
-        switch (data.type) {
-          case 'connected':
-            console.log('🔗 Connection confirmed');
-            break;
-          case 'transcript':
-            const transcriptText = data.data.text || '';
-            setTranscript(transcriptText);
-            if (transcriptText.trim()) {
-              setIsListening(false);
-              setIsProcessing(true);
-            }
-            break;
-          case 'llm_chunk':
-            setResponse(prev => prev + (data.data.text || ''));
-            break;
-          case 'llm_response':
-            const aiResponse = data.data.text || '';
-            setResponse(aiResponse);
-            
-            // Conversation History aktualisieren
-            if (transcript.trim() && aiResponse.trim()) {
-              setConversationHistory(prev => [...prev, {
-                user: transcript.trim(),
-                ai: aiResponse.trim(),
-                timestamp: new Date()
-              }]);
-            }
-            break;
-          case 'audio_header':
-            console.log('🔊 Audio header received');
-            setIsSpeaking(true);
-            break;
-          case 'audio_chunk':
-            if (audioEnabled && data.data.base64) {
-              playAudioChunk(data.data.base64, data.data.format);
-            }
-            break;
-          case 'tts_engine':
-            console.log('🔊 TTS Engine:', data.data.engine);
-            break;
-          case 'end':
-            console.log('✅ Processing complete');
-            setIsProcessing(false);
-            setIsSpeaking(false);
-            
-            // ULTRA-LOW LATENCY: Sofort wieder zuhören
-            setTimeout(() => {
-              if (isActive && !isProcessing) {
-                startListening();
+          switch (data.type) {
+            case 'connected':
+              console.log('🔗 Connection confirmed');
+              break;
+            case 'transcript':
+              const transcriptText = data.data.text || '';
+              setTranscript(transcriptText);
+              if (transcriptText.trim()) {
+                setIsListening(false);
+                setIsProcessing(true);
               }
-            }, 200); // Viel kürzer: 200ms statt 1000ms
-            break;
-          case 'error':
-            console.error('❌ Server error:', data.data.message);
-            setError(data.data.message);
-            setIsProcessing(false);
-            setIsSpeaking(false);
-            break;
-        }
-      } catch (e) {
-        console.warn('⚠️ Parse error:', e);
-      }
-    };
-
-        ws.onclose = (event) => {
-          console.log('🔌 WebSocket closed via Manager:', event.code, event.reason);
-          setIsConnected(false);
-          wsRef.current = null;
-          
-          // Auto-reconnect für Fly.io nur wenn aktiv und nicht manuell geschlossen
-          if (event.code !== 1000 && event.code !== 1001 && isActive) {
-            console.log('🔄 Auto-reconnect in 5s...');
-            // Clear existing reconnect timeout
-            if (reconnectTimeoutRef.current) {
-              clearTimeout(reconnectTimeoutRef.current);
-            }
-            reconnectTimeoutRef.current = setTimeout(() => {
-              // Nochmal prüfen ob wir noch aktiv sind
-              if (isActive && !manager.isConnected()) {
-                connectWebSocket();
+              break;
+            case 'llm_chunk':
+              setResponse(prev => prev + (data.data.text || ''));
+              break;
+            case 'llm_response':
+              const aiResponse = data.data.text || '';
+              setResponse(aiResponse);
+              
+              // Conversation History aktualisieren
+              if (transcript.trim() && aiResponse.trim()) {
+                setConversationHistory(prev => [...prev, {
+                  user: transcript.trim(),
+                  ai: aiResponse.trim(),
+                  timestamp: new Date()
+                }]);
               }
-              reconnectTimeoutRef.current = null;
-            }, 5000); // Längere Wartezeit für Fly.io
+              break;
+            case 'audio_header':
+              console.log('🔊 Audio header received');
+              setIsSpeaking(true);
+              break;
+            case 'audio_chunk':
+              if (audioEnabled && data.data.base64) {
+                playAudioChunk(data.data.base64, data.data.format);
+              }
+              break;
+            case 'tts_engine':
+              console.log('🔊 TTS Engine:', data.data.engine);
+              break;
+            case 'end':
+              console.log('✅ Processing complete');
+              setIsProcessing(false);
+              setIsSpeaking(false);
+              
+              // ULTRA-LOW LATENCY: Sofort wieder zuhören
+              setTimeout(() => {
+                if (isActive && !isProcessing) {
+                  startListening();
+                }
+              }, 200); // Viel kürzer: 200ms statt 1000ms
+              break;
+            case 'error':
+              console.error('❌ Server error:', data.data.message);
+              setError(data.data.message);
+              setIsProcessing(false);
+              setIsSpeaking(false);
+              break;
           }
-        };
+        } catch (e) {
+          console.warn('⚠️ Parse error:', e);
+        }
+      };
 
-        ws.onerror = (error) => {
-          console.error('❌ WebSocket error via Manager:', error);
-          setError('WebSocket Verbindungsfehler');
-          setIsConnected(false);
-        };
-      }
+      ws.onclose = (event) => {
+        console.log('🔌 WebSocket closed via Manager:', event.code, event.reason);
+        setIsConnected(false);
+        wsRef.current = null;
+        
+        // Auto-reconnect für Fly.io nur wenn aktiv und nicht manuell geschlossen
+        if (event.code !== 1000 && event.code !== 1001 && isActive) {
+          console.log('🔄 Auto-reconnect in 5s...');
+          // Clear existing reconnect timeout
+          if (reconnectTimeoutRef.current) {
+            clearTimeout(reconnectTimeoutRef.current);
+          }
+          reconnectTimeoutRef.current = setTimeout(() => {
+            // Nochmal prüfen ob wir noch aktiv sind
+            if (isActive && !manager.isConnected()) {
+              connectWebSocket();
+            }
+            reconnectTimeoutRef.current = null;
+          }, 5000); // Längere Wartezeit für Fly.io
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('❌ WebSocket error via Manager:', error);
+        setError('WebSocket Verbindungsfehler');
+        setIsConnected(false);
+      };
       
       setIsConnected(true);
       setError(null);

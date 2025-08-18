@@ -471,15 +471,15 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
   const safeText = String(text || '').trim();
   if (!safeText) throw new Error('Empty text for TTS');
 
-  // *** ULTRA-LOW LATENCY STREAMING-FORMAT ***
-  const AUDIO_FORMAT = 'audio-16khz-32kbitrate-mono-mp3'; // Schneller als WebM
-  const MSE_MIME     = 'audio/mpeg';                       // Browser MIME
+  // *** STREAMING-FORMAT: WebM/Opus to match frontend MSE ***
+  const AUDIO_FORMAT = 'webm-24khz-16bit-mono-opus';
+  const MSE_MIME     = 'audio/webm;codecs=opus';
 
   // Aufteilen (für sehr lange Antworten)
   const chunks = splitForSsml(safeText, 4800);
 
   // Informiere Frontend einmalig über Format (Header-Event)
-  streamResponse(res, 'audio_header', { mime: MSE_MIME, format: 'webm-opus' });
+  streamResponse(res, 'audio_header', { mime: MSE_MIME, format: 'webm' });
 
   let totalBytes = 0;
   for (let i = 0; i < chunks.length; i++) {
@@ -586,7 +586,7 @@ async function doTtsRequest(endpoint, headers, ssml, res) { // [B5]
     // Base64 kodieren und direkt rausschicken
     streamResponse(res, 'audio_chunk', {
       base64: Buffer.from(chunk).toString('base64'),
-      format: 'webm-opus'
+      format: 'webm'
     });
   }
   return { bytesSent, needRetry: false };

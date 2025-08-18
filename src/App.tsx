@@ -157,6 +157,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
 
   // ===== WebSocket Streaming (Low Latency) ===== [F-LAT-1]
   const wsStreamRef = useRef<WebSocket | null>(null);
+  const wsConnectingRef = useRef<boolean>(false);
 
   // ===== PCM Helper Functions =====
   function floatTo16BitPCM(float32: Float32Array): ArrayBuffer {
@@ -176,19 +177,21 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
   }
 
   const startWebSocketStream = async () => {
-    if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-      console.log('🔗 WebSocket bereits verbunden');
+    if (wsStreamRef.current && (wsStreamRef.current.readyState === WebSocket.OPEN || wsStreamRef.current.readyState === WebSocket.CONNECTING || wsConnectingRef.current)) {
+      console.log('🔗 WebSocket bereits verbunden/verbinden läuft');
       return;
     }
 
     try {
       console.log('🔗 Verbinde zu WebSocket Stream:', WS_URL);
+      wsConnectingRef.current = true;
       const ws = new WebSocket(WS_URL);
       wsStreamRef.current = ws;
 
       ws.onopen = () => {
         console.log('🔗 WebSocket Stream verbunden');
         setWsConnected(true);
+        wsConnectingRef.current = false;
       };
 
       ws.onmessage = (event) => {
@@ -236,16 +239,19 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
         console.log('🔌 WebSocket Stream getrennt');
         setWsConnected(false);
         wsStreamRef.current = null;
+        wsConnectingRef.current = false;
       };
 
       ws.onerror = (error) => {
         console.error('WebSocket Stream Error:', error);
         setWsConnected(false);
+        wsConnectingRef.current = false;
       };
 
     } catch (error) {
       console.error('WebSocket Stream Setup Error:', error);
       setWsConnected(false);
+      wsConnectingRef.current = false;
     }
   };
 
