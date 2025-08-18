@@ -41,9 +41,9 @@ export const ContinuousVoiceChat: React.FC = () => {
 
   // ULTRA-LOW LATENCY VAD Configuration
   const vadConfig: VADConfig = {
-    threshold: 0.015, // Etwas empfindlicher für schnellere Erkennung
-    minSpeechDuration: 300, // Kürzer: 300ms statt 500ms
-    maxSilenceDuration: 800, // Viel kürzer: 800ms statt 1500ms
+    threshold: 0.01, // Sensibler, damit Sprache sicher erkannt wird
+    minSpeechDuration: 250, // schnelleres Triggern
+    maxSilenceDuration: 700, // kürzerer Stopp
     sampleRate: 48000
   };
 
@@ -310,7 +310,7 @@ export const ContinuousVoiceChat: React.FC = () => {
 
       const mediaRecorder = new MediaRecorder(streamRef.current, {
         mimeType: 'audio/webm;codecs=opus',
-        audioBitsPerSecond: 48000
+        audioBitsPerSecond: 128000
       });
 
       mediaRecorderRef.current = mediaRecorder;
@@ -327,7 +327,7 @@ export const ContinuousVoiceChat: React.FC = () => {
         }
       };
 
-      mediaRecorder.start(100); // 100ms chunks
+      mediaRecorder.start(50); // 50ms Chunks für geringere Latenz
     } catch (error) {
       console.error('❌ Recording start failed:', error);
       isRecordingRef.current = false;

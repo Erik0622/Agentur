@@ -176,9 +176,26 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
     }
   }
 
-  const startWebSocketStream = async () => {
-    if (wsStreamRef.current && (wsStreamRef.current.readyState === WebSocket.OPEN || wsStreamRef.current.readyState === WebSocket.CONNECTING || wsConnectingRef.current)) {
-      console.log('🔗 WebSocket bereits verbunden/verbinden läuft');
+  const startWebSocketStream = async (): Promise<void> => {
+    // Bereits offen
+    if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
+      return;
+    }
+    // Läuft bereits ein Verbindungsaufbau? -> auf "open" warten
+    if (wsStreamRef.current?.readyState === WebSocket.CONNECTING || wsConnectingRef.current) {
+      await new Promise<void>((resolve) => {
+        const existing = wsStreamRef.current!;
+        const handler = () => {
+          existing.removeEventListener?.('open', handler as any);
+          resolve();
+        };
+        // addEventListener ist verfügbar im Browser-WebSocket
+        try { existing.addEventListener?.('open', handler, { once: true } as any); } catch { /* no-op */ }
+        // Fallback: Polling falls addEventListener nicht verfügbar
+        const iv = window.setInterval(() => {
+          if (existing.readyState === WebSocket.OPEN) { window.clearInterval(iv); resolve(); }
+        }, 50);
+      });
       return;
     }
 
@@ -188,7 +205,20 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
       const ws = new WebSocket(WS_URL);
       wsStreamRef.current = ws;
 
+      // Promise, das auf Open wartet
+      const openPromise = new Promise<void>((resolve) => {
+        const onOpen = () => {
+          console.log('🔗 WebSocket Stream verbunden');
+          setWsConnected(true);
+          wsConnectingRef.current = false;
+          ws.removeEventListener?.('open', onOpen as any);
+          resolve();
+        };
+        try { ws.addEventListener?.('open', onOpen, { once: true } as any); } catch { /* no-op */ }
+      });
+
       ws.onopen = () => {
+        // Falls addEventListener nicht feuert (ältere Browser)
         console.log('🔗 WebSocket Stream verbunden');
         setWsConnected(true);
         wsConnectingRef.current = false;
@@ -248,6 +278,9 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
         wsConnectingRef.current = false;
       };
 
+      // Auf erfolgreiche Verbindung warten, bevor wir zurückkehren
+      await openPromise;
+
     } catch (error) {
       console.error('WebSocket Stream Setup Error:', error);
       setWsConnected(false);
@@ -306,7 +339,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
     const bufferLength = analyserRef.current.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
 
-    const SPEECH_THRESHOLD = 25; // Anpassen je nach Umgebung
+    const SPEECH_THRESHOLD = 12; // Sensibler, damit Sprache schneller erkannt wird
     const SILENCE_FRAMES_NEEDED = 18; // ~0.3 Sekunden bei 60fps
 
     const updateAudioLevel = () => {
@@ -392,7 +425,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          sampleRate: 16000,
+          sampleRate: 48000,
           channelCount: 1
         } 
       });
@@ -401,6 +434,8 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
       setIsListening(true);
       setTranscript('');
       setAiResponse('');
+      // Stelle die WebSocket-Verbindung frühzeitig her, damit start_audio sofort senden kann
+      await startWebSocketStream();
       
       // Voice Activity Detection starten
       startAudioVisualization(stream, true);
