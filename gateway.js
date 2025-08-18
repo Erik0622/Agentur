@@ -11,7 +11,7 @@ const __dirname = dirname(__filename);
 
 const PORT = process.env.PORT || 8080;                       // Fly.io Standard Port
 const HOST = process.env.HOST || '0.0.0.0';                  // Fly.io braucht 0.0.0.0
-const REST = process.env.VOICE_REST || `http://localhost:${PORT}/api/voice-agent`;
+const REST = process.env.VOICE_REST || `http://127.0.0.1:${PORT}/api/voice-agent`;
 
 // Express App für statische Dateien
 const app = express();
@@ -104,6 +104,6 @@ async function relay(buffer, ws) {
 
 server.listen(PORT, HOST, () => {
   console.log(`🚀 Server bereit auf http://${HOST}:${PORT}`);
-  console.log(`🔗 WebSocket Server bereit auf ws://${HOST}:${PORT}/ws/voice`);
+  console.log(`🔗 WebSocket Server bereit auf ws://${HOST}:${PORT}`);
   console.log(`🌐 API Server bereit auf http://${HOST}:${PORT}/api/voice-agent`);
 });

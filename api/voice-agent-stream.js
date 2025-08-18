@@ -80,8 +80,8 @@ export default function handler(req, res) {
     + `&language=multi`
     + `&punctuate=true`
     + `&interim_results=true`
-    + `&endpointing=100`
-    + `&utterance_end_ms=250`      // <— NEU
+    + `&endpointing=200`
+    + `&utterance_end_ms=300`
     + `&vad_events=true`
     + `&smart_format=true`
     + `&encoding=opus`             // <— WICHTIG für MediaRecorder/WebM-Opus
