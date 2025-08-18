@@ -97,16 +97,32 @@
    
      const { audio, voice = 'german_m2', detect = false } = req.body || {};
    
-     console.log('🔍 API Request Debug:');
-     console.log('  - Audio vorhanden:', !!audio);
-     console.log('  - Audio Länge (Base64 chars):', audio ? audio.length : 'N/A');
-     console.log('  - Voice:', voice);
-     console.log('  - Request body keys:', Object.keys(req.body || {}));
-   
-     if (!audio) {
-       console.log('⚠️ Missing audio data');
-       return res.status(400).json({ error: 'Missing audio data' });
-     }
+         console.log('🔍 API Request Debug:');
+    console.log('  - Audio vorhanden:', !!audio);
+    console.log('  - Audio Länge (Base64 chars):', audio ? audio.length : 'N/A');
+    console.log('  - Voice:', voice);
+    console.log('  - Request body keys:', Object.keys(req.body || {}));
+    console.log('  - Request body size:', JSON.stringify(req.body).length, 'chars');
+
+    if (!audio || audio.length === 0) {
+      console.log('⚠️ Missing audio data');
+      console.log('  - Request headers:', JSON.stringify(req.headers, null, 2));
+      console.log('  - Request body:', JSON.stringify(req.body, null, 2));
+      return res.status(400).json({ error: 'Missing audio data' });
+    }
+
+    // Validiere Base64 Audio
+    try {
+      const audioBuffer = Buffer.from(audio, 'base64');
+      if (audioBuffer.length === 0) {
+        console.log('⚠️ Empty audio buffer after base64 decode');
+        return res.status(400).json({ error: 'Empty audio data' });
+      }
+      console.log('✅ Audio buffer valid, size:', audioBuffer.length, 'bytes');
+    } catch (e) {
+      console.error('❌ Invalid base64 audio data:', e);
+      return res.status(400).json({ error: 'Invalid base64 audio data' });
+    }
    
      try {
        res.writeHead(200, {

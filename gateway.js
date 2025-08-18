@@ -58,32 +58,95 @@ const wss = new WebSocketServer({
 });
 
 wss.on('connection', ws => {
+  console.log('🔗 New WebSocket connection');
+  
   // Informiere Client über erfolgreichen Verbindungsaufbau
-  try { ws.send(JSON.stringify({ type: 'connected', message: 'Stream bereit' })); } catch {}
+  try { 
+    ws.send(JSON.stringify({ type: 'connected', message: 'Stream bereit' })); 
+    console.log('📤 Connection message sent');
+  } catch (e) {
+    console.error('Failed to send connection message:', e);
+  }
 
   let chunks = [];
+  let isRecording = false;
 
   ws.on('message', msg => {
-    const asString = msg.toString();
+    try {
+      // Versuche JSON zu parsen für Control-Messages
+      const asString = msg.toString();
+      
+      if (asString.startsWith('{')) {
+        const parsed = JSON.parse(asString);
+        console.log('📥 Control message:', parsed.type);
+        
+        if (parsed.type === 'start_audio') {
+          chunks = [];
+          isRecording = true;
+          console.log('🎤 Audio recording started');
+          return;
+        }
+        
+        if (parsed.type === 'end_audio') {
+          isRecording = false;
+          console.log('🎤 Audio recording ended, chunks:', chunks.length);
+          if (chunks.length > 0) {
+            const audioBuffer = Buffer.concat(chunks);
+            console.log('📦 Combined audio buffer size:', audioBuffer.length, 'bytes');
+            return relay(audioBuffer, ws);
+          } else {
+            ws.send(JSON.stringify({ type: 'error', data: { message: 'No audio data received' } }));
+          }
+          return;
+        }
+      }
+      
+      // Binary audio data
+      if (isRecording) {
+        const chunk = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
+        chunks.push(chunk);
+        console.log('📦 Audio chunk received:', chunk.length, 'bytes, total chunks:', chunks.length);
+      }
+    } catch (e) {
+      console.error('❌ WebSocket message processing error:', e);
+    }
+  });
 
-    if (asString === '{"type":"start_audio"}') { chunks = []; return; }
-    if (asString === '{"type":"end_audio"}')   return relay(Buffer.concat(chunks), ws);
+  ws.on('close', () => {
+    console.log('🔌 WebSocket connection closed');
+  });
 
-    chunks.push(Buffer.isBuffer(msg) ? msg : Buffer.from(msg));
+  ws.on('error', (error) => {
+    console.error('❌ WebSocket error:', error);
   });
 });
 
 async function relay(buffer, ws) {
   try {
+    console.log('🔄 Relaying audio to voice-agent API, buffer size:', buffer.length);
+    
     const res = await fetch(REST, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio: buffer.toString('base64') })
+      body: JSON.stringify({ 
+        audio: buffer.toString('base64'),
+        voice: 'german_m2'
+      })
     });
+
+    console.log('📥 Voice Agent API response status:', res.status);
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error('❌ Voice Agent API Error:', res.status, errorText);
+      ws.send(JSON.stringify({ type: 'error', data: { message: `API Error: ${res.status}` } }));
+      return;
+    }
 
     // NDJSON/Chunk-Stream korrekt in Zeilen zerlegen und als Text senden
     const decoder = new TextDecoder();
     let buf = '';
+    
     for await (const chunk of res.body) {
       buf += decoder.decode(chunk, { stream: true });
       let idx;
@@ -91,14 +154,24 @@ async function relay(buffer, ws) {
         const line = buf.slice(0, idx).trim();
         buf = buf.slice(idx + 1);
         if (!line) continue;
+        
         try {
+          // Validiere JSON vor dem Senden
+          const parsed = JSON.parse(line);
+          console.log('📤 Streaming to client:', parsed.type);
+          
           // Als Text senden (kein Binär-Frame), damit der Browser JSON.parse nutzen kann
           ws.send(line);
-        } catch {}
+        } catch (parseError) {
+          console.warn('⚠️ Invalid JSON line:', line);
+        }
       }
     }
+    
+    console.log('✅ Relay complete');
   } catch (e) {
-    ws.send(JSON.stringify({ type: 'error', message: e.message }));
+    console.error('❌ Relay error:', e);
+    ws.send(JSON.stringify({ type: 'error', data: { message: e.message } }));
   }
 }
 
