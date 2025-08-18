@@ -46,20 +46,6 @@ app.use('/api/voice-agent', async (req, res) => {
   }
 });
 
-// Fly.io Health Check
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'healthy', 
-    timestamp: new Date().toISOString(),
-    websocket_clients: 'WebSocket server ready'
-  });
-});
-
-// Fallback für SPA Routing
-app.get('*', (req, res) => {
-  res.sendFile(join(__dirname, 'dist', 'index.html'));
-});
-
 const server = http.createServer(app);
 
 // Globale Limits
@@ -107,6 +93,20 @@ const wss = new WebSocketServer({
       return true;
     }
   }
+});
+
+// Fly.io Health Check (nach WebSocketServer, damit wss existiert)
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy', 
+    timestamp: new Date().toISOString(),
+    websocket_clients: wss.clients.size
+  });
+});
+
+// Fallback für SPA Routing
+app.get('*', (req, res) => {
+  res.sendFile(join(__dirname, 'dist', 'index.html'));
 });
 
 // Connection Tracking für Logging / Cleanup
