@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Volume2, VolumeX, Phone, PhoneOff } from 'lucide-react';
+import WebSocketManager from '../utils/WebSocketManager';
 
 interface VoiceResponse {
   type: string;
@@ -36,6 +37,7 @@ export const ContinuousVoiceChat: React.FC = () => {
   const speechTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isRecordingRef = useRef(false);
   const audioLevelRef = useRef(0);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // ULTRA-LOW LATENCY VAD Configuration
   const vadConfig: VADConfig = {
@@ -50,21 +52,37 @@ export const ContinuousVoiceChat: React.FC = () => {
     ? `wss://${window.location.host}` 
     : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
 
-  // WebSocket Verbindung
-  const connectWebSocket = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
-
-    console.log('🔗 Connecting to WebSocket:', WS_URL);
-    const ws = new WebSocket(WS_URL);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      console.log('✅ WebSocket connected');
+  // WebSocket Verbindung über Manager (Single Connection)
+  const connectWebSocket = useCallback(async () => {
+    const manager = WebSocketManager.getInstance();
+    
+    // Prüfe ob bereits verbunden oder verbindet
+    if (manager.isConnected()) {
+      console.log('🔗 WebSocket Manager: Bereits verbunden');
+      wsRef.current = manager.getActiveConnection();
       setIsConnected(true);
-      setError(null);
-    };
+      return;
+    }
+    
+    if (manager.isConnecting()) {
+      console.log('🔗 WebSocket Manager: Verbindung läuft bereits');
+      return;
+    }
 
-    ws.onmessage = (event) => {
+    try {
+      console.log('🔗 WebSocket Manager: Starte neue Verbindung zu:', WS_URL);
+      const ws = await manager.connect(WS_URL);
+      wsRef.current = ws;
+
+      // Event Listeners nur setzen wenn wir eine neue Verbindung haben
+      if (ws.onopen === null) {
+        ws.onopen = () => {
+          console.log('✅ WebSocket connected via Manager');
+          setIsConnected(true);
+          setError(null);
+        };
+
+        ws.onmessage = (event) => {
       try {
         const data: VoiceResponse = JSON.parse(event.data);
         console.log('📥 Received:', data.type);
@@ -133,22 +151,42 @@ export const ContinuousVoiceChat: React.FC = () => {
       }
     };
 
-    ws.onclose = (event) => {
-      console.log('🔌 WebSocket closed:', event.code, event.reason);
-      setIsConnected(false);
-      wsRef.current = null;
-      
-      // Auto-reconnect für Fly.io
-      if (event.code !== 1000 && isActive) {
-        setTimeout(connectWebSocket, 3000);
-      }
-    };
+        ws.onclose = (event) => {
+          console.log('🔌 WebSocket closed via Manager:', event.code, event.reason);
+          setIsConnected(false);
+          wsRef.current = null;
+          
+          // Auto-reconnect für Fly.io nur wenn aktiv und nicht manuell geschlossen
+          if (event.code !== 1000 && event.code !== 1001 && isActive) {
+            console.log('🔄 Auto-reconnect in 5s...');
+            // Clear existing reconnect timeout
+            if (reconnectTimeoutRef.current) {
+              clearTimeout(reconnectTimeoutRef.current);
+            }
+            reconnectTimeoutRef.current = setTimeout(() => {
+              // Nochmal prüfen ob wir noch aktiv sind
+              if (isActive && !manager.isConnected()) {
+                connectWebSocket();
+              }
+              reconnectTimeoutRef.current = null;
+            }, 5000); // Längere Wartezeit für Fly.io
+          }
+        };
 
-    ws.onerror = (error) => {
-      console.error('❌ WebSocket error:', error);
-      setError('WebSocket Verbindungsfehler');
+        ws.onerror = (error) => {
+          console.error('❌ WebSocket error via Manager:', error);
+          setError('WebSocket Verbindungsfehler');
+          setIsConnected(false);
+        };
+      }
+      
+      setIsConnected(true);
+      setError(null);
+    } catch (error) {
+      console.error('❌ WebSocket Manager Verbindungsfehler:', error);
+      setError(`Verbindungsfehler: ${error instanceof Error ? error.message : 'Unbekannter Fehler'}`);
       setIsConnected(false);
-    };
+    }
   }, [WS_URL, audioEnabled, isActive, isProcessing]);
 
   // Audio Playback
@@ -348,6 +386,10 @@ export const ContinuousVoiceChat: React.FC = () => {
         clearTimeout(silenceTimerRef.current);
         silenceTimerRef.current = null;
       }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         mediaRecorderRef.current.stop();
       }
@@ -355,9 +397,10 @@ export const ContinuousVoiceChat: React.FC = () => {
         streamRef.current.getTracks().forEach(track => track.stop());
         streamRef.current = null;
       }
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+      // WebSocket über Manager schließen
+      const manager = WebSocketManager.getInstance();
+      manager.disconnect();
+      wsRef.current = null;
     } else {
       // Starten
       if (!isConnected) {
@@ -372,15 +415,19 @@ export const ContinuousVoiceChat: React.FC = () => {
     }
   };
 
-  // WebSocket beim Mount verbinden
+  // WebSocket nur beim ersten Mount verbinden, nicht bei jedem connectWebSocket-Update
   useEffect(() => {
-    connectWebSocket();
+    // Nur verbinden wenn noch keine Verbindung existiert
+    if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+      connectWebSocket();
+    }
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+      // WebSocket über Manager schließen beim Unmount
+      const manager = WebSocketManager.getInstance();
+      manager.disconnect();
+      wsRef.current = null;
     };
-  }, [connectWebSocket]);
+  }, []); // Leere Dependency Array - nur einmal beim Mount
 
   // Audio Level für Visualisierung
   const audioLevel = audioLevelRef.current;

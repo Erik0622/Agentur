@@ -67,11 +67,56 @@ const wss = new WebSocketServer({
   // Fly.io optimierte Einstellungen
   maxPayload: 6 * 1024 * 1024, // 6MB für Audio-Daten
   skipUTF8Validation: true,     // Performance-Optimierung für Binary Data
-  clientTracking: true         // Client-Tracking für Health Checks
+  clientTracking: true,        // Client-Tracking für Health Checks
+  // Connection Limiting für Fly.io
+  maxClients: 10,              // Begrenze gleichzeitige Verbindungen
+  verifyClient: (info) => {
+    // Rate limiting per IP
+    const clientIP = info.req.socket.remoteAddress;
+    const now = Date.now();
+    if (!connectionTracker.has(clientIP)) {
+      connectionTracker.set(clientIP, { count: 0, lastConnect: now });
+    }
+    const clientData = connectionTracker.get(clientIP);
+    
+    // Max 3 Verbindungen pro IP in 10 Sekunden
+    if (now - clientData.lastConnect < 10000 && clientData.count >= 3) {
+      console.log(`🚫 Rate limit exceeded for IP: ${clientIP}`);
+      return false;
+    }
+    
+    if (now - clientData.lastConnect > 10000) {
+      clientData.count = 0;
+    }
+    clientData.count++;
+    clientData.lastConnect = now;
+    
+    return true;
+  }
 });
 
-wss.on('connection', ws => {
-  console.log('🔗 New WebSocket connection');
+// Connection Tracking für Rate Limiting
+const connectionTracker = new Map();
+
+// Cleanup alte Connection-Tracker-Einträge alle 5 Minuten
+setInterval(() => {
+  const now = Date.now();
+  const fiveMinutesAgo = now - 5 * 60 * 1000;
+  
+  for (const [ip, data] of connectionTracker.entries()) {
+    if (data.lastConnect < fiveMinutesAgo && data.count === 0) {
+      connectionTracker.delete(ip);
+      console.log(`🧹 Cleaned up old connection tracker for IP: ${ip}`);
+    }
+  }
+  
+  console.log(`📊 Active connection trackers: ${connectionTracker.size}`);
+}, 5 * 60 * 1000);
+
+wss.on('connection', (ws, req) => {
+  const clientIP = req.socket.remoteAddress;
+  const connectionId = `${clientIP}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  console.log(`🔗 New WebSocket connection: ${connectionId}`);
   
   // Informiere Client über erfolgreichen Verbindungsaufbau
   try { 
@@ -125,18 +170,34 @@ wss.on('connection', ws => {
     }
   });
 
-  ws.on('close', () => {
-    console.log('🔌 WebSocket connection closed');
+  ws.on('close', (code, reason) => {
+    console.log(`🔌 WebSocket connection closed: ${connectionId} (${code}: ${reason})`);
+    // Cleanup connection tracking
+    const clientData = connectionTracker.get(clientIP);
+    if (clientData && clientData.count > 0) {
+      clientData.count--;
+    }
   });
 
   ws.on('error', (error) => {
-    console.error('❌ WebSocket error:', error);
+    console.error(`❌ WebSocket error for ${connectionId}:`, error);
+    // Cleanup bei Error
+    const clientData = connectionTracker.get(clientIP);
+    if (clientData && clientData.count > 0) {
+      clientData.count--;
+    }
   });
 });
 
 async function relay(buffer, ws) {
   try {
     console.log('🔄 Relaying audio to voice-agent API, buffer size:', buffer.length);
+    
+    // Prüfe WebSocket-Status vor Relay
+    if (ws.readyState !== WebSocket.OPEN) {
+      console.log('⚠️ WebSocket nicht mehr offen, breche Relay ab');
+      return;
+    }
     
     const res = await fetch(REST, {
       method: 'POST',
@@ -174,7 +235,9 @@ async function relay(buffer, ws) {
           console.log('📤 Streaming to client:', parsed.type);
           
           // Als Text senden (kein Binär-Frame), damit der Browser JSON.parse nutzen kann
-          ws.send(line);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(line);
+          }
         } catch (parseError) {
           console.warn('⚠️ Invalid JSON line:', line);
         }
@@ -192,4 +255,6 @@ server.listen(PORT, HOST, () => {
   console.log(`🚀 Server bereit auf http://${HOST}:${PORT}`);
   console.log(`🔗 WebSocket Server bereit auf ws://${HOST}:${PORT}`);
   console.log(`🌐 API Server bereit auf http://${HOST}:${PORT}/api/voice-agent`);
+  console.log(`🔒 Connection Rate Limiting: Max 3 Verbindungen pro IP in 10s`);
+  console.log(`🔌 Max gleichzeitige WebSocket-Verbindungen: 10`);
 });
