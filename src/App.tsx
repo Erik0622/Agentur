@@ -182,69 +182,76 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
     }
 
     try {
-      console.log('🔗 Verbinde zu WebSocket Stream:', WS_URL);
+      console.log('🔗 Verbinde zu Voice Agent:', WS_URL);
       const ws = new WebSocket(WS_URL);
       wsStreamRef.current = ws;
 
       ws.onopen = () => {
-        console.log('🔗 WebSocket Stream verbunden');
+        console.log('✅ Voice Agent WebSocket verbunden');
         setWsConnected(true);
       };
 
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          console.log('📨 Stream Event:', data.type);
-          const payload = (data && (data.data ?? data)) as any;
+          console.log('📨 Voice Agent Event:', data.type, data);
 
           switch (data.type) {
+            case 'connected':
+              console.log('✅ Voice Agent bereit');
+              setWsConnected(true);
+              break;
+            case 'status':
+              console.log('📊 Status:', data.message);
+              break;
             case 'transcript':
-              setTranscript(payload.text || '');
+              console.log('📝 Transkript erhalten:', data.text);
+              setTranscript(data.text || '');
+              setIsProcessing(true);
               break;
-            case 'llm_chunk':
-              if (payload?.text) pushLlmChunk(setAiResponse, payload.text);
+            case 'interim':
+              console.log('📝 Interim:', data.text);
+              // Optional: Zeige interim results
               break;
-            case 'audio_chunk':
-              if (payload?.base64) {
-                const u8 = b64ToUint8(payload.base64);
-                audioQueueRef.current.push(u8);
-                appendNextChunk();
-              }
-              break;
-            case 'audio_header':
-              setupMse(payload?.mime || OPUS_MIME).then(() => setIsPlayingResponse(true));
+            case 'llm_response':
+              console.log('🤖 LLM Antwort:', data.text);
+              setAiResponse(data.text || '');
+              setIsProcessing(false);
               break;
             case 'end':
-              endMseStream();
+              console.log('✅ Verarbeitung abgeschlossen');
               setIsProcessing(false);
               break;
             case 'error':
-              if ((payload?.message || data.message) === 'No speech detected.') {
-                setTranscript('Keine Sprache erkannt. Bitte sprechen Sie lauter.');
-                setAiResponse('');
-              } else {
-                throw new Error(payload?.message || data.message || 'Voice processing error');
-              }
+              console.error('❌ Voice Agent Error:', data.message);
+              setTranscript('Fehler: ' + (data.message || 'Unbekannter Fehler'));
+              setIsProcessing(false);
               break;
           }
         } catch (error) {
-          console.error('Stream message error:', error);
+          console.error('❌ Message Parse Error:', error);
         }
       };
 
       ws.onclose = () => {
-        console.log('🔌 WebSocket Stream getrennt');
+        console.log('🔌 Voice Agent WebSocket getrennt');
         setWsConnected(false);
         wsStreamRef.current = null;
+        // Auto-reconnect nach 3 Sekunden
+        setTimeout(() => {
+          if (!wsStreamRef.current) {
+            startWebSocketStream();
+          }
+        }, 3000);
       };
 
       ws.onerror = (error) => {
-        console.error('WebSocket Stream Error:', error);
+        console.error('❌ Voice Agent WebSocket Error:', error);
         setWsConnected(false);
       };
 
     } catch (error) {
-      console.error('WebSocket Stream Setup Error:', error);
+      console.error('❌ Voice Agent Setup Error:', error);
       setWsConnected(false);
     }
   };
