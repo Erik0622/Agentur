@@ -269,17 +269,11 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
     }
   }, []);
 
-  // WebSocket Verbindung für Voice Agent
+  // WebSocket Verbindung für Voice Agent (verwendet dieselbe URL wie Audio-Streaming)
   const connectWebSocket = () => {
-  const isProduction = window.location.hostname !== 'localhost';
-  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const wsUrl = isProduction
-    ? `${protocol}://${window.location.host}/ws/voice`
-    : 'ws://localhost:8080/ws/voice';
+  console.log('🔗 Verbinde zu Voice Agent:', WS_URL);
 
-  console.log('🔗 Verbinde zu Voice Agent:', wsUrl);
-
-  const ws = new WebSocket(wsUrl);
+  const ws = new WebSocket(WS_URL);
   wsRef.current = ws;
 
       ws.onopen = () => {
@@ -338,12 +332,10 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
     };
 
     useEffect(() => {
-
-  connectWebSocket();
-
+  // WebSocket wird nur bei Bedarf durch startWebSocketStream() gestartet
   return () => {
-    if (wsRef.current) {
-      wsRef.current.close();
+    if (wsStreamRef.current) {
+      wsStreamRef.current.close();
     }
   };
 }, []);
