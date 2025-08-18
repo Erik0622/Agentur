@@ -258,6 +258,7 @@ export const ContinuousVoiceChat: React.FC = () => {
   // Audio Setup
   const setupAudio = async () => {
     try {
+      console.log('🎤 Setting up audio...');
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: vadConfig.sampleRate,
@@ -269,6 +270,7 @@ export const ContinuousVoiceChat: React.FC = () => {
       });
 
       streamRef.current = stream;
+      console.log('✅ MediaStream obtained:', stream.getTracks().length, 'tracks');
 
       // AudioContext für VAD
       if (!audioContextRef.current) {
@@ -276,6 +278,13 @@ export const ContinuousVoiceChat: React.FC = () => {
       }
 
       const audioContext = audioContextRef.current;
+      
+      // Resume AudioContext falls suspended
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+        console.log('✅ AudioContext resumed');
+      }
+
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
       
@@ -288,11 +297,19 @@ export const ContinuousVoiceChat: React.FC = () => {
       // VAD Loop starten
       vadIntervalRef.current = setInterval(analyzeAudioLevel, 50); // 20fps
 
-      console.log('🎤 Audio setup complete');
+      console.log('✅ Audio setup complete - AudioContext state:', audioContext.state);
+      
+      // Test MediaRecorder Unterstützung
+      if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+        console.log('✅ WebM/Opus supported');
+      } else {
+        console.warn('⚠️ WebM/Opus not supported, fallback might be needed');
+      }
+
       return true;
     } catch (error) {
       console.error('❌ Audio setup failed:', error);
-      setError('Mikrofonzugriff fehlgeschlagen');
+      setError(`Mikrofonzugriff fehlgeschlagen: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
   };
@@ -317,17 +334,35 @@ export const ContinuousVoiceChat: React.FC = () => {
 
       // Audio-Start Signal
       if (wsRef.current?.readyState === WebSocket.OPEN) {
+        console.log('📤 Sending start_audio signal');
         wsRef.current.send(JSON.stringify({ type: 'start_audio' }));
+      } else {
+        console.error('❌ WebSocket not ready for start_audio signal');
       }
 
-      // Kontinuierlich Chunks senden
+      // Kontinuierlich Chunks senden - FIX: Event Handler VOR start() setzen
       mediaRecorder.ondataavailable = (event) => {
+        console.log('📦 MediaRecorder data available:', event.data.size, 'bytes');
         if (event.data.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
+          console.log('📤 Sending audio chunk to WebSocket');
           wsRef.current.send(event.data);
+        } else if (event.data.size === 0) {
+          console.warn('⚠️ Empty audio chunk received');
+        } else if (wsRef.current?.readyState !== WebSocket.OPEN) {
+          console.error('❌ WebSocket not ready for audio chunk, state:', wsRef.current?.readyState);
         }
       };
 
-      mediaRecorder.start(50); // 50ms Chunks für geringere Latenz
+      mediaRecorder.onerror = (error) => {
+        console.error('❌ MediaRecorder error:', error);
+      };
+
+      mediaRecorder.onstart = () => {
+        console.log('✅ MediaRecorder started successfully');
+      };
+
+      mediaRecorder.start(100); // Erhöht auf 100ms für stabilere Chunks
+      console.log('🎤 MediaRecorder.start() called');
     } catch (error) {
       console.error('❌ Recording start failed:', error);
       isRecordingRef.current = false;
@@ -344,13 +379,21 @@ export const ContinuousVoiceChat: React.FC = () => {
     setIsListening(false);
 
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      console.log('📤 Stopping MediaRecorder');
       mediaRecorderRef.current.stop();
+    } else {
+      console.warn('⚠️ MediaRecorder not in recording state:', mediaRecorderRef.current?.state);
     }
 
-    // Audio-Ende Signal
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
-    }
+    // Audio-Ende Signal mit Verzögerung um sicherzustellen, dass alle Chunks gesendet wurden
+    setTimeout(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        console.log('📤 Sending end_audio signal');
+        wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
+      } else {
+        console.error('❌ WebSocket not ready for end_audio signal');
+      }
+    }, 100); // 100ms Verzögerung
 
     setIsProcessing(true);
   };
