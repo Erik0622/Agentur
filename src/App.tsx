@@ -60,8 +60,8 @@ function App() {
 const WS_URL =
   (import.meta.env.VITE_WS_URL ?? process.env.NEXT_PUBLIC_WS_URL)
   ?? ((typeof window !== 'undefined' && window.location.hostname !== 'localhost')
-        ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/voice`
-        : 'ws://localhost:8080/ws/voice');
+        ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+        : 'ws://localhost:8080');
 
 const OPUS_MIME = 'audio/webm;codecs=opus';
 const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
