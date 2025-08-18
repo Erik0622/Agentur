@@ -97,16 +97,32 @@
    
      const { audio, voice = 'german_m2', detect = false } = req.body || {};
    
-     console.log('🔍 API Request Debug:');
-     console.log('  - Audio vorhanden:', !!audio);
-     console.log('  - Audio Länge (Base64 chars):', audio ? audio.length : 'N/A');
-     console.log('  - Voice:', voice);
-     console.log('  - Request body keys:', Object.keys(req.body || {}));
-   
-     if (!audio) {
-       console.log('⚠️ Missing audio data');
-       return res.status(400).json({ error: 'Missing audio data' });
-     }
+         console.log('🔍 API Request Debug:');
+    console.log('  - Audio vorhanden:', !!audio);
+    console.log('  - Audio Länge (Base64 chars):', audio ? audio.length : 'N/A');
+    console.log('  - Voice:', voice);
+    console.log('  - Request body keys:', Object.keys(req.body || {}));
+    console.log('  - Request body size:', JSON.stringify(req.body).length, 'chars');
+
+    if (!audio || audio.length === 0) {
+      console.log('⚠️ Missing audio data');
+      console.log('  - Request headers:', JSON.stringify(req.headers, null, 2));
+      console.log('  - Request body:', JSON.stringify(req.body, null, 2));
+      return res.status(400).json({ error: 'Missing audio data' });
+    }
+
+    // Validiere Base64 Audio
+    try {
+      const audioBuffer = Buffer.from(audio, 'base64');
+      if (audioBuffer.length === 0) {
+        console.log('⚠️ Empty audio buffer after base64 decode');
+        return res.status(400).json({ error: 'Empty audio data' });
+      }
+      console.log('✅ Audio buffer valid, size:', audioBuffer.length, 'bytes');
+    } catch (e) {
+      console.error('❌ Invalid base64 audio data:', e);
+      return res.status(400).json({ error: 'Invalid base64 audio data' });
+    }
    
      try {
        res.writeHead(200, {
@@ -186,18 +202,21 @@
          ? 'detect_language=true'
          : 'language=multi'; // multi = auto-detect innerhalb 10 Sprachen
    
-       // [BEGIN PATCH: voice-agent.js – Deepgram params ergänzen]
+       // [ULTRA-LOW LATENCY PATCH: Optimiert für <0.8s TTFA]
 const deepgramUrl =
-  `wss://api.deepgram.com/v1/listen?model=nova-3`
-  + `&${langParams}`
-  + `&punctuate=true`
+  `wss://api.deepgram.com/v1/listen?model=nova-2`  // nova-2 ist schneller
+  + `&language=de`                                 // Spezifisch statt multi
+  + `&punctuate=false`                            // Deaktiviert für Geschwindigkeit
   + `&interim_results=true`
-  + `&endpointing=100`
-  + `&utterance_end_ms=250`   // <— NEU: Tail deutlich kürzer
+  + `&endpointing=50`                             // Sehr kurz: 50ms
+  + `&utterance_end_ms=100`                       // Sehr kurz: 100ms
   + `&vad_events=true`
-  + `&smart_format=true`
+  + `&smart_format=false`                         // Deaktiviert für Geschwindigkeit
+  + `&alternatives=1`                             // Nur beste Alternative
+  + `&profanity_filter=false`                     // Deaktiviert für Geschwindigkeit
+  + `&diarize=false`                              // Deaktiviert für Geschwindigkeit
   + encodingParam + sampleRateParam + channelsParam;
-// [END PATCH: voice-agent.js – Deepgram params ergänzen]
+// [END ULTRA-LOW LATENCY PATCH]
    
        console.log('🔍 Audio Format Detection:', hex8);
        console.log('✅ Detected format:', format);
@@ -265,11 +284,11 @@ const deepgramUrl =
                  interimTranscript = txt;
                  console.log('📝 Interim transcript:', txt);
                  
-                 // LLM nach 10+ Zeichen oder 300ms starten (nicht auf final warten)
-                 if (!llmStarted && txt.length >= 6) {
+                 // ULTRA-LOW LATENCY: LLM nach 3+ Zeichen sofort starten
+                 if (!llmStarted && txt.length >= 3) {
   llmStarted = true;
   if (interimTimer) { clearTimeout(interimTimer); interimTimer = null; }
-  console.log('🚀 LLM früh gestartet (≥6 Zeichen Interim)');
+  console.log('⚡ LLM ULTRA-FRÜH gestartet (≥3 Zeichen Interim)');
   resolve(txt); // Sofort mit Interim loslegen
   return;
                  }
@@ -332,10 +351,10 @@ const deepgramUrl =
            fullResponse += token;
            tokenCount++;
            
-           // TTS nach 15 Tokens oder 300ms starten (nicht auf vollständige Antwort warten)
-           if (!ttsStarted && (tokenCount >= 15 || fullResponse.length >= 50)) {
+           // ULTRA-LOW LATENCY: TTS nach 5 Tokens sofort starten
+           if (!ttsStarted && (tokenCount >= 5 || fullResponse.length >= 20)) {
              ttsStarted = true;
-             console.log('🚀 TTS früh gestartet nach', tokenCount, 'Tokens');
+             console.log('⚡ TTS ULTRA-FRÜH gestartet nach', tokenCount, 'Tokens');
              
              // Parallele TTS-Verarbeitung starten
              generateAndStreamSpeechAzureHD(fullResponse, res).catch(e => {
@@ -364,10 +383,15 @@ const deepgramUrl =
    
      const endpoint = `https://${GEMINI_REGION}-aiplatform.googleapis.com/v1/projects/${SERVICE_ACCOUNT_JSON.project_id}/locations/${GEMINI_REGION}/publishers/google/models/gemini-2.5-flash-lite:streamGenerateContent?alt=sse`;
    
+     // ULTRA-LOW LATENCY: Optimierte Gemini-Konfiguration
      const requestBody = {
-       contents: [{ role: 'user', parts: [{ text: `Du bist ein freundlicher Telefonassistent. Antworte kurz und benutze keine Emojis.\nKunde: ${userTranscript}` }] }],
-       generationConfig: { temperature: 0.7, maxOutputTokens: 200 },
-       safetySettings: [{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' }]
+       contents: [{ role: 'user', parts: [{ text: `Kurze Antwort (max 15 Wörter): ${userTranscript}` }] }],
+       generationConfig: { 
+         temperature: 0.3,        // Niedriger für Konsistenz und Geschwindigkeit
+         maxOutputTokens: 50,     // Sehr kurz für TTFA
+         candidateCount: 1        // Nur eine Alternative
+       },
+       safetySettings: []         // Minimal für Geschwindigkeit
      };
    
      const { body, statusCode, headers } = await request(endpoint, {
@@ -416,8 +440,8 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
   const TTS_HOST   = process.env.AZURE_TTS_HOST   || `${region}.tts.speech.microsoft.com`;
   const TOKEN_HOST = process.env.AZURE_TOKEN_HOST || `${region}.api.cognitive.microsoft.com`;
 
-  // requested voice (can be overridden via opts.voice)
-  let requestedVoice = (opts.voice || AZURE_VOICE_NAME || 'de-DE-FlorianMultilingualNeural').trim();
+  // ULTRA-LOW LATENCY: Schnellste deutsche Voice verwenden
+  let requestedVoice = (opts.voice || 'de-DE-KatjaNeural').trim(); // Standard Neural ist schneller
 
   console.log('🔊 Azure HD TTS starting...');
   console.log('  • Raw text length:', text?.length || 0);
@@ -447,9 +471,9 @@ async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
   const safeText = String(text || '').trim();
   if (!safeText) throw new Error('Empty text for TTS');
 
-  // *** STREAMING-FORMAT: Optimiert für niedrige Latenz ***
-  const AUDIO_FORMAT = 'webm-16khz-16bit-mono-opus'; // MSE-kompatibel
-  const MSE_MIME     = 'audio/webm;codecs=opus';     // Browser MIME
+  // *** ULTRA-LOW LATENCY STREAMING-FORMAT ***
+  const AUDIO_FORMAT = 'audio-16khz-32kbitrate-mono-mp3'; // Schneller als WebM
+  const MSE_MIME     = 'audio/mpeg';                       // Browser MIME
 
   // Aufteilen (für sehr lange Antworten)
   const chunks = splitForSsml(safeText, 4800);
