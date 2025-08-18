@@ -40,10 +40,11 @@ function App() {
   const [isSpeechDetected, setIsSpeechDetected] = useState(false);
   const silenceCountRef = useRef(0);
   
-  // Deutsche Stimmenauswahl für Bella Vista (nur geklonte deutsche Stimmen)
-  const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('bella_vista_german_voice');
+  // Deutsche Stimmenauswahl
+  const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('hd_florian');
   const germanVoices = {
-    'bella_vista_german_voice': { name: 'Bella Vista Original', gender: 'Weiblich', description: 'Authentische deutsche Stimme (geklont, Standard)' }
+    'hd_florian': { name: 'HD Florian', gender: 'Männlich', description: 'Hochqualitative HD-Stimme' },
+    'standard_florian': { name: 'Standard Florian', gender: 'Männlich', description: 'Standardqualität' }
   } as const;
   
   const wsRef = useRef<WebSocket | null>(null);
@@ -1365,7 +1366,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
                   </div>
                 </div>
                 
-                {/* Deutsche Stimmenauswahl für Bella Vista */}
+                {/* Deutsche Stimmenauswahl */}
                 <div className="mb-4 sm:mb-6">
                   <h4 className="text-base sm:text-lg font-semibold text-gray-700 mb-2 sm:mb-3 text-center">
                     Deutsche Stimme wählen
