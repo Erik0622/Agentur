@@ -65,7 +65,10 @@ const server = http.createServer(app);
 // Globale Limits
 const MAX_CLIENTS = parseInt(process.env.MAX_WS_CLIENTS || '10', 10);
 const RATE_LIMIT_WINDOW_MS = 10_000; // 10s Sliding Window
-const MAX_CONNECTIONS_PER_WINDOW = parseInt(process.env.MAX_CONNS_PER_WINDOW || '3', 10);
+// Etwas entspannteres Default-Limit, um parallele Handshakes/Reconnections nicht zu blocken
+const MAX_CONNECTIONS_PER_WINDOW = parseInt(process.env.MAX_CONNS_PER_WINDOW || '8', 10);
+// Heartbeat zur Erkennung toter Verbindungen
+const HEARTBEAT_INTERVAL_MS = parseInt(process.env.WS_HEARTBEAT_MS || '30000', 10);
 
 // Sliding-Window Request Log pro IP
 const ipRequestLog = new Map(); // Map<string, number[]>
@@ -109,6 +112,26 @@ const wss = new WebSocketServer({
 // Connection Tracking für Logging / Cleanup
 const connectionTracker = new Map();
 
+// WS Heartbeat: terminate Verbindungen ohne Pong
+function heartbeat() {
+  // @ts-ignore (Runtime property)
+  this.isAlive = true;
+}
+
+const heartbeatInterval = setInterval(() => {
+  // @ts-ignore (Runtime property)
+  wss.clients.forEach((ws) => {
+    // @ts-ignore (Runtime property)
+    if (ws.isAlive === false) {
+      try { ws.terminate(); } catch {}
+      return;
+    }
+    // @ts-ignore (Runtime property)
+    ws.isAlive = false;
+    try { ws.ping(); } catch {}
+  });
+}, HEARTBEAT_INTERVAL_MS);
+
 // Cleanup alte Connection-Tracker-Einträge alle 5 Minuten
 setInterval(() => {
   const now = Date.now();
@@ -133,6 +156,11 @@ wss.on('connection', (ws, req) => {
   const connectionId = `${clientIP}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   console.log(`🔗 New WebSocket connection: ${connectionId}`);
 
+  // Heartbeat aktivieren
+  // @ts-ignore (Runtime property)
+  ws.isAlive = true;
+  ws.on('pong', heartbeat);
+
   // Erzwinge Maximale gleichzeitige Verbindungen
   if (wss.clients.size > MAX_CLIENTS) {
     try {
@@ -142,6 +170,13 @@ wss.on('connection', (ws, req) => {
     return;
   }
   
+  // Connection-Tracker hochzählen
+  const nowTs = Date.now();
+  const clientData = connectionTracker.get(clientIP) || { count: 0, lastConnect: 0 };
+  clientData.count += 1;
+  clientData.lastConnect = nowTs;
+  connectionTracker.set(clientIP, clientData);
+
   // Informiere Client über erfolgreichen Verbindungsaufbau
   try { 
     ws.send(JSON.stringify({ type: 'connected', message: 'Stream bereit' })); 
@@ -281,4 +316,5 @@ server.listen(PORT, HOST, () => {
   console.log(`🌐 API Server bereit auf http://${HOST}:${PORT}/api/voice-agent`);
   console.log(`🔒 Connection Rate Limiting: Max ${MAX_CONNECTIONS_PER_WINDOW} Verbindungen pro IP in ${Math.round(RATE_LIMIT_WINDOW_MS/1000)}s`);
   console.log(`🔌 Max gleichzeitige WebSocket-Verbindungen: ${MAX_CLIENTS}`);
+  console.log(`🫀 Heartbeat aktiv: Intervall ${Math.round(HEARTBEAT_INTERVAL_MS/1000)}s`);
 });

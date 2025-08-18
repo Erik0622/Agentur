@@ -4,7 +4,7 @@ class WebSocketManager {
   private activeConnection: WebSocket | null = null;
   private connectionPromise: Promise<WebSocket> | null = null;
   private lastConnectAttempt: number = 0;
-  private readonly MIN_CONNECT_INTERVAL = 2000; // 2 Sekunden zwischen Verbindungen
+  private readonly MIN_CONNECT_INTERVAL = 4000; // Entschärfen: mind. 4s zwischen Verbindungen
 
   private constructor() {}
 
