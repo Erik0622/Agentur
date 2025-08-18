@@ -34,7 +34,7 @@ function App() {
   const [transcript, setTranscript] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
-  const [voiceMetrics, setVoiceMetrics] = useState<any>(null);
+  const [voiceMetrics] = useState<any>(null);
   const [audioLevel, setAudioLevel] = useState(0);
   const [conversationHistory, setConversationHistory] = useState<Array<{user: string, ai: string, timestamp: Date}>>([]);
   const [isSpeechDetected, setIsSpeechDetected] = useState(false);
@@ -46,7 +46,7 @@ function App() {
     'bella_vista_german_voice': { name: 'Bella Vista Original', gender: 'Weiblich', description: 'Authentische deutsche Stimme (geklont, Standard)' }
   } as const;
   
-  const wsRef = useRef<WebSocket | null>(null);
+  // Legacy WebSocket ref (nicht mehr genutzt)
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationRef = useRef<number | null>(null);
@@ -276,66 +276,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
   }, []);
 
   // WebSocket Verbindung für Voice Agent (verwendet dieselbe URL wie Audio-Streaming)
-  const connectWebSocket = () => {
-  console.log('🔗 Verbinde zu Voice Agent:', WS_URL);
-
-  const ws = new WebSocket(WS_URL);
-  wsRef.current = ws;
-
-      ws.onopen = () => {
-        console.log('🔗 Voice Agent verbunden');
-        setWsConnected(true);
-      };
-
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        console.log('📨 Nachricht erhalten:', data);
-
-        switch (data.type) {
-          case 'transcript':
-            setTranscript(data.text);
-            setVoiceMetrics(data.metrics);
-            break;
-          case 'llm_chunk':
-            setAiResponse(prev => prev + data.text);
-            break;
-          case 'voice_response':
-            setTranscript(data.transcript);
-            setAiResponse(data.response);
-            setVoiceMetrics(data.metrics);
-            setIsProcessing(false);
-            
-            // Audio abspielen mit Visualisierung
-            if (data.audio) {
-              setIsPlayingResponse(true);
-              const audio = new Audio(`data:audio/wav;base64,${data.audio}`);
-              audio.onended = () => setIsPlayingResponse(false);
-              audio.play().catch(e => console.error('Audio playback failed:', e));
-            }
-            break;
-          case 'error':
-            console.error('Voice Agent Error:', data.message);
-            setIsProcessing(false);
-            alert(`Fehler: ${data.message}`);
-            break;
-          case 'status':
-            console.log('Status:', data.message);
-            break;
-        }
-      };
-
-      ws.onclose = () => {
-        console.log('🔌 Voice Agent getrennt');
-        setWsConnected(false);
-        // Automatisch reconnecten nach 3 Sekunden
-        setTimeout(connectWebSocket, 3000);
-      };
-
-      ws.onerror = (error) => {
-        console.error('WebSocket Fehler:', error);
-        setWsConnected(false);
-      };
-    };
+  // Legacy-Connector entfernt (verhindert ungenutzte Variable)
 
     useEffect(() => {
   // WebSocket wird nur bei Bedarf durch startWebSocketStream() gestartet

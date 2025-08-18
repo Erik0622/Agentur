@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Mic, MicOff, Volume2, VolumeX } from 'lucide-react';
+import WebSocketManager from '../utils/WebSocketManager';
 
 interface VoiceResponse {
   type: string;
@@ -24,79 +25,99 @@ export const VoiceChat: React.FC = () => {
   const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
 
   // WebSocket Verbindung aufbauen
-  const connectWebSocket = useCallback(() => {
-    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) return;
-
-    console.log('🔗 Connecting to WebSocket:', WS_URL);
-    const ws = new WebSocket(WS_URL);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      console.log('✅ WebSocket connected');
+  const reconnectDelayRef = useRef<number>(2000);
+  const connectWebSocket = useCallback(async () => {
+    const manager = WebSocketManager.getInstance();
+    // Bereits verbunden?
+    if (manager.isConnected()) {
+      wsRef.current = manager.getActiveConnection();
       setIsConnected(true);
-      setError(null);
-    };
+      return;
+    }
+    if (manager.isConnecting()) {
+      return;
+    }
+    try {
+      console.log('🔗 Connecting to WebSocket via Manager:', WS_URL);
+      const ws = await manager.connect(WS_URL);
+      wsRef.current = ws;
+      reconnectDelayRef.current = 2000; // reset backoff
 
-    ws.onmessage = (event) => {
-      try {
-        const data: VoiceResponse = JSON.parse(event.data);
-        console.log('📥 Received:', data.type, data.data);
+      ws.onopen = () => {
+        console.log('✅ WebSocket connected');
+        setIsConnected(true);
+        setError(null);
+      };
 
-        switch (data.type) {
-          case 'connected':
-            console.log('🔗 Connection confirmed');
-            break;
-          case 'transcript':
-            setTranscript(data.data.text || '');
-            break;
-          case 'llm_chunk':
-            setResponse(prev => prev + (data.data.text || ''));
-            break;
-          case 'llm_response':
-            setResponse(data.data.text || '');
-            break;
-          case 'audio_header':
-            console.log('🔊 Audio header received:', data.data.mime);
-            break;
-          case 'audio_chunk':
-            if (audioEnabled && data.data.base64) {
-              playAudioChunk(data.data.base64, data.data.format);
-            }
-            break;
-          case 'tts_engine':
-            console.log('🔊 TTS Engine:', data.data.engine);
-            break;
-          case 'end':
-            console.log('✅ Processing complete');
-            setIsProcessing(false);
-            break;
-          case 'error':
-            console.error('❌ Server error:', data.data.message);
-            setError(data.data.message);
-            setIsProcessing(false);
-            break;
+      ws.onmessage = (event) => {
+        try {
+          const data: VoiceResponse = JSON.parse(event.data);
+          console.log('📥 Received:', data.type, data.data);
+  
+          switch (data.type) {
+            case 'connected':
+              console.log('🔗 Connection confirmed');
+              break;
+            case 'transcript':
+              setTranscript(data.data.text || '');
+              break;
+            case 'llm_chunk':
+              setResponse(prev => prev + (data.data.text || ''));
+              break;
+            case 'llm_response':
+              setResponse(data.data.text || '');
+              break;
+            case 'audio_header':
+              console.log('🔊 Audio header received:', data.data.mime);
+              break;
+            case 'audio_chunk':
+              if (audioEnabled && data.data.base64) {
+                playAudioChunk(data.data.base64, data.data.format);
+              }
+              break;
+            case 'tts_engine':
+              console.log('🔊 TTS Engine:', data.data.engine);
+              break;
+            case 'end':
+              console.log('✅ Processing complete');
+              setIsProcessing(false);
+              break;
+            case 'error':
+              console.error('❌ Server error:', data.data.message);
+              setError(data.data.message);
+              setIsProcessing(false);
+              break;
+          }
+        } catch (e) {
+          console.warn('⚠️ Parse error:', e);
         }
-      } catch (e) {
-        console.warn('⚠️ Parse error:', e);
-      }
-    };
+      };
 
-    ws.onclose = (event) => {
-      console.log('🔌 WebSocket closed:', event.code, event.reason);
-      setIsConnected(false);
-      wsRef.current = null;
-      
-      // Automatisch reconnecten nach 3 Sekunden
-      if (event.code !== 1000) {
-        setTimeout(connectWebSocket, 3000);
-      }
-    };
+      ws.onclose = (event) => {
+        console.log('🔌 WebSocket closed:', event.code, event.reason);
+        setIsConnected(false);
+        wsRef.current = null;
+        if (event.code !== 1000) {
+          // Exponential Backoff
+          const delay = Math.min(reconnectDelayRef.current, 30000);
+          console.log(`🔄 Reconnect in ${delay}ms`);
+          setTimeout(connectWebSocket, delay);
+          reconnectDelayRef.current = Math.min(delay * 2, 30000);
+        }
+      };
 
-    ws.onerror = (error) => {
-      console.error('❌ WebSocket error:', error);
-      setError('WebSocket Verbindungsfehler');
+      ws.onerror = (error) => {
+        console.error('❌ WebSocket error:', error);
+        setError('WebSocket Verbindungsfehler');
+        setIsConnected(false);
+      };
+    } catch (error) {
+      console.error('❌ Manager connect failed:', error);
       setIsConnected(false);
-    };
+      const delay = Math.min(reconnectDelayRef.current, 30000);
+      setTimeout(connectWebSocket, delay);
+      reconnectDelayRef.current = Math.min(delay * 2, 30000);
+    }
   }, [WS_URL, audioEnabled]);
 
   // Audio Chunk abspielen
@@ -201,9 +222,8 @@ export const VoiceChat: React.FC = () => {
   useEffect(() => {
     connectWebSocket();
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+      const manager = WebSocketManager.getInstance();
+      manager.disconnect();
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
