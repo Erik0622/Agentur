@@ -62,10 +62,10 @@ function App() {
 
   // ===== LATENCY CONSTANTS & HELPERS ===== [F-LAT-0]
 const WS_URL =
-  (import.meta.env.VITE_WS_URL ?? process.env.NEXT_PUBLIC_WS_URL)
+  (import.meta.env.VITE_WS_URL ?? (window as any)?.NEXT_PUBLIC_WS_URL)
   ?? ((typeof window !== 'undefined' && window.location.hostname !== 'localhost')
-        ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/voice`
-        : 'ws://localhost:8080/ws/voice');
+        ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+        : 'ws://localhost:8080');
 
 const OPUS_MIME = 'audio/webm;codecs=opus';
 const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
@@ -278,8 +278,8 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
   const isProduction = window.location.hostname !== 'localhost';
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const wsUrl = isProduction
-    ? `${protocol}://${window.location.host}/ws/voice`
-    : 'ws://localhost:8080/ws/voice';
+    ? `${protocol}://${window.location.host}`
+    : 'ws://localhost:8080';
 
   console.log('🔗 Verbinde zu Voice Agent:', wsUrl);
 
@@ -312,7 +312,8 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
             // Audio abspielen mit Visualisierung
             if (data.audio) {
               setIsPlayingResponse(true);
-              const audio = new Audio(`data:audio/wav;base64,${data.audio}`);
+              const mime = data.mime || (data.format === 'mp3' ? 'audio/mpeg' : data.format === 'webm-opus' ? 'audio/webm;codecs=opus' : 'audio/wav');
+              const audio = new Audio(`data:${mime};base64,${data.audio}`);
               audio.onended = () => setIsPlayingResponse(false);
               audio.play().catch(e => console.error('Audio playback failed:', e));
             }
