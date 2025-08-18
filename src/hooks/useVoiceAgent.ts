@@ -12,7 +12,7 @@ export const useVoiceAgent = () => {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  const sendAudio = useCallback(async (audioBase64: string, voice: string = 'german_m2') => {
+  const sendAudio = useCallback(async (audioBase64: string, voice: string = 'hd_florian') => {
     console.log('📤 Sending audio to API:', {
       audioLength: audioBase64.length,
       voice,
