@@ -19,14 +19,13 @@ export const VoiceChat: React.FC = () => {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
-  // Refs für Audio-Verarbeitung wurden vereinfacht
 
   // WebSocket URL bestimmen
   const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
 
   // WebSocket Verbindung aufbauen
   const connectWebSocket = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) return;
 
     console.log('🔗 Connecting to WebSocket:', WS_URL);
     const ws = new WebSocket(WS_URL);
@@ -100,14 +99,11 @@ export const VoiceChat: React.FC = () => {
     };
   }, [WS_URL, audioEnabled]);
 
-  // Audio Playback Setup wurde entfernt - verwende direkte Audio-Wiedergabe
-
   // Audio Chunk abspielen
   const playAudioChunk = (base64Audio: string, format: string) => {
     if (!audioEnabled) return;
 
     try {
-      // Direkte Audio-Wiedergabe (MediaSource ist zu komplex für diesen Use Case)
       const audioData = Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0));
       const audioBlob = new Blob([audioData], { type: `audio/${format}` });
       const audioUrl = URL.createObjectURL(audioBlob);
@@ -165,14 +161,12 @@ export const VoiceChat: React.FC = () => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
           
-          // Direkt als Binary über WebSocket senden
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             wsRef.current.send(event.data);
           }
         }
       };
 
-      // Alle 100ms einen Chunk senden
       mediaRecorder.start(100);
       console.log('🎤 Recording started');
 
@@ -195,7 +189,6 @@ export const VoiceChat: React.FC = () => {
       streamRef.current = null;
     }
 
-    // Audio-Ende Signal senden
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
     }

@@ -1,5 +1,5 @@
 import http from 'http';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 import fetch from 'node-fetch';
 import express from 'express';
 import { join } from 'path';
@@ -61,6 +61,15 @@ app.get('*', (req, res) => {
 });
 
 const server = http.createServer(app);
+
+// Globale Limits
+const MAX_CLIENTS = parseInt(process.env.MAX_WS_CLIENTS || '10', 10);
+const RATE_LIMIT_WINDOW_MS = 10_000; // 10s Sliding Window
+const MAX_CONNECTIONS_PER_WINDOW = parseInt(process.env.MAX_CONNS_PER_WINDOW || '3', 10);
+
+// Sliding-Window Request Log pro IP
+const ipRequestLog = new Map(); // Map<string, number[]>
+
 const wss = new WebSocketServer({ 
   server, 
   perMessageDeflate: false,
@@ -68,34 +77,36 @@ const wss = new WebSocketServer({
   maxPayload: 6 * 1024 * 1024, // 6MB für Audio-Daten
   skipUTF8Validation: true,     // Performance-Optimierung für Binary Data
   clientTracking: true,        // Client-Tracking für Health Checks
-  // Connection Limiting für Fly.io
-  maxClients: 10,              // Begrenze gleichzeitige Verbindungen
+  // Hinweis: maxClients wird von ws nicht ausgewertet; wir erzwingen das selbst unten
   verifyClient: (info) => {
-    // Rate limiting per IP
-    const clientIP = info.req.socket.remoteAddress;
-    const now = Date.now();
-    if (!connectionTracker.has(clientIP)) {
-      connectionTracker.set(clientIP, { count: 0, lastConnect: now });
+    try {
+      // Echte Client-IP (Proxy aware)
+      const fwd = info.req.headers['x-forwarded-for'];
+      const raw = Array.isArray(fwd) ? fwd[0] : (fwd || '');
+      const forwardedIP = raw.split(',')[0].trim();
+      const socketIP = info.req.socket.remoteAddress;
+      const clientIP = forwardedIP || socketIP;
+
+      const now = Date.now();
+      const arr = ipRequestLog.get(clientIP) || [];
+      // Sliding window bereinigen
+      const fresh = arr.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+      if (fresh.length >= MAX_CONNECTIONS_PER_WINDOW) {
+        console.log(`🚫 Rate limit exceeded for IP: ${clientIP}`);
+        ipRequestLog.set(clientIP, fresh); // nur frische Einträge behalten
+        return false;
+      }
+      fresh.push(now);
+      ipRequestLog.set(clientIP, fresh);
+      return true;
+    } catch (e) {
+      console.warn('verifyClient error, allowing connection:', e);
+      return true;
     }
-    const clientData = connectionTracker.get(clientIP);
-    
-    // Max 3 Verbindungen pro IP in 10 Sekunden
-    if (now - clientData.lastConnect < 10000 && clientData.count >= 3) {
-      console.log(`🚫 Rate limit exceeded for IP: ${clientIP}`);
-      return false;
-    }
-    
-    if (now - clientData.lastConnect > 10000) {
-      clientData.count = 0;
-    }
-    clientData.count++;
-    clientData.lastConnect = now;
-    
-    return true;
   }
 });
 
-// Connection Tracking für Rate Limiting
+// Connection Tracking für Logging / Cleanup
 const connectionTracker = new Map();
 
 // Cleanup alte Connection-Tracker-Einträge alle 5 Minuten
@@ -114,9 +125,22 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 wss.on('connection', (ws, req) => {
-  const clientIP = req.socket.remoteAddress;
+  // Echte Client-IP (Proxy aware)
+  const fwd = req.headers['x-forwarded-for'];
+  const raw = Array.isArray(fwd) ? fwd[0] : (fwd || '');
+  const forwardedIP = raw.split(',')[0].trim();
+  const clientIP = forwardedIP || req.socket.remoteAddress;
   const connectionId = `${clientIP}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   console.log(`🔗 New WebSocket connection: ${connectionId}`);
+
+  // Erzwinge Maximale gleichzeitige Verbindungen
+  if (wss.clients.size > MAX_CLIENTS) {
+    try {
+      ws.close(1013, 'Server busy');
+    } catch {}
+    console.log('🚫 Max gleichzeitige Verbindungen erreicht. Verbindung abgelehnt.');
+    return;
+  }
   
   // Informiere Client über erfolgreichen Verbindungsaufbau
   try { 
@@ -255,6 +279,6 @@ server.listen(PORT, HOST, () => {
   console.log(`🚀 Server bereit auf http://${HOST}:${PORT}`);
   console.log(`🔗 WebSocket Server bereit auf ws://${HOST}:${PORT}`);
   console.log(`🌐 API Server bereit auf http://${HOST}:${PORT}/api/voice-agent`);
-  console.log(`🔒 Connection Rate Limiting: Max 3 Verbindungen pro IP in 10s`);
-  console.log(`🔌 Max gleichzeitige WebSocket-Verbindungen: 10`);
+  console.log(`🔒 Connection Rate Limiting: Max ${MAX_CONNECTIONS_PER_WINDOW} Verbindungen pro IP in ${Math.round(RATE_LIMIT_WINDOW_MS/1000)}s`);
+  console.log(`🔌 Max gleichzeitige WebSocket-Verbindungen: ${MAX_CLIENTS}`);
 });
