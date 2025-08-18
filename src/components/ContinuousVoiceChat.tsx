@@ -37,11 +37,11 @@ export const ContinuousVoiceChat: React.FC = () => {
   const isRecordingRef = useRef(false);
   const audioLevelRef = useRef(0);
 
-  // VAD Configuration
+  // ULTRA-LOW LATENCY VAD Configuration
   const vadConfig: VADConfig = {
-    threshold: 0.01, // Empfindlichkeit für Spracherkennung
-    minSpeechDuration: 500, // Mindest-Sprechdauer in ms
-    maxSilenceDuration: 1500, // Max Stille bevor Aufnahme stoppt
+    threshold: 0.015, // Etwas empfindlicher für schnellere Erkennung
+    minSpeechDuration: 300, // Kürzer: 300ms statt 500ms
+    maxSilenceDuration: 800, // Viel kürzer: 800ms statt 1500ms
     sampleRate: 48000
   };
 
@@ -114,12 +114,12 @@ export const ContinuousVoiceChat: React.FC = () => {
             setIsProcessing(false);
             setIsSpeaking(false);
             
-            // Nach kurzer Pause wieder zuhören
+            // ULTRA-LOW LATENCY: Sofort wieder zuhören
             setTimeout(() => {
               if (isActive && !isProcessing) {
                 startListening();
               }
-            }, 1000);
+            }, 200); // Viel kürzer: 200ms statt 1000ms
             break;
           case 'error':
             console.error('❌ Server error:', data.data.message);
