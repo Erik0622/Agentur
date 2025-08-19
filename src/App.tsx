@@ -373,7 +373,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
               speechDetectionRef.current = true;
               setIsSpeechDetected(true);
               silenceCountRef.current = 0;
-              startContinuousRecording();
+              startContinuousRecording().catch(e => console.error('Fehler beim Starten der Aufnahme:', e));
             } else if (!isSpeaking && wasSpeaking) {
               // Schritt 1: Zähler hoch
               silenceCountRef.current += 1;
@@ -486,25 +486,32 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
   };
 
   // ===== CONTINUOUS RECORDING (WebSocket Streaming) ===== [F-LAT-4]
-  const startContinuousRecording = () => {
+  const startContinuousRecording = async () => {
     if (!continuousStreamRef.current) {
       console.error('❌ Kein Stream verfügbar für kontinuierliche Aufnahme');
       return;
     }
     try {
       console.log('🎬 Starte kontinuierliche Aufnahme...');
+      
+      // WICHTIG: WebSocket Stream ZUERST starten und warten
+      await startWebSocketStream();
+      
+      if (wsStreamRef.current?.readyState !== WebSocket.OPEN) {
+        console.error('❌ WebSocket nicht verfügbar für kontinuierliche Aufnahme');
+        return;
+      }
+      
+      // start_audio Signal SOFORT senden
+      console.log('📤 Sende start_audio Signal an Gateway');
+      wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
+      
+      // Kurz warten damit Gateway das Signal verarbeiten kann
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // DANN erst MediaRecorder starten
       const mr = new MediaRecorder(continuousStreamRef.current, { mimeType: OPUS_MIME });
       continuousRecorderRef.current = mr;
-      
-      // WebSocket Stream starten
-      startWebSocketStream().then(() => {
-        if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-          console.log('📤 Sende start_audio Signal an Gateway');
-          wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
-        } else {
-          console.error('❌ WebSocket nicht bereit für start_audio:', wsStreamRef.current?.readyState);
-        }
-      });
 
       mr.ondataavailable = e => {
         if (e.data.size > 0) {
@@ -514,7 +521,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
       };
 
       mr.start(CHUNK_MS); // 50ms Chunks für optimale Performance
-      console.log('✅ MediaRecorder gestartet');
+      console.log('✅ MediaRecorder gestartet NACH start_audio Signal');
     } catch (e) {
       console.error('Kontinuierliche Aufnahme-Start fehlgeschlagen:', e);
     }
