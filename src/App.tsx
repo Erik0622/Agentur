@@ -455,6 +455,12 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
       // Voice Activity Detection starten
       console.log('🎵 Starte Audio-Visualisierung und VAD...');
       startAudioVisualization(stream, true);
+
+      // Pipeline-Schnelltest: Sofort eine kurze Aufnahme starten, um end-to-end zu verifizieren
+      console.log('🧪 Pipeline-Test: Starte sofortige Kurzaufnahme (ohne VAD-Warten)');
+      await startContinuousRecording();
+      console.log('🧪 Pipeline-Test gestartet – prüfe Server-Logs auf start_audio & Audio-Chunks');
+
       console.log('✅ Kontinuierlicher Gesprächsmodus aktiv - sprechen Sie jetzt!');
       
     } catch (error) {
