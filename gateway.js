@@ -177,62 +177,52 @@ wss.on('connection', (ws, req) => {
   clientData.lastConnect = nowTs;
   connectionTracker.set(clientIP, clientData);
 
-  // Informiere Client über erfolgreichen Verbindungsaufbau
-  try { 
-    ws.send(JSON.stringify({ type: 'connected', message: 'Stream bereit' })); 
-    console.log('📤 Connection message sent');
-  } catch (e) {
-    console.error('Failed to send connection message:', e);
-  }
-
   let chunks = [];
   let isRecording = false;
 
+  // Message-Listener direkt registrieren, bevor wir irgendetwas senden
   ws.on('message', msg => {
     try {
       // Bestimme Message-Typ
       const isBuffer = Buffer.isBuffer(msg);
-      const isString = typeof msg === 'string' || msg.toString;
+      const isString = typeof msg === 'string';
+      const asString = isBuffer ? msg.toString('utf8') : (isString ? msg : '');
       
       console.log('📥 WebSocket message received:', {
         isBuffer,
         isString,
-        size: isBuffer ? msg.length : (isString ? msg.toString().length : 'unknown'),
+        size: isBuffer ? msg.length : (isString ? (msg as string).length : (asString ? asString.length : 'unknown')),
         type: isBuffer ? 'binary' : 'text',
         recording: isRecording
       });
 
-      // Versuche JSON zu parsen für Control-Messages
-      if (!isBuffer) {
-        const asString = msg.toString();
-        console.log('🔍 Attempting to parse text message:', asString);
+      // Versuche JSON zu parsen für Control-Messages (auch wenn der Frame ein Buffer ist)
+      if (asString && asString.trim().startsWith('{')) {
+        console.log('🔍 Attempting to parse control message:', asString);
+        const parsed = JSON.parse(asString);
+        console.log('📥 Control message:', parsed.type);
+        console.log('🔍 Full parsed message:', parsed);
         
-        if (asString.startsWith('{')) {
-          const parsed = JSON.parse(asString);
-          console.log('📥 Control message:', parsed.type);
-          console.log('🔍 Full parsed message:', parsed);
-          
-          if (parsed.type === 'start_audio') {
-            chunks = [];
-            isRecording = true;
-            console.log('🎤 Audio recording started - ready for chunks');
-            console.log('🔍 isRecording now set to:', isRecording);
-            return;
+        if (parsed.type === 'start_audio') {
+          chunks = [];
+          isRecording = true;
+          console.log('🎤 Audio recording started - ready for chunks');
+          console.log('🔍 isRecording now set to:', isRecording);
+          return;
+        }
+        
+        if (parsed.type === 'end_audio') {
+          isRecording = false;
+          console.log('🎤 Audio recording ended, chunks:', chunks.length);
+          if (chunks.length > 0) {
+            const audioBuffer = Buffer.concat(chunks);
+            console.log('📦 Combined audio buffer size:', audioBuffer.length, 'bytes');
+            return relay(audioBuffer, ws);
+          } else {
+            console.error('❌ No audio chunks received during recording');
+            ws.send(JSON.stringify({ type: 'error', data: { message: 'No audio data received' } }));
           }
-          
-          if (parsed.type === 'end_audio') {
-            isRecording = false;
-            console.log('🎤 Audio recording ended, chunks:', chunks.length);
-            if (chunks.length > 0) {
-              const audioBuffer = Buffer.concat(chunks);
-              console.log('📦 Combined audio buffer size:', audioBuffer.length, 'bytes');
-              return relay(audioBuffer, ws);
-            } else {
-              console.error('❌ No audio chunks received during recording');
-              ws.send(JSON.stringify({ type: 'error', data: { message: 'No audio data received' } }));
-            }
-            return;
-          }
+          return;
         }
       }
       
@@ -252,6 +242,14 @@ wss.on('connection', (ws, req) => {
       console.error('❌ WebSocket message processing error:', e);
     }
   });
+
+  // Informiere Client über erfolgreichen Verbindungsaufbau (nachdem Listener hängt)
+  try { 
+    ws.send(JSON.stringify({ type: 'connected', message: 'Stream bereit' })); 
+    console.log('📤 Connection message sent');
+  } catch (e) {
+    console.error('Failed to send connection message:', e);
+  }
 
   ws.on('close', (code, reason) => {
     console.log(`🔌 WebSocket connection closed: ${connectionId} (${code}: ${reason})`);
