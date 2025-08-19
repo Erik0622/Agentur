@@ -339,7 +339,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
     const bufferLength = analyserRef.current.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
 
-    const SPEECH_THRESHOLD = 8; // Sensibler, damit Sprache schneller erkannt wird (reduziert von 12)
+    const SPEECH_THRESHOLD = 3; // Ultra-sensitiv für bessere Spracherkennung (reduziert von 8)
     const SILENCE_FRAMES_NEEDED = 18; // ~0.3 Sekunden bei 60fps
 
     const updateAudioLevel = () => {
@@ -357,9 +357,14 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
             const wasSpeaking = speechDetectionRef.current;
             const isSpeaking = audioLevel > SPEECH_THRESHOLD;
             
-            // Debug-Logging für VAD
-            if (audioLevel > 5) { // Nur bei hörbarem Audio loggen
-              console.log('🔍 VAD Debug - Level:', audioLevel.toFixed(1), 'Threshold:', SPEECH_THRESHOLD, 'Speaking:', isSpeaking, 'Was Speaking:', wasSpeaking);
+            // Debug-Logging für VAD - IMMER loggen um das Problem zu finden
+            if (audioLevel > 1) { // Sehr niedrige Schwelle für Debug
+              console.log('🔍 VAD Debug - Level:', audioLevel.toFixed(1), 'Threshold:', SPEECH_THRESHOLD, 'Speaking:', isSpeaking, 'Was Speaking:', wasSpeaking, 'isListening:', isListening);
+            }
+            
+            // Extra Debug - zeige auch wenn kein Audio
+            if (audioLevel === 0) {
+              console.log('⚠️ VAD Debug - Kein Audio Level! isListening:', isListening, 'audioContextRef.state:', audioContextRef.current?.state);
             }
             
             if (isSpeaking && !wasSpeaking) {
@@ -435,15 +440,22 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
         } 
       });
       
+      console.log('✅ Mikrofonzugriff erhalten:', stream.getTracks()[0]?.label);
+      
       continuousStreamRef.current = stream;
       setIsListening(true);
       setTranscript('');
       setAiResponse('');
+      
+      console.log('🔗 Starte WebSocket-Verbindung...');
       // Stelle die WebSocket-Verbindung frühzeitig her, damit start_audio sofort senden kann
       await startWebSocketStream();
+      console.log('✅ WebSocket-Verbindung hergestellt');
       
       // Voice Activity Detection starten
+      console.log('🎵 Starte Audio-Visualisierung und VAD...');
       startAudioVisualization(stream, true);
+      console.log('✅ Kontinuierlicher Gesprächsmodus aktiv - sprechen Sie jetzt!');
       
     } catch (error) {
       console.error('Gesprächsmodus-Start fehlgeschlagen:', error);
