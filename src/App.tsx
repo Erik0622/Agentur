@@ -339,7 +339,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
     const bufferLength = analyserRef.current.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
 
-    const SPEECH_THRESHOLD = 12; // Sensibler, damit Sprache schneller erkannt wird
+    const SPEECH_THRESHOLD = 8; // Sensibler, damit Sprache schneller erkannt wird (reduziert von 12)
     const SILENCE_FRAMES_NEEDED = 18; // ~0.3 Sekunden bei 60fps
 
     const updateAudioLevel = () => {
@@ -357,9 +357,14 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
             const wasSpeaking = speechDetectionRef.current;
             const isSpeaking = audioLevel > SPEECH_THRESHOLD;
             
+            // Debug-Logging für VAD
+            if (audioLevel > 5) { // Nur bei hörbarem Audio loggen
+              console.log('🔍 VAD Debug - Level:', audioLevel.toFixed(1), 'Threshold:', SPEECH_THRESHOLD, 'Speaking:', isSpeaking, 'Was Speaking:', wasSpeaking);
+            }
+            
             if (isSpeaking && !wasSpeaking) {
               // Sprache erkannt - beginne Aufnahme
-              console.log('🎤 Sprache erkannt - starte Aufnahme');
+              console.log('🎤 Sprache erkannt - starte Aufnahme (Level:', audioLevel.toFixed(1), ')');
               speechDetectionRef.current = true;
               setIsSpeechDetected(true);
               silenceCountRef.current = 0;
@@ -470,21 +475,34 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
 
   // ===== CONTINUOUS RECORDING (WebSocket Streaming) ===== [F-LAT-4]
   const startContinuousRecording = () => {
-    if (!continuousStreamRef.current) return;
+    if (!continuousStreamRef.current) {
+      console.error('❌ Kein Stream verfügbar für kontinuierliche Aufnahme');
+      return;
+    }
     try {
+      console.log('🎬 Starte kontinuierliche Aufnahme...');
       const mr = new MediaRecorder(continuousStreamRef.current, { mimeType: OPUS_MIME });
       continuousRecorderRef.current = mr;
       
       // WebSocket Stream starten
       startWebSocketStream().then(() => {
         if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
+          console.log('📤 Sende start_audio Signal an Gateway');
           wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
+        } else {
+          console.error('❌ WebSocket nicht bereit für start_audio:', wsStreamRef.current?.readyState);
         }
       });
 
-      mr.ondataavailable = e => e.data.size && sendAudioChunk(e.data);
+      mr.ondataavailable = e => {
+        if (e.data.size > 0) {
+          console.log('📦 Audio chunk verfügbar:', e.data.size, 'bytes');
+          sendAudioChunk(e.data);
+        }
+      };
 
       mr.start(CHUNK_MS); // 50ms Chunks für optimale Performance
+      console.log('✅ MediaRecorder gestartet');
     } catch (e) {
       console.error('Kontinuierliche Aufnahme-Start fehlgeschlagen:', e);
     }

@@ -205,15 +205,18 @@ wss.on('connection', (ws, req) => {
       // Versuche JSON zu parsen für Control-Messages
       if (!isBuffer) {
         const asString = msg.toString();
+        console.log('🔍 Attempting to parse text message:', asString);
         
         if (asString.startsWith('{')) {
           const parsed = JSON.parse(asString);
           console.log('📥 Control message:', parsed.type);
+          console.log('🔍 Full parsed message:', parsed);
           
           if (parsed.type === 'start_audio') {
             chunks = [];
             isRecording = true;
             console.log('🎤 Audio recording started - ready for chunks');
+            console.log('🔍 isRecording now set to:', isRecording);
             return;
           }
           

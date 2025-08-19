@@ -335,9 +335,15 @@ export const ContinuousVoiceChat: React.FC = () => {
       // Audio-Start Signal
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         console.log('📤 Sending start_audio signal');
-        wsRef.current.send(JSON.stringify({ type: 'start_audio' }));
+        console.log('🔍 WebSocket state:', wsRef.current.readyState);
+        console.log('🔍 WebSocket URL:', wsRef.current.url);
+        const startSignal = JSON.stringify({ type: 'start_audio' });
+        console.log('🔍 Sending message:', startSignal);
+        wsRef.current.send(startSignal);
       } else {
         console.error('❌ WebSocket not ready for start_audio signal');
+        console.error('🔍 WebSocket state:', wsRef.current?.readyState);
+        console.error('🔍 WebSocket object:', wsRef.current);
       }
 
       // Kontinuierlich Chunks senden - FIX: Event Handler VOR start() setzen
