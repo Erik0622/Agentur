@@ -190,39 +190,60 @@ wss.on('connection', (ws, req) => {
 
   ws.on('message', msg => {
     try {
-      // Versuche JSON zu parsen für Control-Messages
-      const asString = msg.toString();
+      // Bestimme Message-Typ
+      const isBuffer = Buffer.isBuffer(msg);
+      const isString = typeof msg === 'string' || msg.toString;
       
-      if (asString.startsWith('{')) {
-        const parsed = JSON.parse(asString);
-        console.log('📥 Control message:', parsed.type);
+      console.log('📥 WebSocket message received:', {
+        isBuffer,
+        isString,
+        size: isBuffer ? msg.length : (isString ? msg.toString().length : 'unknown'),
+        type: isBuffer ? 'binary' : 'text',
+        recording: isRecording
+      });
+
+      // Versuche JSON zu parsen für Control-Messages
+      if (!isBuffer) {
+        const asString = msg.toString();
         
-        if (parsed.type === 'start_audio') {
-          chunks = [];
-          isRecording = true;
-          console.log('🎤 Audio recording started');
-          return;
-        }
-        
-        if (parsed.type === 'end_audio') {
-          isRecording = false;
-          console.log('🎤 Audio recording ended, chunks:', chunks.length);
-          if (chunks.length > 0) {
-            const audioBuffer = Buffer.concat(chunks);
-            console.log('📦 Combined audio buffer size:', audioBuffer.length, 'bytes');
-            return relay(audioBuffer, ws);
-          } else {
-            ws.send(JSON.stringify({ type: 'error', data: { message: 'No audio data received' } }));
+        if (asString.startsWith('{')) {
+          const parsed = JSON.parse(asString);
+          console.log('📥 Control message:', parsed.type);
+          
+          if (parsed.type === 'start_audio') {
+            chunks = [];
+            isRecording = true;
+            console.log('🎤 Audio recording started - ready for chunks');
+            return;
           }
-          return;
+          
+          if (parsed.type === 'end_audio') {
+            isRecording = false;
+            console.log('🎤 Audio recording ended, chunks:', chunks.length);
+            if (chunks.length > 0) {
+              const audioBuffer = Buffer.concat(chunks);
+              console.log('📦 Combined audio buffer size:', audioBuffer.length, 'bytes');
+              return relay(audioBuffer, ws);
+            } else {
+              console.error('❌ No audio chunks received during recording');
+              ws.send(JSON.stringify({ type: 'error', data: { message: 'No audio data received' } }));
+            }
+            return;
+          }
         }
       }
       
       // Binary audio data
-      if (isRecording) {
-        const chunk = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
+      if (isRecording && isBuffer) {
+        chunks.push(msg);
+        console.log('📦 Audio chunk received:', msg.length, 'bytes, total chunks:', chunks.length);
+      } else if (isRecording && !isBuffer) {
+        // Versuche Binary-String zu Buffer zu konvertieren
+        const chunk = Buffer.from(msg);
         chunks.push(chunk);
-        console.log('📦 Audio chunk received:', chunk.length, 'bytes, total chunks:', chunks.length);
+        console.log('📦 Audio chunk received (converted):', chunk.length, 'bytes, total chunks:', chunks.length);
+      } else if (!isRecording && isBuffer) {
+        console.warn('⚠️ Binary data received but not recording - ignoring');
       }
     } catch (e) {
       console.error('❌ WebSocket message processing error:', e);
