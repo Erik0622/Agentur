@@ -1,3 +1,23 @@
+app = "agentur"
+primary_region = "fra"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 25
+    hard_limit = 50
+
+[[vm]]
+  memory = "512MB"
+  cpu_kind = "shared"
+  cpus = 1
 # fly.toml app configuration file generated for agentur-0qypda on 2025-08-17T08:48:46Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
