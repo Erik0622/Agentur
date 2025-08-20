@@ -191,7 +191,7 @@ wss.on('connection', (ws, req) => {
       console.log('📥 WebSocket message received:', {
         isBuffer,
         isString,
-        size: isBuffer ? msg.length : (isString ? (msg as string).length : (asString ? asString.length : 'unknown')),
+        size: isBuffer ? msg.length : (asString ? asString.length : 'unknown'),
         type: isBuffer ? 'binary' : 'text',
         recording: isRecording
       });
