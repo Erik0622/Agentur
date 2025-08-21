@@ -107,8 +107,8 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
     if (sb.updating) return; // wait for updateend
     appendingRef.current = true;
     const next = audioQueueRef.current.shift()!;
-    // Übergabe als ArrayBuffer für sauberes DOM-Typing
-    sb.appendBuffer(next.buffer as ArrayBuffer);
+    // Direkt Uint8Array anhängen, vermeidet Offsets/Backing-Buffer-Probleme
+    sb.appendBuffer(next);
   }
 
   function setupMse(mime: string = OPUS_MIME) {
@@ -120,9 +120,20 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
         return;
       }
       
-      // Reuse if exists
+      // Reuse if exists – aber nach vorherigem EndOfStream neu initialisieren
       if (mseRef.current && sourceBufferRef.current) {
-        resolve(); return;
+        try {
+          if (mseRef.current.readyState === 'ended') {
+            // Komplett neu aufsetzen
+            try { URL.revokeObjectURL(audioElRef.current?.src || ''); } catch {}
+            mseRef.current = null;
+            sourceBufferRef.current = null;
+            audioQueueRef.current = [];
+          } else {
+            // Bereits offen – einfach weiterverwenden
+            resolve(); return;
+          }
+        } catch {}
       }
       const ms = new MediaSource();
       mseRef.current = ms;
@@ -142,6 +153,10 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
             appendingRef.current = false;
             appendNextChunk();
           });
+          // Nach Setup direkt versuchen, vorhandene Queue zu starten
+          appendNextChunk();
+          // Sicherstellen, dass Wiedergabe beginnt
+          try { audioEl.play().catch(() => {}); } catch {}
           resolve();
         } catch (e) { reject(e); }
       }, { once: true });
@@ -150,9 +165,15 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
 
   function endMseStream() {
     const ms = mseRef.current;
-    if (ms && ms.readyState === 'open') {
-      try { ms.endOfStream(); } catch {}
+    if (ms) {
+      try { if (ms.readyState === 'open') ms.endOfStream(); } catch {}
     }
+    // Cleanup für nächste Antwort
+    try { URL.revokeObjectURL(audioElRef.current?.src || ''); } catch {}
+    mseRef.current = null;
+    sourceBufferRef.current = null;
+    audioQueueRef.current = [];
+    appendingRef.current = false;
   }
 
   // ===== WebSocket Streaming (Low Latency) ===== [F-LAT-1]
@@ -327,7 +348,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
     const bufferLength = analyserRef.current.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
 
-    const SPEECH_THRESHOLD = 3; // Ultra-sensitiv für bessere Spracherkennung (reduziert von 8)
+    const SPEECH_THRESHOLD = 8; // Höhere Schwelle: robustere Sprech-/Stille-Erkennung
     const SILENCE_FRAMES_NEEDED = 18; // ~0.3 Sekunden bei 60fps
 
     const updateAudioLevel = () => {
