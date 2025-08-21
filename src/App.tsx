@@ -65,7 +65,6 @@ const WS_URL =
         : 'ws://localhost:8080');
 
 const OPUS_MIME = 'audio/webm;codecs=opus';
-const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
 // -------- Laufzeit-Schalter --------------------------------
 
   // ===== PCM Streaming Nodes =====
@@ -286,18 +285,6 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
       console.error('WebSocket Stream Setup Error:', error);
       setWsConnected(false);
       wsConnectingRef.current = false;
-    }
-  };
-
-  const sendAudioChunk = (chunk: Blob) => {
-    if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-      wsStreamRef.current.send(chunk);
-    }
-  };
-
-  const endWebSocketStream = () => {
-    if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-      wsStreamRef.current.send(JSON.stringify({ type: 'end_audio' }));
     }
   };
 
