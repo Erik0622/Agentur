@@ -202,16 +202,31 @@ export const VoiceChat: React.FC = () => {
   // Recording stoppen
   const stopRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      // FIX: Event-Handler für letzten Chunk registrieren
+      mediaRecorderRef.current.onstop = () => {
+        console.log('✅ MediaRecorder vollständig gestoppt');
+        // Warte zusätzliche Zeit für finale Chunks
+        setTimeout(() => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            console.log('📤 Sending end_audio signal (after final chunks)');
+            wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
+          } else {
+            console.error('❌ WebSocket not ready for end_audio signal');
+          }
+        }, 200); // Zusätzliche 200ms nach MediaRecorder stop
+      };
+      
       mediaRecorderRef.current.stop();
+    } else {
+      // Fallback: sofort end_audio senden wenn MediaRecorder nicht läuft
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
+      }
     }
 
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
-    }
-
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
     }
 
     setIsRecording(false);

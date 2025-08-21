@@ -41,9 +41,9 @@ export const ContinuousVoiceChat: React.FC = () => {
 
   // ULTRA-LOW LATENCY VAD Configuration
   const vadConfig: VADConfig = {
-    threshold: 0.01, // Sensibler, damit Sprache sicher erkannt wird
-    minSpeechDuration: 250, // schnelleres Triggern
-    maxSilenceDuration: 700, // kürzerer Stopp
+    threshold: 0.008, // Noch sensibler für kontinuierlichen Modus
+    minSpeechDuration: 200, // schnelleres Triggern
+    maxSilenceDuration: 2000, // FIX: Längere Pause erlauben (2s statt 700ms)
     sampleRate: 48000
   };
 
@@ -386,20 +386,32 @@ export const ContinuousVoiceChat: React.FC = () => {
 
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       console.log('📤 Stopping MediaRecorder');
+      
+      // FIX: Event-Handler für letzten Chunk registrieren
+      mediaRecorderRef.current.onstop = () => {
+        console.log('✅ MediaRecorder vollständig gestoppt');
+        // Warte zusätzliche Zeit für finale Chunks
+        setTimeout(() => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            console.log('📤 Sending end_audio signal (after final chunks)');
+            wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
+          } else {
+            console.error('❌ WebSocket not ready for end_audio signal');
+          }
+        }, 200); // Zusätzliche 200ms nach MediaRecorder stop
+      };
+      
       mediaRecorderRef.current.stop();
     } else {
       console.warn('⚠️ MediaRecorder not in recording state:', mediaRecorderRef.current?.state);
+      // Fallback: sofort end_audio senden wenn MediaRecorder nicht läuft
+      setTimeout(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          console.log('📤 Sending end_audio signal (fallback)');
+          wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
+        }
+      }, 100);
     }
-
-    // Audio-Ende Signal mit Verzögerung um sicherzustellen, dass alle Chunks gesendet wurden
-    setTimeout(() => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        console.log('📤 Sending end_audio signal');
-        wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
-      } else {
-        console.error('❌ WebSocket not ready for end_audio signal');
-      }
-    }, 100); // 100ms Verzögerung
 
     setIsProcessing(true);
   };

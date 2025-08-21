@@ -208,18 +208,22 @@ wss.on('connection', (ws, req) => {
           isRecording = true;
           console.log('🎤 Audio recording started - ready for chunks');
           console.log('🔍 isRecording now set to:', isRecording);
+          console.log('🔍 Chunks array reset, length:', chunks.length);
           return;
         }
         
         if (parsed.type === 'end_audio') {
           isRecording = false;
           console.log('🎤 Audio recording ended, chunks:', chunks.length);
+          console.log('🔍 Final chunks array content lengths:', chunks.map(c => c.length));
           if (chunks.length > 0) {
             const audioBuffer = Buffer.concat(chunks);
             console.log('📦 Combined audio buffer size:', audioBuffer.length, 'bytes');
+            console.log('🔄 Starting relay to voice-agent API...');
             return relay(audioBuffer, ws);
           } else {
             console.error('❌ No audio chunks received during recording');
+            console.error('🔍 isRecording was:', isRecording, 'when end_audio received');
             ws.send(JSON.stringify({ type: 'error', data: { message: 'No audio data received' } }));
           }
           return;
@@ -228,13 +232,22 @@ wss.on('connection', (ws, req) => {
       
       // Binary audio data
       if (isRecording && isBuffer) {
-        chunks.push(msg);
-        console.log('📦 Audio chunk received:', msg.length, 'bytes, total chunks:', chunks.length);
+        // FIX: Ignoriere sehr kleine Chunks (Header/Corrupt Data)
+        if (msg.length > 10) {
+          chunks.push(msg);
+          console.log('📦 Audio chunk received:', msg.length, 'bytes, total chunks:', chunks.length);
+        } else {
+          console.warn('⚠️ Ignoring small/corrupt audio chunk:', msg.length, 'bytes');
+        }
       } else if (isRecording && !isBuffer) {
         // Versuche Binary-String zu Buffer zu konvertieren
         const chunk = Buffer.from(msg);
-        chunks.push(chunk);
-        console.log('📦 Audio chunk received (converted):', chunk.length, 'bytes, total chunks:', chunks.length);
+        if (chunk.length > 10) {
+          chunks.push(chunk);
+          console.log('📦 Audio chunk received (converted):', chunk.length, 'bytes, total chunks:', chunks.length);
+        } else {
+          console.warn('⚠️ Ignoring small/corrupt converted chunk:', chunk.length, 'bytes');
+        }
       } else if (!isRecording && isBuffer) {
         console.warn('⚠️ Binary data received but not recording - ignoring');
       }
