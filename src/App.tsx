@@ -92,6 +92,9 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
   const audioQueueRef = useRef<Uint8Array[]>([]);
   const appendingRef = useRef(false);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
+  // Mindestaufnahmedauer nach VAD-Start, um zu kurze Clips ("hallo") zu vermeiden
+  const recordStartTsRef = useRef<number>(0);
+  const MIN_RECORDING_MS = 700;
 
   function b64ToUint8(b64: string) {
     const bin = atob(b64);
@@ -350,8 +353,8 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
     const bufferLength = analyserRef.current.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
 
-    const SPEECH_THRESHOLD = 8; // Höhere Schwelle: robustere Sprech-/Stille-Erkennung
-    const SILENCE_FRAMES_NEEDED = 18; // ~0.3 Sekunden bei 60fps
+    const SPEECH_THRESHOLD = 3; // Sensibel genug, reagiert schnell auf Sprache
+    const SILENCE_FRAMES_NEEDED = 24; // ~0.4 Sekunden bei 60fps
 
     const updateAudioLevel = () => {
       // FIX: Verwende das Ref für die Zustandsprüfung, um Timing-Probleme zu vermeiden
@@ -387,6 +390,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               speechDetectionRef.current = true;
               setIsSpeechDetected(true);
               silenceCountRef.current = 0;
+              recordStartTsRef.current = Date.now();
               startContinuousRecording().catch(e => console.error('Fehler beim Starten der Aufnahme:', e));
             } else if (!isSpeaking && wasSpeaking) {
               // Schritt 1: Zähler hoch
@@ -394,6 +398,12 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               
               // Schritt 2: Timeout erreicht?
               if (silenceCountRef.current >= SILENCE_FRAMES_NEEDED) {
+                // Mindestdauer prüfen
+                const elapsedMs = Date.now() - (recordStartTsRef.current || 0);
+                if (elapsedMs < MIN_RECORDING_MS) {
+                  // Noch nicht stoppen: kurze Phrasen wie "hallo" weiter mitschneiden
+                  return;
+                }
                 console.log('🔇 0,3 s Stille – stoppe Aufnahme');
                 speechDetectionRef.current = false;
                 setIsSpeechDetected(false);
