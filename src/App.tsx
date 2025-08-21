@@ -344,7 +344,8 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
     const SILENCE_FRAMES_NEEDED = 18; // ~0.3 Sekunden bei 60fps
 
     const updateAudioLevel = () => {
-      const isActive = isForVAD ? isListening : isRecording;
+      // FIX: Verwende das Ref für die Zustandsprüfung, um Timing-Probleme zu vermeiden
+      const isActive = isForVAD ? isListeningRef.current : isRecording;
       
       if (analyserRef.current && isActive && audioContextRef.current?.state === 'running') {
         try {
@@ -396,11 +397,17 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
           }
 
         animationRef.current = requestAnimationFrame(updateAudioLevel);
-        } catch (error) {
+        } catch (error: unknown) {
           console.error('Audio level update error:', error);
           setAudioLevel(0);
         }
       } else {
+        // Debugging, warum die Schleife stoppt
+        if (!isActive) {
+          // Dieser Log ist normal wenn gestoppt wird
+        } else if (audioContextRef.current?.state !== 'running') {
+          console.warn('⚠️ VAD loop stopped because audio context is not running. State:', audioContextRef.current?.state);
+        }
         setAudioLevel(0);
       }
     };
