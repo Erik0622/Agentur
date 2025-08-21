@@ -485,18 +485,19 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
         console.log('🔍 [APP] Status check nach 500ms - isListening:', isListening, 'audioContext.state:', audioContextRef.current?.state);
       }, 500);
       
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('❌ [APP] Gesprächsmodus-Start fehlgeschlagen:', error);
       
       // Spezifische Fehlermeldungen für verschiedene Probleme
-      if (error.name === 'NotAllowedError' || error.message.includes('Permission denied')) {
+      const err = error as Error;
+      if (err.name === 'NotAllowedError' || err.message?.includes('Permission denied')) {
         alert('🎤 MIKROFON-ZUGRIFF VERWEIGERT!\n\nBitte:\n1. Klicken Sie auf das Schloss-Symbol in der Adressleiste\n2. Erlauben Sie "Mikrofon"\n3. Laden Sie die Seite neu (F5)\n4. Versuchen Sie es erneut');
-      } else if (error.name === 'NotFoundError') {
+      } else if (err.name === 'NotFoundError') {
         alert('🎤 KEIN MIKROFON GEFUNDEN!\n\nBitte überprüfen Sie:\n- Ist ein Mikrofon angeschlossen?\n- Funktioniert es in anderen Apps?');
-      } else if (error.name === 'NotReadableError') {
+      } else if (err.name === 'NotReadableError') {
         alert('🎤 MIKROFON WIRD BEREITS VERWENDET!\n\nBitte:\n- Schließen Sie andere Apps die das Mikrofon nutzen\n- Laden Sie die Seite neu (F5)');
       } else {
-        alert(`❌ Gesprächsmodus-Fehler: ${error.message}\n\nBitte versuchen Sie:\n1. Seite neu laden (F5)\n2. Mikrofon-Berechtigung prüfen\n3. Andere Browser-Tabs schließen`);
+        alert(`❌ Gesprächsmodus-Fehler: ${err.message || 'Unbekannter Fehler'}\n\nBitte versuchen Sie:\n1. Seite neu laden (F5)\n2. Mikrofon-Berechtigung prüfen\n3. Andere Browser-Tabs schließen`);
       }
     }
   };
