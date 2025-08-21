@@ -467,7 +467,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
       console.log('🔍 [APP] Audio track readyState:', stream.getAudioTracks()[0]?.readyState);
       
       // SCHRITT 3: MediaRecorder EINMALIG erstellen
-      console.log(' recorders
+      console.log('✅ [APP] Erstelle MediaRecorder-Instanz...');
       const recorder = new MediaRecorder(stream, {
         mimeType: OPUS_MIME,
         audioBitsPerSecond: 128000,
@@ -481,7 +481,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
       };
 
       recorder.onstop = () => {
-        console.log(' recorders
+        console.log('⏹️ [APP] MediaRecorder onstop-Event ausgelöst.');
         if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
           console.log('📤 Sende end_audio Signal an Gateway (onstop)');
           wsStreamRef.current.send(JSON.stringify({ type: 'end_audio' }));
@@ -579,7 +579,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
         console.error('❌ WebSocket nicht bereit für start_audio Signal. Status:', wsStreamRef.current?.readyState);
       }
     } catch (err: unknown) {
-      console.error(' Kontinuierliche Aufnahme-Start fehlgeschlagen:', err);
+      console.error('❌ Kontinuierliche Aufnahme-Start fehlgeschlagen:', err);
     }
   };
 
