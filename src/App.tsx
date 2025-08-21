@@ -39,6 +39,7 @@ function App() {
   const [conversationHistory, setConversationHistory] = useState<Array<{user: string, ai: string, timestamp: Date}>>([]);
   const [isSpeechDetected, setIsSpeechDetected] = useState(false);
   const silenceCountRef = useRef(0);
+  const isListeningRef = useRef(false); // REF für aktuellen State
   
   // Deutsche Stimmenauswahl für Bella Vista (nur geklonte deutsche Stimmen)
   const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('bella_vista_german_voice');
@@ -445,7 +446,8 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
       continuousStreamRef.current = stream;
       console.log('🔍 [APP] Setting isListening to TRUE...');
       setIsListening(true);
-      console.log('🔍 [APP] isListening after setState:', isListening); // wird noch old state zeigen
+      isListeningRef.current = true; // REF sofort setzen!
+      console.log('🔍 [APP] isListening after setState:', isListening, 'ref:', isListeningRef.current);
       setTranscript('');
       setAiResponse('');
       
@@ -478,6 +480,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
     console.log('🔍 [APP] stopConversationMode called from:', new Error().stack?.split('\n')[2]?.trim());
     
     setIsListening(false);
+    isListeningRef.current = false; // REF sofort setzen!
     setIsSpeechDetected(false);
     silenceCountRef.current = 0;
     speechDetectionRef.current = false;
@@ -1390,7 +1393,16 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
                   {conversationMode ? (
                     // Kontinuierlicher Gesprächsmodus
                     <motion.button 
-                      onClick={isListening ? stopConversationMode : startConversationMode}
+                      onClick={() => {
+                        console.log('🔍 [APP] Button clicked - current isListening:', isListening, 'ref:', isListeningRef.current);
+                        if (isListeningRef.current) { // REF verwenden statt State!
+                          console.log('🔍 [APP] Calling stopConversationMode...');
+                          stopConversationMode();
+                        } else {
+                          console.log('🔍 [APP] Calling startConversationMode...');
+                          startConversationMode();
+                        }
+                      }}
                       disabled={isProcessing}
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
