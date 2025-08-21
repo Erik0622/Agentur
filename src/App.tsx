@@ -358,14 +358,16 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
             const wasSpeaking = speechDetectionRef.current;
             const isSpeaking = audioLevel > SPEECH_THRESHOLD;
             
-            // Debug-Logging für VAD - IMMER loggen um das Problem zu finden
-            if (audioLevel > 1) { // Sehr niedrige Schwelle für Debug
-              console.log('🔍 VAD Debug - Level:', audioLevel.toFixed(1), 'Threshold:', SPEECH_THRESHOLD, 'Speaking:', isSpeaking, 'Was Speaking:', wasSpeaking, 'isListening:', isListening);
+            // VERSTÄRKTES Debug-Logging für VAD - um Mikrofon-Problem zu finden
+            if (audioLevel > 0.1) { // Noch niedrigere Schwelle
+              console.log('🔍 [VAD] Audio Level:', audioLevel.toFixed(2), 'Threshold:', SPEECH_THRESHOLD, 'Speaking:', isSpeaking, 'Was Speaking:', wasSpeaking, 'isListening:', isListening);
             }
             
-            // Extra Debug - zeige auch wenn kein Audio
-            if (audioLevel === 0) {
-              console.log('⚠️ VAD Debug - Kein Audio Level! isListening:', isListening, 'audioContextRef.state:', audioContextRef.current?.state);
+            // KRITISCHES Debug - zeige auch wenn kein Audio (häufiger)
+            const debugCounter = Math.floor(Date.now() / 1000) % 5; // Alle 5 Sekunden
+            if (audioLevel === 0 && debugCounter === 0) {
+              console.log('⚠️ [VAD] KEIN AUDIO! Level:', audioLevel, 'isListening:', isListening, 'audioContext.state:', audioContextRef.current?.state);
+              console.log('🔍 [VAD] Stream tracks aktiv?', continuousStreamRef.current?.getTracks().map(t => ({label: t.label, enabled: t.enabled, readyState: t.readyState})));
             }
             
             if (isSpeaking && !wasSpeaking) {
@@ -431,6 +433,17 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
       
       console.log('🎯 [APP] Starte Gesprächsmodus');
       
+      // SCHRITT 1: Mikrofon-Berechtigung explizit prüfen
+      console.log('🔍 [APP] Prüfe Mikrofon-Berechtigung...');
+      const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+      console.log('🔍 [APP] Mikrofon-Berechtigung Status:', permissionStatus.state);
+      
+      if (permissionStatus.state === 'denied') {
+        throw new Error('Mikrofon-Zugriff wurde verweigert. Bitte erlauben Sie den Mikrofon-Zugriff in den Browser-Einstellungen.');
+      }
+      
+      // SCHRITT 2: Mikrofon-Stream anfordern (EXPLIZIT)
+      console.log('🎤 [APP] Fordere Mikrofon-Zugriff an...');
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
@@ -442,6 +455,9 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
       });
       
       console.log('✅ [APP] Mikrofonzugriff erhalten:', stream.getTracks()[0]?.label);
+      console.log('🔍 [APP] Stream tracks:', stream.getTracks().length);
+      console.log('🔍 [APP] Audio track enabled:', stream.getAudioTracks()[0]?.enabled);
+      console.log('🔍 [APP] Audio track readyState:', stream.getAudioTracks()[0]?.readyState);
       
       continuousStreamRef.current = stream;
       console.log('🔍 [APP] Setting isListening to TRUE...');
@@ -471,7 +487,17 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
       
     } catch (error) {
       console.error('❌ [APP] Gesprächsmodus-Start fehlgeschlagen:', error);
-      alert('Mikrofonzugriff fehlgeschlagen. Bitte überprüfen Sie Ihre Browser-Einstellungen.');
+      
+      // Spezifische Fehlermeldungen für verschiedene Probleme
+      if (error.name === 'NotAllowedError' || error.message.includes('Permission denied')) {
+        alert('🎤 MIKROFON-ZUGRIFF VERWEIGERT!\n\nBitte:\n1. Klicken Sie auf das Schloss-Symbol in der Adressleiste\n2. Erlauben Sie "Mikrofon"\n3. Laden Sie die Seite neu (F5)\n4. Versuchen Sie es erneut');
+      } else if (error.name === 'NotFoundError') {
+        alert('🎤 KEIN MIKROFON GEFUNDEN!\n\nBitte überprüfen Sie:\n- Ist ein Mikrofon angeschlossen?\n- Funktioniert es in anderen Apps?');
+      } else if (error.name === 'NotReadableError') {
+        alert('🎤 MIKROFON WIRD BEREITS VERWENDET!\n\nBitte:\n- Schließen Sie andere Apps die das Mikrofon nutzen\n- Laden Sie die Seite neu (F5)');
+      } else {
+        alert(`❌ Gesprächsmodus-Fehler: ${error.message}\n\nBitte versuchen Sie:\n1. Seite neu laden (F5)\n2. Mikrofon-Berechtigung prüfen\n3. Andere Browser-Tabs schließen`);
+      }
     }
   };
 
