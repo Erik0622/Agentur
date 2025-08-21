@@ -245,18 +245,16 @@
          : 'language=multi';
 
        const deepgramUrl =
-         `wss://api.deepgram.com/v1/listen?model=nova-2`
+         `wss://api.deepgram.com/v1/listen`
+         + `?model=nova-2`
          + `&language=de`
-         + `&punctuate=false`
          + `&interim_results=true`
-         + `&endpointing=50`
-         + `&utterance_end_ms=100`
-         + `&vad_events=true`
+         + `&punctuate=false`
          + `&smart_format=false`
          + `&alternatives=1`
-         + `&profanity_filter=false`
          + `&diarize=false`
-         + encodingParam + sampleRateParam + channelsParam;
+         + `&vad_events=true`
+         + (format === 'raw' ? `&encoding=linear16&sample_rate=48000&channels=1` : '');
 
        console.log('🔍 Audio Format Detection:', hex8);
        console.log('✅ Detected format:', format);
