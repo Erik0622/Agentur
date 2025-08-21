@@ -87,10 +87,18 @@
    
    // ---------------- API Handler ----------------
    export default async function handler(req, res) {
-     console.log('[voice-agent] --- API Request ---');
-     res.setHeader('Access-Control-Allow-Origin', '*');
-     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Bypass-Stt, X-Simulated-Transcript');
+       console.log('[voice-agent] --- API Request ---');
+  
+  // DEBUG: API Keys Check
+  console.log('🔍 API Keys Check:');
+  console.log('  - DEEPGRAM_API_KEY:', DEEPGRAM_API_KEY ? (DEEPGRAM_API_KEY.startsWith('your_') ? '❌ PLACEHOLDER' : '✅ SET') : '❌ MISSING');
+  console.log('  - AZURE_SPEECH_KEY:', AZURE_SPEECH_KEY ? (AZURE_SPEECH_KEY.startsWith('your_') ? '❌ PLACEHOLDER' : '✅ SET') : '❌ MISSING');
+  console.log('  - AZURE_SPEECH_REGION:', AZURE_SPEECH_REGION || '❌ MISSING');
+  console.log('  - SERVICE_ACCOUNT_JSON:', SERVICE_ACCOUNT_JSON ? (SERVICE_ACCOUNT_JSON.project_id === 'your-project-id' ? '❌ PLACEHOLDER' : '✅ SET') : '❌ MISSING');
+  
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Bypass-Stt, X-Simulated-Transcript');
    
      if (req.method === 'OPTIONS') return res.status(200).end();
      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -125,46 +133,71 @@
     }
    
      try {
+       console.log('✅ Starting voice processing pipeline...');
+       
        res.writeHead(200, {
          'Content-Type': 'application/x-ndjson; charset=utf-8',
          'Cache-Control': 'no-store',
          'Transfer-Encoding': 'chunked'
        });
+       console.log('📤 Response headers set for streaming');
    
        let transcript;
        if (req.headers['x-bypass-stt'] === 'true' && req.headers['x-simulated-transcript']) {
          transcript = req.headers['x-simulated-transcript'];
+         console.log('🔄 Using simulated transcript:', transcript);
          streamResponse(res, 'transcript', { text: transcript });
        } else {
+         console.log('🔄 Starting STT (Speech-to-Text) processing...');
          const audioBuffer = Buffer.from(audio, 'base64');
    
          console.log('🎤 Audio Buffer Debug:');
          console.log('  - Buffer Size (bytes):', audioBuffer.length);
          console.log('  - First 4 bytes (hex):', audioBuffer.slice(0, 4).toString('hex'));
+         console.log('  - Last 4 bytes (hex):', audioBuffer.slice(-4).toString('hex'));
+         console.log('  - Buffer is valid:', audioBuffer.length > 0);
    
+         console.log('🚀 Calling getTranscriptViaWebSocket...');
+         const sttStart = Date.now();
          transcript = await getTranscriptViaWebSocket(audioBuffer, { detect });
-         console.log('📝 Transkript erhalten:', transcript);
+         const sttDuration = Date.now() - sttStart;
+         console.log('📝 STT completed in', sttDuration, 'ms');
+         console.log('📝 Transcript received:', transcript ? `"${transcript}"` : 'null/empty');
    
-         if (transcript) streamResponse(res, 'transcript', { text: transcript });
+         if (transcript) {
+           console.log('📤 Streaming transcript to client...');
+           streamResponse(res, 'transcript', { text: transcript });
+         }
        }
    
        if (!transcript || transcript.trim().length === 0) {
-         console.log('❌ Kein Transkript - sende Error');
+         console.log('❌ No transcript available - ending pipeline');
+         console.log('🔍 Transcript check: transcript =', transcript, 'length =', transcript?.length);
          streamResponse(res, 'error', { message: 'No speech detected.' });
          streamResponse(res, 'end', {});
          return res.end();
        }
    
+       console.log('🤖 Starting LLM processing...');
+       const llmStart = Date.now();
        await processAndStreamLLMResponse(transcript, voice, res);
+       const llmDuration = Date.now() - llmStart;
+       console.log('✅ LLM processing completed in', llmDuration, 'ms');
    
-       // (RunPod cleanup removed)
+       console.log('📤 Sending pipeline end signal...');
        streamResponse(res, 'end', {});
+       console.log('✅ Voice processing pipeline completed successfully');
      } catch (e) {
-       console.error('Pipeline Error:', e);
+       console.error('❌ Pipeline Error:', e.message);
+       console.error('🔍 Error details:', e);
+       console.error('🔍 Error stack:', e.stack);
        streamResponse(res, 'error', { message: e.message || 'Internal error' });
        streamResponse(res, 'end', {});
      } finally {
-       if (!res.finished) res.end();
+       if (!res.finished) {
+         console.log('📝 Finalizing response...');
+         res.end();
+       }
      }
    }
    
@@ -236,24 +269,38 @@ const deepgramUrl =
    
        ws.on('open', () => {
          opened = true;
-         console.log('✅ Deepgram WebSocket connected');
+         console.log('✅ Deepgram WebSocket connected successfully');
+         console.log('🔍 WebSocket URL:', deepgramUrl);
+         console.log('🔍 Audio buffer size:', audioBuffer.length, 'bytes');
+         console.log('🔍 Audio format detected:', format);
+         
          try {
            // Audio in optimierte Chunks aufteilen (20ms = ~960 bytes bei 48kHz)
            const CHUNK_SIZE = 960; // 20ms @ 48kHz mono
+           const totalChunks = Math.ceil(audioBuffer.length / CHUNK_SIZE);
+           console.log('🚀 Starting to stream audio in', totalChunks, 'chunks of', CHUNK_SIZE, 'bytes each');
+           
            for (let i = 0; i < audioBuffer.length; i += CHUNK_SIZE) {
              const chunk = audioBuffer.subarray(i, i + CHUNK_SIZE);
              ws.send(chunk);
+             if (i % (CHUNK_SIZE * 10) === 0) { // Log every 10th chunk
+               console.log(`📤 Sent chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${totalChunks} (${chunk.length} bytes)`);
+             }
            }
-           console.log(`📤 Audio gestreamt: ${audioBuffer.length} bytes in ${Math.ceil(audioBuffer.length / CHUNK_SIZE)} chunks`);
+           console.log(`📤 Audio streaming completed: ${audioBuffer.length} bytes in ${totalChunks} chunks`);
            
            // Stream nach kurzer Verzögerung schließen
            setTimeout(() => {
              if (ws.readyState === WebSocket.OPEN) {
+               console.log('🔚 Sending CloseStream signal to Deepgram...');
                ws.send(JSON.stringify({ type: 'CloseStream' }));
-               console.log('📤 CloseStream gesendet');
+               console.log('📤 CloseStream signal sent successfully');
+             } else {
+               console.warn('⚠️ WebSocket not open when trying to send CloseStream, state:', ws.readyState);
              }
            }, 100); // Reduziert von 50ms auf 100ms
          } catch (err) {
+           console.error('❌ Error during audio streaming:', err);
            reject(err);
          }
        });
@@ -320,10 +367,21 @@ const deepgramUrl =
        });
    
        ws.on('error', err => {
-         console.error('❌ Deepgram WebSocket Error:', err);
-         if (String(err?.message || '').includes('400')) reject(new Error('Deepgram 400 Error - Invalid audio format or parameters'));
-         else if (String(err?.message || '').includes('401')) reject(new Error('Deepgram 401 Error - Invalid API key'));
-         else reject(err);
+         console.error('❌ Deepgram WebSocket Error:', err.message);
+         console.error('🔍 Full error object:', err);
+         console.error('🔍 Error code:', err.code);
+         console.error('🔍 Error stack:', err.stack);
+         console.error('🔍 API Key check:', DEEPGRAM_API_KEY ? (DEEPGRAM_API_KEY.startsWith('your_') ? 'PLACEHOLDER' : 'SET (length: ' + DEEPGRAM_API_KEY.length + ')') : 'MISSING');
+         
+         if (String(err?.message || '').includes('400')) {
+           reject(new Error('Deepgram 400 Error - Invalid audio format or parameters. Check audio encoding.'));
+         } else if (String(err?.message || '').includes('401') || String(err?.message || '').includes('unauthorized')) {
+           reject(new Error('Deepgram 401 Error - Invalid API key. Check DEEPGRAM_API_KEY environment variable.'));
+         } else if (String(err?.message || '').includes('403')) {
+           reject(new Error('Deepgram 403 Error - API key has insufficient permissions or quota exceeded.'));
+         } else {
+           reject(new Error(`Deepgram WebSocket Error: ${err.message || 'Unknown error'}`));
+         }
        });
    
        setTimeout(() => {

@@ -293,37 +293,63 @@ wss.on('connection', (ws, req) => {
 
 async function relay(buffer, ws, connectionId = 'unknown') {
   try {
-    console.log(`🔄 [${connectionId}] Relaying audio to voice-agent API, buffer size:`, buffer.length);
+    console.log(`🔄 [${connectionId}] Starting relay to voice-agent API`);
+    console.log(`🔍 [${connectionId}] Audio buffer size:`, buffer.length, 'bytes');
+    console.log(`🔍 [${connectionId}] REST endpoint:`, REST);
+    console.log(`🔍 [${connectionId}] WebSocket readyState:`, ws.readyState);
     
     // Prüfe WebSocket-Status vor Relay
     if (ws.readyState !== WebSocket.OPEN) {
-      console.log('⚠️ WebSocket nicht mehr offen, breche Relay ab');
+      console.log(`⚠️ [${connectionId}] WebSocket nicht mehr offen, breche Relay ab`);
       return;
     }
     
+    // Prepare request payload
+    const payload = { 
+      audio: buffer.toString('base64'),
+      voice: 'german_m2'
+    };
+    console.log(`🔍 [${connectionId}] Request payload size:`, JSON.stringify(payload).length, 'chars');
+    console.log(`🔍 [${connectionId}] Base64 audio length:`, payload.audio.length, 'chars');
+    
+    console.log(`📤 [${connectionId}] Sending POST request to:`, REST);
+    const fetchStart = Date.now();
+    
     const res = await fetch(REST, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        audio: buffer.toString('base64'),
-        voice: 'german_m2'
-      })
+      headers: { 
+        'Content-Type': 'application/json',
+        'User-Agent': 'gateway/1.0'
+      },
+      body: JSON.stringify(payload)
     });
 
-    console.log('📥 Voice Agent API response status:', res.status);
+    const fetchDuration = Date.now() - fetchStart;
+    console.log(`📥 [${connectionId}] Voice Agent API response:`, res.status, res.statusText);
+    console.log(`🔍 [${connectionId}] Response time:`, fetchDuration, 'ms');
+    console.log(`🔍 [${connectionId}] Response headers:`, Object.fromEntries(res.headers.entries()));
 
     if (!res.ok) {
       const errorText = await res.text();
-      console.error('❌ Voice Agent API Error:', res.status, errorText);
-      ws.send(JSON.stringify({ type: 'error', data: { message: `API Error: ${res.status}` } }));
+      console.error(`❌ [${connectionId}] Voice Agent API Error:`, res.status, res.statusText);
+      console.error(`🔍 [${connectionId}] Error response body:`, errorText.substring(0, 500));
+      console.error(`🔍 [${connectionId}] Full error response headers:`, Object.fromEntries(res.headers.entries()));
+      ws.send(JSON.stringify({ type: 'error', data: { message: `API Error: ${res.status} - ${res.statusText}` } }));
       return;
     }
 
     // NDJSON/Chunk-Stream korrekt in Zeilen zerlegen und als Text senden
+    console.log(`🔄 [${connectionId}] Starting to process streaming response...`);
     const decoder = new TextDecoder();
     let buf = '';
+    let chunkCount = 0;
+    let totalBytes = 0;
     
     for await (const chunk of res.body) {
+      chunkCount++;
+      totalBytes += chunk.length;
+      console.log(`📦 [${connectionId}] Received chunk ${chunkCount}, size:`, chunk.length, 'bytes');
+      
       buf += decoder.decode(chunk, { stream: true });
       let idx;
       while ((idx = buf.indexOf('\n')) >= 0) {
@@ -331,25 +357,38 @@ async function relay(buffer, ws, connectionId = 'unknown') {
         buf = buf.slice(idx + 1);
         if (!line) continue;
         
+        console.log(`🔍 [${connectionId}] Processing line:`, line.substring(0, 100) + (line.length > 100 ? '...' : ''));
+        
         try {
           // Validiere JSON vor dem Senden
           const parsed = JSON.parse(line);
-          console.log('📤 Streaming to client:', parsed.type);
+          console.log(`📤 [${connectionId}] Streaming to client - type:`, parsed.type, 'data keys:', Object.keys(parsed.data || {}));
           
           // Als Text senden (kein Binär-Frame), damit der Browser JSON.parse nutzen kann
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(line);
+            console.log(`✅ [${connectionId}] Sent line to client successfully`);
+          } else {
+            console.warn(`⚠️ [${connectionId}] WebSocket not open when trying to send, state:`, ws.readyState);
           }
         } catch (parseError) {
-          console.warn('⚠️ Invalid JSON line:', line);
+          console.warn(`⚠️ [${connectionId}] Invalid JSON line:`, line.substring(0, 200));
+          console.warn(`🔍 [${connectionId}] Parse error:`, parseError.message);
         }
       }
     }
     
-    console.log('✅ Relay complete');
+    console.log(`✅ [${connectionId}] Relay complete - processed ${chunkCount} chunks, ${totalBytes} total bytes`);
   } catch (e) {
-    console.error('❌ Relay error:', e);
-    ws.send(JSON.stringify({ type: 'error', data: { message: e.message } }));
+    console.error(`❌ [${connectionId}] Relay error:`, e.message);
+    console.error(`🔍 [${connectionId}] Full error:`, e);
+    console.error(`🔍 [${connectionId}] Error stack:`, e.stack);
+    
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'error', data: { message: e.message || 'Unknown relay error' } }));
+    } else {
+      console.error(`⚠️ [${connectionId}] Cannot send error to client - WebSocket not open:`, ws.readyState);
+    }
   }
 }
 
