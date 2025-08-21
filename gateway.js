@@ -154,7 +154,9 @@ wss.on('connection', (ws, req) => {
   const forwardedIP = raw.split(',')[0].trim();
   const clientIP = forwardedIP || req.socket.remoteAddress;
   const connectionId = `${clientIP}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  console.log(`🔗 New WebSocket connection: ${connectionId}`);
+  console.log(`🔗 NEW WebSocket connection: ${connectionId}`);
+  console.log(`🔍 Connection details: IP=${clientIP}, UserAgent=${req.headers['user-agent']}`);
+  console.log(`🔍 Current total connections: ${wss.clients.size + 1}`);
 
   // Heartbeat aktivieren
   // @ts-ignore (Runtime property)
@@ -177,8 +179,10 @@ wss.on('connection', (ws, req) => {
   clientData.lastConnect = nowTs;
   connectionTracker.set(clientIP, clientData);
 
+  // PER-CONNECTION Audio State (CRITICAL!)
   let chunks = [];
   let isRecording = false;
+  console.log(`🔍 [${connectionId}] Initialized with empty chunks array`);
 
   // Message-Listener direkt registrieren, bevor wir irgendetwas senden
   ws.on('message', msg => {
@@ -188,12 +192,13 @@ wss.on('connection', (ws, req) => {
       const isString = typeof msg === 'string';
       const asString = isBuffer ? msg.toString('utf8') : (isString ? msg : '');
       
-      console.log('📥 WebSocket message received:', {
+      console.log(`📥 [${connectionId}] WebSocket message received:`, {
         isBuffer,
         isString,
         size: isBuffer ? msg.length : (asString ? asString.length : 'unknown'),
         type: isBuffer ? 'binary' : 'text',
-        recording: isRecording
+        recording: isRecording,
+        currentChunks: chunks.length
       });
 
       // Versuche JSON zu parsen für Control-Messages (auch wenn der Frame ein Buffer ist)
@@ -206,24 +211,26 @@ wss.on('connection', (ws, req) => {
         if (parsed.type === 'start_audio') {
           chunks = [];
           isRecording = true;
-          console.log('🎤 Audio recording started - ready for chunks');
-          console.log('🔍 isRecording now set to:', isRecording);
-          console.log('🔍 Chunks array reset, length:', chunks.length);
+          console.log(`🎤 [${connectionId}] Audio recording started - ready for chunks`);
+          console.log(`🔍 [${connectionId}] isRecording now set to:`, isRecording);
+          console.log(`🔍 [${connectionId}] Chunks array reset, length:`, chunks.length);
           return;
         }
         
         if (parsed.type === 'end_audio') {
           isRecording = false;
-          console.log('🎤 Audio recording ended, chunks:', chunks.length);
-          console.log('🔍 Final chunks array content lengths:', chunks.map(c => c.length));
+          console.log(`🎤 [${connectionId}] Audio recording ended, chunks:`, chunks.length);
+          console.log(`🔍 [${connectionId}] Final chunks array content lengths:`, chunks.map(c => c.length));
+          console.log(`🔍 [${connectionId}] Connection state: recording was ${isRecording}, total connections: ${wss.clients.size}`);
           if (chunks.length > 0) {
             const audioBuffer = Buffer.concat(chunks);
-            console.log('📦 Combined audio buffer size:', audioBuffer.length, 'bytes');
-            console.log('🔄 Starting relay to voice-agent API...');
-            return relay(audioBuffer, ws);
+            console.log(`📦 [${connectionId}] Combined audio buffer size:`, audioBuffer.length, 'bytes');
+            console.log(`🔄 [${connectionId}] Starting relay to voice-agent API...`);
+            return relay(audioBuffer, ws, connectionId);
           } else {
-            console.error('❌ No audio chunks received during recording');
-            console.error('🔍 isRecording was:', isRecording, 'when end_audio received');
+            console.error(`❌ [${connectionId}] No audio chunks received during recording`);
+            console.error(`🔍 [${connectionId}] Debug: isRecording was ${isRecording} when end_audio received`);
+            console.error(`🔍 [${connectionId}] This suggests audio chunks went to different connection!`);
             ws.send(JSON.stringify({ type: 'error', data: { message: 'No audio data received' } }));
           }
           return;
@@ -235,21 +242,21 @@ wss.on('connection', (ws, req) => {
         // FIX: Ignoriere sehr kleine Chunks (Header/Corrupt Data)
         if (msg.length > 10) {
           chunks.push(msg);
-          console.log('📦 Audio chunk received:', msg.length, 'bytes, total chunks:', chunks.length);
+          console.log(`📦 [${connectionId}] Audio chunk received:`, msg.length, 'bytes, total chunks:', chunks.length);
         } else {
-          console.warn('⚠️ Ignoring small/corrupt audio chunk:', msg.length, 'bytes');
+          console.warn(`⚠️ [${connectionId}] Ignoring small/corrupt audio chunk:`, msg.length, 'bytes');
         }
       } else if (isRecording && !isBuffer) {
         // Versuche Binary-String zu Buffer zu konvertieren
         const chunk = Buffer.from(msg);
         if (chunk.length > 10) {
           chunks.push(chunk);
-          console.log('📦 Audio chunk received (converted):', chunk.length, 'bytes, total chunks:', chunks.length);
+          console.log(`📦 [${connectionId}] Audio chunk received (converted):`, chunk.length, 'bytes, total chunks:', chunks.length);
         } else {
-          console.warn('⚠️ Ignoring small/corrupt converted chunk:', chunk.length, 'bytes');
+          console.warn(`⚠️ [${connectionId}] Ignoring small/corrupt converted chunk:`, chunk.length, 'bytes');
         }
       } else if (!isRecording && isBuffer) {
-        console.warn('⚠️ Binary data received but not recording - ignoring');
+        console.warn(`⚠️ [${connectionId}] Binary data received but not recording - ignoring, size:`, msg.length, 'bytes');
       }
     } catch (e) {
       console.error('❌ WebSocket message processing error:', e);
@@ -265,7 +272,8 @@ wss.on('connection', (ws, req) => {
   }
 
   ws.on('close', (code, reason) => {
-    console.log(`🔌 WebSocket connection closed: ${connectionId} (${code}: ${reason})`);
+    console.log(`🔌 [${connectionId}] WebSocket connection closed: (${code}: ${reason})`);
+    console.log(`🔍 [${connectionId}] Final state: chunks=${chunks.length}, recording=${isRecording}`);
     // Cleanup connection tracking
     const clientData = connectionTracker.get(clientIP);
     if (clientData && clientData.count > 0) {
@@ -283,9 +291,9 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-async function relay(buffer, ws) {
+async function relay(buffer, ws, connectionId = 'unknown') {
   try {
-    console.log('🔄 Relaying audio to voice-agent API, buffer size:', buffer.length);
+    console.log(`🔄 [${connectionId}] Relaying audio to voice-agent API, buffer size:`, buffer.length);
     
     // Prüfe WebSocket-Status vor Relay
     if (ws.readyState !== WebSocket.OPEN) {

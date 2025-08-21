@@ -58,20 +58,25 @@ export const ContinuousVoiceChat: React.FC = () => {
     
     // Prüfe ob bereits verbunden oder verbindet
     if (manager.isConnected()) {
-      console.log('🔗 WebSocket Manager: Bereits verbunden');
-      wsRef.current = manager.getActiveConnection();
+      console.log('🔗 [CONTINUOUS] WebSocket Manager: Bereits verbunden');
+      const existingWs = manager.getActiveConnection();
+      console.log('🔍 [CONTINUOUS] Existing WebSocket URL:', existingWs?.url);
+      console.log('🔍 [CONTINUOUS] Existing WebSocket readyState:', existingWs?.readyState);
+      wsRef.current = existingWs;
       setIsConnected(true);
       return;
     }
     
     if (manager.isConnecting()) {
-      console.log('🔗 WebSocket Manager: Verbindung läuft bereits');
+      console.log('🔗 [CONTINUOUS] WebSocket Manager: Verbindung läuft bereits');
       return;
     }
 
     try {
-      console.log('🔗 WebSocket Manager: Starte neue Verbindung zu:', WS_URL);
+      console.log('🔗 [CONTINUOUS] WebSocket Manager: Starte neue Verbindung zu:', WS_URL);
       const ws = await manager.connect(WS_URL);
+      console.log('🔍 [CONTINUOUS] New WebSocket created:', ws.url);
+      console.log('🔍 [CONTINUOUS] New WebSocket readyState:', ws.readyState);
       wsRef.current = ws;
 
       // Event Listeners setzen/überschreiben
@@ -334,28 +339,30 @@ export const ContinuousVoiceChat: React.FC = () => {
 
       // Audio-Start Signal
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        console.log('📤 Sending start_audio signal');
-        console.log('🔍 WebSocket state:', wsRef.current.readyState);
-        console.log('🔍 WebSocket URL:', wsRef.current.url);
+        console.log('📤 [CONTINUOUS] Sending start_audio signal');
+        console.log('🔍 [CONTINUOUS] WebSocket state:', wsRef.current.readyState);
+        console.log('🔍 [CONTINUOUS] WebSocket URL:', wsRef.current.url);
+        console.log('🔍 [CONTINUOUS] WebSocket is same object?', wsRef.current === wsRef.current);
         const startSignal = JSON.stringify({ type: 'start_audio' });
-        console.log('🔍 Sending message:', startSignal);
+        console.log('🔍 [CONTINUOUS] Sending message:', startSignal);
         wsRef.current.send(startSignal);
       } else {
-        console.error('❌ WebSocket not ready for start_audio signal');
-        console.error('🔍 WebSocket state:', wsRef.current?.readyState);
-        console.error('🔍 WebSocket object:', wsRef.current);
+        console.error('❌ [CONTINUOUS] WebSocket not ready for start_audio signal');
+        console.error('🔍 [CONTINUOUS] WebSocket state:', wsRef.current?.readyState);
+        console.error('🔍 [CONTINUOUS] WebSocket object:', wsRef.current);
       }
 
       // Kontinuierlich Chunks senden - FIX: Event Handler VOR start() setzen
       mediaRecorder.ondataavailable = (event) => {
-        console.log('📦 MediaRecorder data available:', event.data.size, 'bytes');
+        console.log('📦 [CONTINUOUS] MediaRecorder data available:', event.data.size, 'bytes');
         if (event.data.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
-          console.log('📤 Sending audio chunk to WebSocket');
+          console.log('📤 [CONTINUOUS] Sending audio chunk to WebSocket, URL:', wsRef.current.url);
           wsRef.current.send(event.data);
         } else if (event.data.size === 0) {
-          console.warn('⚠️ Empty audio chunk received');
+          console.warn('⚠️ [CONTINUOUS] Empty audio chunk received');
         } else if (wsRef.current?.readyState !== WebSocket.OPEN) {
-          console.error('❌ WebSocket not ready for audio chunk, state:', wsRef.current?.readyState);
+          console.error('❌ [CONTINUOUS] WebSocket not ready for audio chunk, state:', wsRef.current?.readyState);
+          console.error('🔍 [CONTINUOUS] Current WebSocket URL:', wsRef.current?.url);
         }
       };
 
@@ -393,10 +400,12 @@ export const ContinuousVoiceChat: React.FC = () => {
         // Warte zusätzliche Zeit für finale Chunks
         setTimeout(() => {
           if (wsRef.current?.readyState === WebSocket.OPEN) {
-            console.log('📤 Sending end_audio signal (after final chunks)');
+            console.log('📤 [CONTINUOUS] Sending end_audio signal (after final chunks)');
+            console.log('🔍 [CONTINUOUS] end_audio WebSocket URL:', wsRef.current.url);
             wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
           } else {
-            console.error('❌ WebSocket not ready for end_audio signal');
+            console.error('❌ [CONTINUOUS] WebSocket not ready for end_audio signal');
+            console.error('🔍 [CONTINUOUS] WebSocket state for end_audio:', wsRef.current?.readyState);
           }
         }, 200); // Zusätzliche 200ms nach MediaRecorder stop
       };
