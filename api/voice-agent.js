@@ -511,8 +511,29 @@
  // ---------------- Azure TTS (chunked REST stream) ----------------
 async function generateAndStreamSpeechAzureHD(text, res, opts = {}) { // [B1]
   const region = (process.env.AZURE_SPEECH_REGION || AZURE_SPEECH_REGION || 'westeurope').toLowerCase();
-  const TTS_HOST   = process.env.AZURE_TTS_HOST   || `${region}.tts.speech.microsoft.com`;
-  const TOKEN_HOST = process.env.AZURE_TOKEN_HOST || `${region}.api.cognitive.microsoft.com`;
+  const envTts = (process.env.AZURE_TTS_HOST || '').toLowerCase();
+  const envTok = (process.env.AZURE_TOKEN_HOST || '').toLowerCase();
+
+  // Validate hosts; fall back to region defaults if overrides look wrong
+  const defaultTts = `${region}.tts.speech.microsoft.com`;
+  const defaultTok = `${region}.api.cognitive.microsoft.com`;
+  let TTS_HOST   = defaultTts;
+  let TOKEN_HOST = defaultTok;
+
+  if (envTts) {
+    if (envTts.includes('tts.speech.microsoft.com')) {
+      TTS_HOST = envTts;
+    } else {
+      console.warn('⚠️ AZURE_TTS_HOST override ignored (expected *.tts.speech.microsoft.com):', envTts);
+    }
+  }
+  if (envTok) {
+    if (envTok.includes('api.cognitive.microsoft.com')) {
+      TOKEN_HOST = envTok;
+    } else {
+      console.warn('⚠️ AZURE_TOKEN_HOST override ignored (expected *.api.cognitive.microsoft.com):', envTok);
+    }
+  }
 
   // ULTRA-LOW LATENCY: Schnellste deutsche Voice verwenden
   let requestedVoice = (opts.voice || 'de-DE-KatjaNeural').trim(); // Standard Neural ist schneller
