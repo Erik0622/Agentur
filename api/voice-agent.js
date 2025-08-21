@@ -219,54 +219,61 @@
        let sampleRateParam = '';
        let channelsParam = '';
        let format = 'unknown';
-   
-       if (hex8.startsWith('1a45dfa3')) format = 'webm';
-       else if (hex8.startsWith('52494646')) format = 'wav';
-       else if (hex8.startsWith('4f676753')) format = 'ogg';
-       else {
+
+       if (hex8.startsWith('1a45dfa3')) {
+         // WebM container with Opus
+         format = 'webm';
+         encodingParam = '&encoding=opus&container=webm';
+       } else if (hex8.startsWith('52494646')) {
+         // WAV container
+         format = 'wav';
+         encodingParam = '&encoding=linear16&container=wav';
+       } else if (hex8.startsWith('4f676753')) {
+         // OGG container with Opus
+         format = 'ogg';
+         encodingParam = '&encoding=opus&container=ogg';
+       } else {
+         // Raw PCM fallback
          format = 'raw';
-         // Rohdaten stammen aus 16-bit PCM Frames (float32 -> int16) im Frontend
          encodingParam = '&encoding=linear16';
          sampleRateParam = '&sample_rate=48000';
          channelsParam = '&channels=1';
        }
-   
+
        const langParams = detect
          ? 'detect_language=true'
-         : 'language=multi'; // multi = auto-detect innerhalb 10 Sprachen
-   
-       // [ULTRA-LOW LATENCY PATCH: Optimiert für <0.8s TTFA]
-const deepgramUrl =
-  `wss://api.deepgram.com/v1/listen?model=nova-2`  // nova-2 ist schneller
-  + `&language=de`                                 // Spezifisch statt multi
-  + `&punctuate=false`                            // Deaktiviert für Geschwindigkeit
-  + `&interim_results=true`
-  + `&endpointing=50`                             // Sehr kurz: 50ms
-  + `&utterance_end_ms=100`                       // Sehr kurz: 100ms
-  + `&vad_events=true`
-  + `&smart_format=false`                         // Deaktiviert für Geschwindigkeit
-  + `&alternatives=1`                             // Nur beste Alternative
-  + `&profanity_filter=false`                     // Deaktiviert für Geschwindigkeit
-  + `&diarize=false`                              // Deaktiviert für Geschwindigkeit
-  + encodingParam + sampleRateParam + channelsParam;
-// [END ULTRA-LOW LATENCY PATCH]
-   
+         : 'language=multi';
+
+       const deepgramUrl =
+         `wss://api.deepgram.com/v1/listen?model=nova-2`
+         + `&language=de`
+         + `&punctuate=false`
+         + `&interim_results=true`
+         + `&endpointing=50`
+         + `&utterance_end_ms=100`
+         + `&vad_events=true`
+         + `&smart_format=false`
+         + `&alternatives=1`
+         + `&profanity_filter=false`
+         + `&diarize=false`
+         + encodingParam + sampleRateParam + channelsParam;
+
        console.log('🔍 Audio Format Detection:', hex8);
        console.log('✅ Detected format:', format);
        console.log('🔗 Deepgram WebSocket URL:', deepgramUrl);
-   
+
        const ws = new WebSocket(deepgramUrl, {
          headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
          perMessageDeflate: false
        });
-   
+
        let finalTranscript = '';
        let interimTranscript = '';
        let gotResults = false;
        let opened = false;
        let llmStarted = false;
        let interimTimer = null;
-   
+
        ws.on('open', () => {
          opened = true;
          console.log('✅ Deepgram WebSocket connected successfully');
@@ -275,36 +282,47 @@ const deepgramUrl =
          console.log('🔍 Audio format detected:', format);
          
          try {
-           // Audio in optimierte Chunks aufteilen (20ms = ~960 bytes bei 48kHz)
-           const CHUNK_SIZE = 960; // 20ms @ 48kHz mono
-           const totalChunks = Math.ceil(audioBuffer.length / CHUNK_SIZE);
-           console.log('🚀 Starting to stream audio in', totalChunks, 'chunks of', CHUNK_SIZE, 'bytes each');
-           
-           for (let i = 0; i < audioBuffer.length; i += CHUNK_SIZE) {
-             const chunk = audioBuffer.subarray(i, i + CHUNK_SIZE);
-             ws.send(chunk);
-             if (i % (CHUNK_SIZE * 10) === 0) { // Log every 10th chunk
-               console.log(`📤 Sent chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${totalChunks} (${chunk.length} bytes)`);
+           if (format === 'webm' || format === 'ogg' || format === 'wav') {
+             // Send full containerized audio as single binary frame
+             console.log('📤 Sending full containerized audio buffer to Deepgram...');
+             ws.send(audioBuffer);
+             console.log('📤 Containerized buffer sent:', audioBuffer.length, 'bytes');
+             setTimeout(() => {
+               if (ws.readyState === WebSocket.OPEN) {
+                 console.log('🔚 Sending CloseStream signal to Deepgram...');
+                 ws.send(JSON.stringify({ type: 'CloseStream' }));
+                 console.log('📤 CloseStream signal sent successfully');
+               } else {
+                 console.warn('⚠️ WebSocket not open when trying to send CloseStream, state:', ws.readyState);
+               }
+             }, 100);
+           } else {
+             // Raw PCM: stream in ~20ms chunks (48kHz mono int16)
+             const SAMPLES_PER_CHUNK = 960; // 20ms @ 48kHz
+             const BYTES_PER_SAMPLE = 2;
+             const CHUNK_SIZE = SAMPLES_PER_CHUNK * BYTES_PER_SAMPLE; // 1920 bytes
+             const totalChunks = Math.ceil(audioBuffer.length / CHUNK_SIZE);
+             console.log('🚀 Streaming RAW PCM in', totalChunks, 'chunks of', CHUNK_SIZE, 'bytes');
+             for (let i = 0; i < audioBuffer.length; i += CHUNK_SIZE) {
+               const chunk = audioBuffer.subarray(i, i + CHUNK_SIZE);
+               ws.send(chunk);
+               if ((i / CHUNK_SIZE) % 10 === 0) {
+                 console.log(`📤 Sent RAW chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${totalChunks} (${chunk.length} bytes)`);
+               }
              }
+             console.log(`📤 RAW audio streaming completed: ${audioBuffer.length} bytes in ${totalChunks} chunks`);
+             setTimeout(() => {
+               if (ws.readyState === WebSocket.OPEN) {
+                 ws.send(JSON.stringify({ type: 'CloseStream' }));
+               }
+             }, 100);
            }
-           console.log(`📤 Audio streaming completed: ${audioBuffer.length} bytes in ${totalChunks} chunks`);
-           
-           // Stream nach kurzer Verzögerung schließen
-           setTimeout(() => {
-             if (ws.readyState === WebSocket.OPEN) {
-               console.log('🔚 Sending CloseStream signal to Deepgram...');
-               ws.send(JSON.stringify({ type: 'CloseStream' }));
-               console.log('📤 CloseStream signal sent successfully');
-             } else {
-               console.warn('⚠️ WebSocket not open when trying to send CloseStream, state:', ws.readyState);
-             }
-           }, 100); // Reduziert von 50ms auf 100ms
          } catch (err) {
            console.error('❌ Error during audio streaming:', err);
            reject(err);
          }
        });
-   
+
        ws.on('message', data => {
          try {
            const msg = JSON.parse(data.toString());
@@ -390,7 +408,7 @@ const deepgramUrl =
            try { ws.terminate(); } catch {}
            reject(new Error('Deepgram timeout - try shorter audio'));
          }
-       }, 15_000); // Reduziert von 25s auf 15s
+       }, 15_000);
      });
    }
    
