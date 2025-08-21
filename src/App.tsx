@@ -355,7 +355,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
           setAudioLevel(audioLevel);
 
           // Voice Activity Detection für kontinuierliches Gespräch
-          if (isForVAD && isListening) {
+          if (isForVAD && isListeningRef.current) { // FINAL FIX: Hier auch das Ref verwenden!
             const wasSpeaking = speechDetectionRef.current;
             const isSpeaking = audioLevel > SPEECH_THRESHOLD;
             
