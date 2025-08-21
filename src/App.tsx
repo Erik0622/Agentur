@@ -428,7 +428,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
         throw new Error('Browser unterstützt WebM/Opus nicht');
       }
       
-      console.log('🎯 Starte Gesprächsmodus');
+      console.log('🎯 [APP] Starte Gesprächsmodus');
       
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
@@ -440,32 +440,42 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
         } 
       });
       
-      console.log('✅ Mikrofonzugriff erhalten:', stream.getTracks()[0]?.label);
+      console.log('✅ [APP] Mikrofonzugriff erhalten:', stream.getTracks()[0]?.label);
       
       continuousStreamRef.current = stream;
+      console.log('🔍 [APP] Setting isListening to TRUE...');
       setIsListening(true);
+      console.log('🔍 [APP] isListening after setState:', isListening); // wird noch old state zeigen
       setTranscript('');
       setAiResponse('');
       
-      console.log('🔗 Starte WebSocket-Verbindung...');
+      console.log('🔗 [APP] Starte WebSocket-Verbindung...');
       // Stelle die WebSocket-Verbindung frühzeitig her, damit start_audio sofort senden kann
       await startWebSocketStream();
-      console.log('✅ WebSocket-Verbindung hergestellt');
+      console.log('✅ [APP] WebSocket-Verbindung hergestellt');
       
       // Voice Activity Detection starten
-      console.log('🎵 Starte Audio-Visualisierung und VAD...');
+      console.log('🎵 [APP] Starte Audio-Visualisierung und VAD...');
+      console.log('🔍 [APP] BEFORE startAudioVisualization - isListening:', isListening);
       startAudioVisualization(stream, true);
+      console.log('🔍 [APP] AFTER startAudioVisualization - isListening:', isListening);
 
-      console.log('✅ Kontinuierlicher Gesprächsmodus aktiv - sprechen Sie jetzt!');
+      console.log('✅ [APP] Kontinuierlicher Gesprächsmodus aktiv - sprechen Sie jetzt!');
+      
+      // WICHTIG: Prüfe Zustand nach kurzer Zeit
+      setTimeout(() => {
+        console.log('🔍 [APP] Status check nach 500ms - isListening:', isListening, 'audioContext.state:', audioContextRef.current?.state);
+      }, 500);
       
     } catch (error) {
-      console.error('Gesprächsmodus-Start fehlgeschlagen:', error);
+      console.error('❌ [APP] Gesprächsmodus-Start fehlgeschlagen:', error);
       alert('Mikrofonzugriff fehlgeschlagen. Bitte überprüfen Sie Ihre Browser-Einstellungen.');
     }
   };
 
   const stopConversationMode = () => {
-    console.log('⏹️ Stoppe Gesprächsmodus');
+    console.log('⏹️ [APP] Stoppe Gesprächsmodus');
+    console.log('🔍 [APP] stopConversationMode called from:', new Error().stack?.split('\n')[2]?.trim());
     
     setIsListening(false);
     setIsSpeechDetected(false);
