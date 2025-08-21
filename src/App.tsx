@@ -107,8 +107,10 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
     if (sb.updating) return; // wait for updateend
     appendingRef.current = true;
     const next = audioQueueRef.current.shift()!;
-    // Direkt Uint8Array anhängen, vermeidet Offsets/Backing-Buffer-Probleme
-    sb.appendBuffer(next);
+    // In echtes ArrayBuffer kopieren (TS: BufferSource erwartet ArrayBuffer, nicht ArrayBufferLike)
+    const ab = new ArrayBuffer(next.byteLength);
+    new Uint8Array(ab).set(next);
+    sb.appendBuffer(ab);
   }
 
   function setupMse(mime: string = OPUS_MIME) {
