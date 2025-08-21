@@ -466,6 +466,31 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
       console.log('🔍 [APP] Audio track enabled:', stream.getAudioTracks()[0]?.enabled);
       console.log('🔍 [APP] Audio track readyState:', stream.getAudioTracks()[0]?.readyState);
       
+      // SCHRITT 3: MediaRecorder EINMALIG erstellen
+      console.log(' recorders
+      const recorder = new MediaRecorder(stream, {
+        mimeType: OPUS_MIME,
+        audioBitsPerSecond: 128000,
+      });
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0 && wsStreamRef.current?.readyState === WebSocket.OPEN) {
+          console.log(`📦 Audio chunk verfügbar: ${event.data.size} bytes`);
+          wsStreamRef.current.send(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        console.log(' recorders
+        if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
+          console.log('📤 Sende end_audio Signal an Gateway (onstop)');
+          wsStreamRef.current.send(JSON.stringify({ type: 'end_audio' }));
+        }
+      };
+      
+      continuousRecorderRef.current = recorder;
+      console.log('✅ [APP] MediaRecorder-Instanz erstellt und konfiguriert');
+
       continuousStreamRef.current = stream;
       console.log('🔍 [APP] Setting isListening to TRUE...');
       setIsListening(true);
@@ -520,7 +545,7 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
     speechDetectionRef.current = false;
     
     // Aktuelle Aufnahme stoppen falls läuft
-    if (continuousRecorderRef.current && continuousRecorderRef.current.state === 'recording') {
+    if (continuousRecorderRef.current && continuousRecorderRef.current.state !== 'inactive') {
       continuousRecorderRef.current.stop();
     }
     
@@ -535,52 +560,35 @@ const CHUNK_MS  = 20; // MediaRecorder-Timeslice (20 ms)
 
   // ===== CONTINUOUS RECORDING (WebSocket Streaming) ===== [F-LAT-4]
   const startContinuousRecording = async () => {
-    if (!continuousStreamRef.current) {
-      console.error('❌ Kein Stream verfügbar für kontinuierliche Aufnahme');
+    if (!continuousRecorderRef.current) {
+      console.error('❌ Kein MediaRecorder verfügbar für kontinuierliche Aufnahme');
       return;
     }
     try {
       console.log('🎬 Starte kontinuierliche Aufnahme...');
       
-      // WICHTIG: WebSocket Stream ZUERST starten und warten
-      await startWebSocketStream();
-      
-      if (wsStreamRef.current?.readyState !== WebSocket.OPEN) {
-        console.error('❌ WebSocket nicht verfügbar für kontinuierliche Aufnahme');
-        return;
+      // Sende start_audio BEVOR die Aufnahme beginnt
+      if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
+        console.log('📤 Sende start_audio Signal an Gateway');
+        wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
+        
+        // Starte den Recorder erst, nachdem das Signal gesendet wurde
+        continuousRecorderRef.current.start(250); // Sendet Chunks alle 250ms
+        console.log('✅ MediaRecorder gestartet NACH start_audio Signal');
+      } else {
+        console.error('❌ WebSocket nicht bereit für start_audio Signal. Status:', wsStreamRef.current?.readyState);
       }
-      
-      // start_audio Signal SOFORT senden
-      console.log('📤 Sende start_audio Signal an Gateway');
-      wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
-      
-      // Kurz warten damit Gateway das Signal verarbeiten kann
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      // DANN erst MediaRecorder starten
-      const mr = new MediaRecorder(continuousStreamRef.current, { mimeType: OPUS_MIME });
-      continuousRecorderRef.current = mr;
-
-      mr.ondataavailable = e => {
-        if (e.data.size > 0) {
-          console.log('📦 Audio chunk verfügbar:', e.data.size, 'bytes');
-          sendAudioChunk(e.data);
-        }
-      };
-
-      mr.start(CHUNK_MS); // 50ms Chunks für optimale Performance
-      console.log('✅ MediaRecorder gestartet NACH start_audio Signal');
-    } catch (e) {
-      console.error('Kontinuierliche Aufnahme-Start fehlgeschlagen:', e);
+    } catch (err: unknown) {
+      console.error(' Kontinuierliche Aufnahme-Start fehlgeschlagen:', err);
     }
   };
 
   const stopContinuousRecording = () => {
     if (continuousRecorderRef.current && continuousRecorderRef.current.state === 'recording') {
+      console.log('🎬 Stoppe kontinuierliche Aufnahme (VAD-Stille)...');
+      // Ruft automatisch onstop auf, was end_audio sendet
       continuousRecorderRef.current.stop();
     }
-    // WebSocket Stream beenden
-    endWebSocketStream();
   };
 
   
