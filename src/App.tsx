@@ -128,29 +128,27 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
   };
   
   const setupMse = () => {
+    // Behebt Race Condition: Bereinige *immer* zuerst alle alten Instanzen
+    endMseStream();
+
     if (!audioRef.current) {
       console.error("[MSE] Audio-Element-Ref ist nicht verfügbar.");
       return;
-    }
-    
-    // Bereinige alte MediaSource falls vorhanden, um Race Conditions zu vermeiden
-    if (audioRef.current.src) {
-        URL.revokeObjectURL(audioRef.current.src);
-        audioRef.current.removeAttribute('src');
-        audioRef.current.load();
     }
 
     const ms = new MediaSource();
     mediaSourceRef.current = ms;
     
     const onSourceOpen = () => {
-        if (!mediaSourceRef.current || mediaSourceRef.current.readyState !== 'open') {
-            console.warn(`[MSE] sourceopen gefeuert, aber MediaSource ist nicht 'open'. Aktueller Status: ${mediaSourceRef.current?.readyState}`);
+        // Failsafe: Listener entfernen, um doppelte Ausführung zu verhindern
+        ms.removeEventListener('sourceopen', onSourceOpen);
+        if (ms.readyState !== 'open') {
+            console.warn(`[MSE] sourceopen gefeuert, aber MediaSource ist nicht 'open'.`);
             return;
         }
         try {
             const mime = 'audio/webm; codecs="opus"';
-            const sb = mediaSourceRef.current.addSourceBuffer(mime);
+            const sb = ms.addSourceBuffer(mime);
             
             sb.addEventListener('updateend', () => {
                 isAppendingRef.current = false;
@@ -168,25 +166,28 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
         }
     };
     
+    const onSourceEnded = () => {
+        // Finale Bereinigung, wenn der Stream offiziell zu Ende ist
+        ms.removeEventListener('sourceended', onSourceEnded);
+        endMseStream();
+    };
+
     ms.addEventListener('sourceopen', onSourceOpen, { once: true });
+    ms.addEventListener('sourceended', onSourceEnded, { once: true });
     audioRef.current.src = URL.createObjectURL(ms);
   };
   
   const endMseStream = () => {
       const ms = mediaSourceRef.current;
-      if (!ms) return;
       
-      const cleanup = () => {
-          if (sourceBufferRef.current) {
-            // Event-Listener entfernen, um Memory-Leaks zu vermeiden
-             try { sourceBufferRef.current.removeEventListener('updateend', appendNextChunk); } catch (e) {}
-          }
-          if (mediaSourceRef.current) {
-             try { mediaSourceRef.current.removeEventListener('sourceopen', () => {}); } catch (e) {}
-          }
+      // Zustand 1: Nichts zu tun
+      if (!ms) return;
+
+      const performCleanup = () => {
           if (audioRef.current && audioRef.current.src) {
               URL.revokeObjectURL(audioRef.current.src);
               audioRef.current.removeAttribute('src');
+              audioRef.current.load();
           }
           audioQueueRef.current = [];
           sourceBufferRef.current = null;
@@ -194,15 +195,23 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
           isAppendingRef.current = false;
       };
       
-      if (ms.readyState === 'open' && sourceBufferRef.current && !sourceBufferRef.current.updating) {
-          try {
-              ms.endOfStream();
-          } catch (e) {
-              console.error('[MSE] Fehler bei endOfStream:', e);
-              cleanup();
+      // Zustand 2: Stream ist offen und kann beendet werden
+      if (ms.readyState === 'open') {
+          if (sourceBufferRef.current && !sourceBufferRef.current.updating) {
+              try {
+                  ms.endOfStream();
+              } catch (e) {
+                  console.error('[MSE] Fehler bei endOfStream, führe manuelle Bereinigung durch:', e);
+                  performCleanup();
+              }
+          } else if (!sourceBufferRef.current) {
+             // 'end' kam an, bevor 'sourceopen' feuerte. Stream kann nicht regulär beendet werden.
+             console.warn('[MSE] endMseStream: Stream wurde beendet, bevor er offen war. Führe harte Bereinigung durch.');
+             performCleanup();
           }
-      } else {
-          cleanup();
+      } else if (ms.readyState === 'ended') {
+        // Stream ist bereits beendet, nur noch aufräumen
+        performCleanup();
       }
   };
 

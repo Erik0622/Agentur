@@ -5,6 +5,7 @@ import express from 'express';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { GoogleGenAI, Modality } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -12,6 +13,25 @@ const __dirname = dirname(__filename);
 const PORT = process.env.PORT || 8080;                       // Fly.io Standard Port
 const HOST = process.env.HOST || '0.0.0.0';                  // Fly.io braucht 0.0.0.0
 const REST = process.env.VOICE_REST || `http://127.0.0.1:${PORT}/api/voice-agent`;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+
+// Gemini Live API (Native Audio) Client
+const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+
+// Restaurant System Prompt (Deutsch)
+const SYSTEM_PROMPT = [
+  'Du bist der freundliche Telefon‑Assistent des Restaurants "Bella Vista" in München.',
+  'Aufgabe: Kunden am Telefon begrüßen, Reservierungen aufnehmen, Fragen zur Speisekarte, Allergenen und Öffnungszeiten beantworten.',
+  'Beantworte stets kurz, natürlich und hilfsbereit. Sprich max. 1–2 Sätze pro Antwort.',
+  'Details:',
+  '- Öffnungszeiten: Mo–Fr 12:00–22:00, Sa 12:00–23:00, So geschlossen',
+  '- Adresse: Sonnenstraße 12, 80331 München',
+  '- Telefon: +49 89 1234567',
+  '- Spezialitäten: Hausgemachte Pasta, Holzofen‑Pizza, Tiramisù',
+  '- Vegetarisch/Vegan: Margherita, Funghi, Pasta Arrabbiata, Salat Mediterran',
+  '- Glutenfrei auf Wunsch: Pizza‑Boden und Pasta',
+  'Bei Reservierungen immer Personenanzahl, Datum, Uhrzeit und Name erfragen. Bestätige freundlich.'
+].join('\n');
 
 // Express App für statische Dateien
 const app = express();
@@ -182,6 +202,11 @@ wss.on('connection', (ws, req) => {
   // PER-CONNECTION Audio State (CRITICAL!)
   let chunks = [];
   let isRecording = false;
+  let liveSession = null; // Gemini Live session per connection
+  let liveSessionOpen = false;
+  let selectedVoice = 'Puck'; // Default Gemini Native Voice (can be overridden by client)
+  let receivedPcmChunks = [];
+  let sentHeader = false;
   console.log(`🔍 [${connectionId}] Initialized with empty chunks array`);
 
   // Message-Listener direkt registrieren, bevor wir irgendetwas senden
@@ -210,10 +235,21 @@ wss.on('connection', (ws, req) => {
         
         if (parsed.type === 'start_audio') {
           chunks = [];
+          receivedPcmChunks = [];
+          sentHeader = false;
           isRecording = true;
+          selectedVoice = typeof parsed.voice === 'string' && parsed.voice.trim() ? parsed.voice.trim() : selectedVoice;
           console.log(`🎤 [${connectionId}] Audio recording started - ready for chunks`);
+          console.log(`🔍 [${connectionId}] Selected voice: ${selectedVoice}`);
           console.log(`🔍 [${connectionId}] isRecording now set to:`, isRecording);
           console.log(`🔍 [${connectionId}] Chunks array reset, length:`, chunks.length);
+          // Starte Gemini Live Session wenn noch nicht offen
+          if (!liveSessionOpen) {
+            startGeminiLiveSession().catch(e => {
+              console.error(`❌ [${connectionId}] Live session start failed:`, e);
+              try { ws.send(JSON.stringify({ type: 'error', data: { message: 'Gemini Live Session Fehler' } })); } catch {}
+            });
+          }
           return;
         }
         
@@ -222,36 +258,44 @@ wss.on('connection', (ws, req) => {
           console.log(`🎤 [${connectionId}] Audio recording ended, chunks:`, chunks.length);
           console.log(`🔍 [${connectionId}] Final chunks array content lengths:`, chunks.map(c => c.length));
           console.log(`🔍 [${connectionId}] Connection state: recording was ${isRecording}, total connections: ${wss.clients.size}`);
-          if (chunks.length > 0) {
-            const audioBuffer = Buffer.concat(chunks);
-            console.log(`📦 [${connectionId}] Combined audio buffer size:`, audioBuffer.length, 'bytes');
-            console.log(`🔄 [${connectionId}] Starting relay to voice-agent API...`);
-            return relay(audioBuffer, ws, connectionId);
-          } else {
-            console.error(`❌ [${connectionId}] No audio chunks received during recording`);
-            console.error(`🔍 [${connectionId}] Debug: isRecording was ${isRecording} when end_audio received`);
-            console.error(`🔍 [${connectionId}] This suggests audio chunks went to different connection!`);
-            ws.send(JSON.stringify({ type: 'error', data: { message: 'No audio data received' } }));
-          }
+          // Bei Live-API: Turn-Completion kommt von Gemini (onmessage)
+          // Hier nichts weiter tun
           return;
         }
       }
       
-      // Binary audio data
+      // Binary audio data → direkt an Gemini Live weiterleiten (PCM 16kHz, 16bit, mono)
       if (isRecording && isBuffer) {
-        // FIX: Ignoriere sehr kleine Chunks (Header/Corrupt Data)
         if (msg.length > 10) {
           chunks.push(msg);
-          console.log(`📦 [${connectionId}] Audio chunk received:`, msg.length, 'bytes, total chunks:', chunks.length);
+          // Sende an Live API falls Session offen
+          if (liveSessionOpen && liveSession) {
+            const base64 = Buffer.from(msg).toString('base64');
+            try {
+              liveSession.sendRealtimeInput({
+                audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
+              });
+            } catch (e) {
+              console.error(`❌ [${connectionId}] Failed to send audio to Live API:`, e.message);
+            }
+          }
         } else {
           console.warn(`⚠️ [${connectionId}] Ignoring small/corrupt audio chunk:`, msg.length, 'bytes');
         }
       } else if (isRecording && !isBuffer) {
-        // Versuche Binary-String zu Buffer zu konvertieren
         const chunk = Buffer.from(msg);
         if (chunk.length > 10) {
           chunks.push(chunk);
-          console.log(`📦 [${connectionId}] Audio chunk received (converted):`, chunk.length, 'bytes, total chunks:', chunks.length);
+          if (liveSessionOpen && liveSession) {
+            const base64 = chunk.toString('base64');
+            try {
+              liveSession.sendRealtimeInput({
+                audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
+              });
+            } catch (e) {
+              console.error(`❌ [${connectionId}] Failed to send converted audio to Live API:`, e.message);
+            }
+          }
         } else {
           console.warn(`⚠️ [${connectionId}] Ignoring small/corrupt converted chunk:`, chunk.length, 'bytes');
         }
@@ -279,6 +323,8 @@ wss.on('connection', (ws, req) => {
     if (clientData && clientData.count > 0) {
       clientData.count--;
     }
+    // Beende Live Session
+    try { liveSession?.close?.(); } catch {}
   });
 
   ws.on('error', (error) => {
@@ -289,6 +335,90 @@ wss.on('connection', (ws, req) => {
       clientData.count--;
     }
   });
+
+  // --- Helpers: Gemini Live Session handling ---
+  async function startGeminiLiveSession() {
+    if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY fehlt');
+    console.log(`🚀 [${connectionId}] Opening Gemini Live session (native audio)...`);
+    receivedPcmChunks = [];
+    sentHeader = false;
+    const session = await ai.live.connect({
+      model: 'gemini-2.5-flash-preview-native-audio-dialog',
+      config: {
+        responseModalities: [Modality.AUDIO],
+        systemInstruction: SYSTEM_PROMPT,
+        voice: selectedVoice
+      },
+      callbacks: {
+        onopen: () => {
+          console.log(`✅ [${connectionId}] Live session opened`);
+          liveSessionOpen = true;
+        },
+        onmessage: (message) => {
+          try {
+            // Audio data (base64 PCM16 @24kHz)
+            if (message?.data) {
+              if (!sentHeader) {
+                try { ws.send(JSON.stringify({ type: 'audio_header', data: { mime: 'audio/wav' } })); } catch {}
+                sentHeader = true;
+              }
+              const chunkBuf = Buffer.from(message.data, 'base64');
+              receivedPcmChunks.push(chunkBuf);
+            }
+            // Turn completion → sende WAV an Client und "end"
+            if (message?.serverContent?.turnComplete) {
+              const wav = wrapPcmChunksToWav(receivedPcmChunks, 24000);
+              try {
+                ws.send(JSON.stringify({ type: 'audio_chunk', data: { base64: wav.toString('base64'), format: 'wav' } }));
+                ws.send(JSON.stringify({ type: 'end', data: {} }));
+              } catch (e) {
+                console.error(`❌ [${connectionId}] Failed to send WAV to client:`, e.message);
+              }
+              // Reset for next turn
+              receivedPcmChunks = [];
+              sentHeader = false;
+            }
+          } catch (e) {
+            console.error(`❌ [${connectionId}] Live onmessage error:`, e);
+          }
+        },
+        onerror: (e) => {
+          console.error(`❌ [${connectionId}] Live session error:`, e?.message || e);
+          try { ws.send(JSON.stringify({ type: 'error', data: { message: e?.message || 'Live session error' } })); } catch {}
+        },
+        onclose: (e) => {
+          console.log(`🔚 [${connectionId}] Live session closed:`, e?.reason || '');
+          liveSessionOpen = false;
+        }
+      }
+    });
+    liveSession = session;
+  }
+
+  function wrapPcmChunksToWav(pcmChunks, sampleRate) {
+    const pcm = Buffer.concat(pcmChunks);
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+    const blockAlign = (numChannels * bitsPerSample) / 8;
+    const dataSize = pcm.length;
+    const fileSize = 36 + dataSize;
+    const header = Buffer.alloc(44);
+    header.write('RIFF', 0);
+    header.writeUInt32LE(fileSize, 4);
+    header.write('WAVE', 8);
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(numChannels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(bitsPerSample, 34);
+    header.write('data', 36);
+    header.writeUInt32LE(dataSize, 40);
+    return Buffer.concat([header, pcm]);
+  }
 });
 
 async function relay(buffer, ws, connectionId = 'unknown') {

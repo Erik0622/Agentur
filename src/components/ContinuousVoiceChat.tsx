@@ -25,10 +25,16 @@ export const ContinuousVoiceChat: React.FC = () => {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [conversationHistory, setConversationHistory] = useState<Array<{user: string, ai: string, timestamp: Date}>>([]);
+  const [selectedVoice, setSelectedVoice] = useState<string>('Puck');
+  const availableVoices = [
+    { id: 'Puck', label: 'Puck (neutral, klar)' },
+    { id: 'Charon', label: 'Charon (männlich, warm)' },
+    { id: 'Kore', label: 'Kore (weiblich, freundlich)' }
+  ];
 
   // Refs
   const wsRef = useRef<WebSocket | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null); // legacy, ungenutzt nach PCM-Umstellung
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -38,6 +44,7 @@ export const ContinuousVoiceChat: React.FC = () => {
   const isRecordingRef = useRef(false);
   const audioLevelRef = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
 
   // ULTRA-LOW LATENCY VAD Configuration
   const vadConfig: VADConfig = {
@@ -208,6 +215,17 @@ export const ContinuousVoiceChat: React.FC = () => {
     }
   };
 
+  // PCM Helpers
+  function floatTo16BitPCM(float32: Float32Array): ArrayBuffer {
+    const buffer = new ArrayBuffer(float32.length * 2);
+    const view = new DataView(buffer);
+    for (let i = 0; i < float32.length; i++) {
+      let s = Math.max(-1, Math.min(1, float32[i]));
+      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return buffer;
+  }
+
   // Voice Activity Detection
   const analyzeAudioLevel = useCallback(() => {
     if (!analyserRef.current || !isActive || isSpeaking) return;
@@ -304,12 +322,7 @@ export const ContinuousVoiceChat: React.FC = () => {
 
       console.log('✅ Audio setup complete - AudioContext state:', audioContext.state);
       
-      // Test MediaRecorder Unterstützung
-      if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-        console.log('✅ WebM/Opus supported');
-      } else {
-        console.warn('⚠️ WebM/Opus not supported, fallback might be needed');
-      }
+      // Hinweis: Für Gemini Live senden wir PCM 16kHz – kein MediaRecorder nötig
 
       return true;
     } catch (error) {
@@ -319,65 +332,50 @@ export const ContinuousVoiceChat: React.FC = () => {
     }
   };
 
-  // Recording starten
+  // PCM‑Recording starten (16kHz, 16‑bit, mono)
   const startRecording = () => {
     if (!streamRef.current || isRecordingRef.current || isProcessing || isSpeaking) return;
 
     try {
-      console.log('🎤 Starting recording...');
+      console.log('🎤 Starting PCM recording (16kHz)...');
       isRecordingRef.current = true;
       setIsListening(true);
       setTranscript('');
       setResponse('');
 
-      const mediaRecorder = new MediaRecorder(streamRef.current, {
-        mimeType: 'audio/webm;codecs=opus',
-        audioBitsPerSecond: 128000
-      });
-
-      mediaRecorderRef.current = mediaRecorder;
-
-      // Audio-Start Signal
+      // Audio‑Start Signal mit Voice
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        console.log('📤 [CONTINUOUS] Sending start_audio signal');
-        console.log('🔍 [CONTINUOUS] WebSocket state:', wsRef.current.readyState);
-        console.log('🔍 [CONTINUOUS] WebSocket URL:', wsRef.current.url);
-        console.log('🔍 [CONTINUOUS] WebSocket is same object?', wsRef.current === wsRef.current);
-        const startSignal = JSON.stringify({ type: 'start_audio' });
-        console.log('🔍 [CONTINUOUS] Sending message:', startSignal);
-        wsRef.current.send(startSignal);
+        wsRef.current.send(JSON.stringify({ type: 'start_audio', voice: selectedVoice }));
       } else {
-        console.error('❌ [CONTINUOUS] WebSocket not ready for start_audio signal');
-        console.error('🔍 [CONTINUOUS] WebSocket state:', wsRef.current?.readyState);
-        console.error('🔍 [CONTINUOUS] WebSocket object:', wsRef.current);
+        console.error('❌ [CONTINUOUS] WebSocket not ready for start_audio');
       }
 
-      // Kontinuierlich Chunks senden - FIX: Event Handler VOR start() setzen
-      mediaRecorder.ondataavailable = (event) => {
-        console.log('📦 [CONTINUOUS] MediaRecorder data available:', event.data.size, 'bytes');
-        if (event.data.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
-          console.log('📤 [CONTINUOUS] Sending audio chunk to WebSocket, URL:', wsRef.current.url);
-          wsRef.current.send(event.data);
-        } else if (event.data.size === 0) {
-          console.warn('⚠️ [CONTINUOUS] Empty audio chunk received');
-        } else if (wsRef.current?.readyState !== WebSocket.OPEN) {
-          console.error('❌ [CONTINUOUS] WebSocket not ready for audio chunk, state:', wsRef.current?.readyState);
-          console.error('🔍 [CONTINUOUS] Current WebSocket URL:', wsRef.current?.url);
+      // ScriptProcessor erzeugen und PCM Frames senden
+      const ac = audioContextRef.current!;
+      const source = ac.createMediaStreamSource(streamRef.current);
+      const bufferSize = 2048;
+      const processor = ac.createScriptProcessor(bufferSize, 1, 1);
+      processorRef.current = processor;
+
+      processor.onaudioprocess = (event) => {
+        if (!isRecordingRef.current || wsRef.current?.readyState !== WebSocket.OPEN) return;
+        const input = event.inputBuffer.getChannelData(0);
+        // Downsample von ac.sampleRate (~48000) auf 16000
+        const ratio = ac.sampleRate / 16000;
+        const outLength = Math.floor(input.length / ratio);
+        const down = new Float32Array(outLength);
+        for (let i = 0; i < outLength; i++) {
+          down[i] = input[Math.floor(i * ratio)] || 0;
         }
+        const pcm = floatTo16BitPCM(down);
+        wsRef.current!.send(pcm); // Binär senden
       };
 
-      mediaRecorder.onerror = (error) => {
-        console.error('❌ MediaRecorder error:', error);
-      };
-
-      mediaRecorder.onstart = () => {
-        console.log('✅ MediaRecorder started successfully');
-      };
-
-      mediaRecorder.start(100); // Erhöht auf 100ms für stabilere Chunks
-      console.log('🎤 MediaRecorder.start() called');
+      source.connect(processor);
+      processor.connect(ac.destination);
+      console.log('✅ PCM streaming started');
     } catch (error) {
-      console.error('❌ Recording start failed:', error);
+      console.error('❌ PCM recording start failed:', error);
       isRecordingRef.current = false;
       setIsListening(false);
     }
@@ -387,39 +385,21 @@ export const ContinuousVoiceChat: React.FC = () => {
   const stopRecording = () => {
     if (!isRecordingRef.current) return;
 
-    console.log('🎤 Stopping recording...');
+    console.log('🎤 Stopping PCM recording...');
     isRecordingRef.current = false;
     setIsListening(false);
 
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-      console.log('📤 Stopping MediaRecorder');
-      
-      // FIX: Event-Handler für letzten Chunk registrieren
-      mediaRecorderRef.current.onstop = () => {
-        console.log('✅ MediaRecorder vollständig gestoppt');
-        // Warte zusätzliche Zeit für finale Chunks
-        setTimeout(() => {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            console.log('📤 [CONTINUOUS] Sending end_audio signal (after final chunks)');
-            console.log('🔍 [CONTINUOUS] end_audio WebSocket URL:', wsRef.current.url);
-            wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
-          } else {
-            console.error('❌ [CONTINUOUS] WebSocket not ready for end_audio signal');
-            console.error('🔍 [CONTINUOUS] WebSocket state for end_audio:', wsRef.current?.readyState);
-          }
-        }, 200); // Zusätzliche 200ms nach MediaRecorder stop
-      };
-      
-      mediaRecorderRef.current.stop();
-    } else {
-      console.warn('⚠️ MediaRecorder not in recording state:', mediaRecorderRef.current?.state);
-      // Fallback: sofort end_audio senden wenn MediaRecorder nicht läuft
-      setTimeout(() => {
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          console.log('📤 Sending end_audio signal (fallback)');
-          wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
-        }
-      }, 100);
+    // Processor entfernen
+    try {
+      if (processorRef.current) {
+        processorRef.current.disconnect();
+        processorRef.current = null;
+      }
+    } catch {}
+
+    // end_audio senden
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
     }
 
     setIsProcessing(true);
@@ -526,6 +506,21 @@ export const ContinuousVoiceChat: React.FC = () => {
           <p className="text-red-800 text-sm">{error}</p>
         </div>
       )}
+
+      {/* Stimmenauswahl */}
+      <div className="mb-4">
+        <label className="block text-sm font-medium text-gray-700 mb-2">Stimme</label>
+        <select
+          value={selectedVoice}
+          onChange={(e) => setSelectedVoice(e.target.value)}
+          className="w-full border rounded-md px-3 py-2 text-sm"
+        >
+          {availableVoices.map(v => (
+            <option key={v.id} value={v.id}>{v.label}</option>
+          ))}
+        </select>
+        <p className="text-xs text-gray-500 mt-1">Diese Stimmen werden vom Gemini Native Audio Modell unterstützt.</p>
+      </div>
 
       {/* Status Anzeigen */}
       <div className="text-center mb-6">
