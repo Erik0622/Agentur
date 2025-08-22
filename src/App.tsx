@@ -54,7 +54,7 @@ function App() {
   
   // Kontinuierliche Voice Detection Refs
   const continuousStreamRef = useRef<MediaStream | null>(null);
-  const continuousRecorderRef = useRef<MediaRecorder | null>(null);
+  // MediaRecorder wird im Live-Modus nicht mehr verwendet
   const speechDetectionRef = useRef<boolean>(false);
 
   // ===== LATENCY CONSTANTS & HELPERS ===== [F-LAT-0]
@@ -520,31 +520,6 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
       console.log('🔍 [APP] Audio track enabled:', stream.getAudioTracks()[0]?.enabled);
       console.log('🔍 [APP] Audio track readyState:', stream.getAudioTracks()[0]?.readyState);
       
-      // SCHRITT 3: MediaRecorder EINMALIG erstellen
-      console.log('✅ [APP] Erstelle MediaRecorder-Instanz...');
-      const recorder = new MediaRecorder(stream, {
-        mimeType: OPUS_MIME,
-        audioBitsPerSecond: 128000,
-      });
-
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0 && wsStreamRef.current?.readyState === WebSocket.OPEN) {
-          console.log(`📦 Audio chunk verfügbar: ${event.data.size} bytes`);
-          wsStreamRef.current.send(event.data);
-        }
-      };
-
-      recorder.onstop = () => {
-        console.log('⏹️ [APP] MediaRecorder onstop-Event ausgelöst.');
-        if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-          console.log('📤 Sende end_audio Signal an Gateway (onstop)');
-          wsStreamRef.current.send(JSON.stringify({ type: 'end_audio' }));
-        }
-      };
-      
-      continuousRecorderRef.current = recorder;
-      console.log('✅ [APP] MediaRecorder-Instanz erstellt und konfiguriert');
-
       continuousStreamRef.current = stream;
       console.log('🔍 [APP] Setting isListening to TRUE...');
       setIsListening(true);
@@ -598,9 +573,10 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
     silenceCountRef.current = 0;
     speechDetectionRef.current = false;
     
-    // Aktuelle Aufnahme stoppen falls läuft
-    if (continuousRecorderRef.current && continuousRecorderRef.current.state !== 'inactive') {
-      continuousRecorderRef.current.stop();
+    // Laufende PCM-Aufnahme stoppen (ScriptProcessor)
+    if (processorRef.current) {
+      try { processorRef.current.disconnect(); } catch {}
+      processorRef.current = null;
     }
     
     // Stream stoppen
@@ -614,34 +590,60 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
 
   // ===== CONTINUOUS RECORDING (WebSocket Streaming) ===== [F-LAT-4]
   const startContinuousRecording = async () => {
-    if (!continuousRecorderRef.current) {
-      console.error('❌ Kein MediaRecorder verfügbar für kontinuierliche Aufnahme');
-      return;
-    }
     try {
       console.log('🎬 Starte kontinuierliche Aufnahme...');
-      
-      // Sende start_audio BEVOR die Aufnahme beginnt
+      if (!continuousStreamRef.current) {
+        console.error('❌ Kein Stream verfügbar');
+        return;
+      }
+
+      // Sende start_audio BEVOR Frames kommen
       if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
         console.log('📤 Sende start_audio Signal an Gateway');
         wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
-        
-        // Starte den Recorder erst, nachdem das Signal gesendet wurde
-        continuousRecorderRef.current.start(250); // Sendet Chunks alle 250ms
-        console.log('✅ MediaRecorder gestartet NACH start_audio Signal');
       } else {
         console.error('❌ WebSocket nicht bereit für start_audio Signal. Status:', wsStreamRef.current?.readyState);
+        return;
       }
+
+      // PCM (16kHz) via ScriptProcessor senden
+      const ac = audioContextRef.current || new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioContextRef.current = ac;
+      const source = ac.createMediaStreamSource(continuousStreamRef.current);
+      const bufferSize = 2048;
+      const processor = ac.createScriptProcessor(bufferSize, 1, 1);
+      processorRef.current = processor;
+
+      processor.onaudioprocess = (event) => {
+        if (!isListeningRef.current || wsStreamRef.current?.readyState !== WebSocket.OPEN) return;
+        const input = event.inputBuffer.getChannelData(0);
+        // Downsample von ac.sampleRate (~48kHz) auf 16kHz
+        const ratio = ac.sampleRate / 16000;
+        const outLength = Math.floor(input.length / ratio);
+        const down = new Float32Array(outLength);
+        for (let i = 0; i < outLength; i++) {
+          down[i] = input[Math.floor(i * ratio)] || 0;
+        }
+        const pcm = floatTo16BitPCM(down);
+        wsStreamRef.current!.send(pcm);
+      };
+
+      source.connect(processor);
+      processor.connect(ac.destination);
+      console.log('✅ PCM (16kHz) ScriptProcessor gestartet');
     } catch (err: unknown) {
       console.error('❌ Kontinuierliche Aufnahme-Start fehlgeschlagen:', err);
     }
   };
 
   const stopContinuousRecording = () => {
-    if (continuousRecorderRef.current && continuousRecorderRef.current.state === 'recording') {
-      console.log('🎬 Stoppe kontinuierliche Aufnahme (VAD-Stille)...');
-      // Ruft automatisch onstop auf, was end_audio sendet
-      continuousRecorderRef.current.stop();
+    console.log('🎬 Stoppe kontinuierliche PCM‑Aufnahme (VAD-Stille)...');
+    if (processorRef.current) {
+      try { processorRef.current.disconnect(); } catch {}
+      processorRef.current = null;
+    }
+    if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
+      wsStreamRef.current.send(JSON.stringify({ type: 'end_audio' }));
     }
   };
 
