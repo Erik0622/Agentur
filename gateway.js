@@ -207,6 +207,7 @@ wss.on('connection', (ws, req) => {
   let selectedVoice = 'Puck'; // Default Gemini Native Voice (can be overridden by client)
   let receivedPcmChunks = [];
   let sentHeader = false;
+  let pendingPcmQueue = [];
   console.log(`🔍 [${connectionId}] Initialized with empty chunks array`);
 
   // Message-Listener direkt registrieren, bevor wir irgendetwas senden
@@ -245,6 +246,7 @@ wss.on('connection', (ws, req) => {
           console.log(`🔍 [${connectionId}] Chunks array reset, length:`, chunks.length);
           // Starte Gemini Live Session wenn noch nicht offen
           if (!liveSessionOpen) {
+            pendingPcmQueue = [];
             startGeminiLiveSession().catch(e => {
               console.error(`❌ [${connectionId}] Live session start failed:`, e);
               try { ws.send(JSON.stringify({ type: 'error', data: { message: 'Gemini Live Session Fehler' } })); } catch {}
@@ -278,6 +280,9 @@ wss.on('connection', (ws, req) => {
             } catch (e) {
               console.error(`❌ [${connectionId}] Failed to send audio to Live API:`, e.message);
             }
+          } else {
+            // Session noch nicht offen – zwischenpuffern
+            try { pendingPcmQueue.push(Buffer.from(msg).toString('base64')); } catch {}
           }
         } else {
           console.warn(`⚠️ [${connectionId}] Ignoring small/corrupt audio chunk:`, msg.length, 'bytes');
@@ -295,6 +300,8 @@ wss.on('connection', (ws, req) => {
             } catch (e) {
               console.error(`❌ [${connectionId}] Failed to send converted audio to Live API:`, e.message);
             }
+          } else {
+            try { pendingPcmQueue.push(chunk.toString('base64')); } catch {}
           }
         } else {
           console.warn(`⚠️ [${connectionId}] Ignoring small/corrupt converted chunk:`, chunk.length, 'bytes');
@@ -353,6 +360,21 @@ wss.on('connection', (ws, req) => {
         onopen: () => {
           console.log(`✅ [${connectionId}] Live session opened`);
           liveSessionOpen = true;
+          // Bereits gesammelte PCM-Frames senden
+          if (pendingPcmQueue.length) {
+            try {
+              console.log(`📤 [${connectionId}] Flushing ${pendingPcmQueue.length} queued PCM frames`);
+              for (const base64 of pendingPcmQueue) {
+                session.sendRealtimeInput({
+                  audio: { data: base64, mimeType: 'audio/pcm;rate=16000' }
+                });
+              }
+            } catch (e) {
+              console.error(`❌ [${connectionId}] Flush error:`, e?.message || e);
+            } finally {
+              pendingPcmQueue = [];
+            }
+          }
         },
         onmessage: (message) => {
           try {

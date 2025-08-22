@@ -88,10 +88,12 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
 
   // ===== Streaming Audio (MSE) – Refs & Helper =====  // [F0]
   const audioRef = useRef<HTMLAudioElement>(null);
-  const mediaSourceRef = useRef<MediaSource | null>(null);
-  const sourceBufferRef = useRef<SourceBuffer | null>(null);
-  const audioQueueRef = useRef<{ buffer: ArrayBuffer }[]>([]);
-  const isAppendingRef = useRef(false);
+  // MSE-Refs entfernt (nicht genutzt)
+  // const mediaSourceRef = useRef<MediaSource | null>(null);
+  // const sourceBufferRef = useRef<SourceBuffer | null>(null);
+  // const audioQueueRef = useRef<{ buffer: ArrayBuffer }[]>([]);
+  // const isAppendingRef = useRef(false);
+  const wavChunksRef = useRef<Uint8Array[]>([]);
   
   // Mindestaufnahmedauer nach VAD-Start, um zu kurze Clips ("hallo") zu vermeiden
   const recordStartTsRef = useRef<number>(0);
@@ -107,113 +109,12 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
     return bytes.buffer;
   };
 
-  const appendNextChunk = () => {
-    if (isAppendingRef.current || audioQueueRef.current.length === 0 || !sourceBufferRef.current || sourceBufferRef.current.updating || !mediaSourceRef.current || mediaSourceRef.current.readyState !== 'open') {
-        return;
-    }
-
-    isAppendingRef.current = true;
-    const chunk = audioQueueRef.current.shift();
-    if (chunk) {
-        try {
-            // Wichtig: slice() erstellt eine Kopie, die für appendBuffer erforderlich ist
-            sourceBufferRef.current.appendBuffer(chunk.buffer.slice(0));
-        } catch (error) {
-            console.error('[MSE] Fehler beim Anhängen des Puffers:', error);
-            isAppendingRef.current = false;
-        }
-    } else {
-        isAppendingRef.current = false;
-    }
-  };
+  // MSE Append noop
+  // const appendNextChunk = () => {};
   
-  const setupMse = () => {
-    // Behebt Race Condition: Bereinige *immer* zuerst alle alten Instanzen
-    endMseStream();
-
-    if (!audioRef.current) {
-      console.error("[MSE] Audio-Element-Ref ist nicht verfügbar.");
-      return;
-    }
-
-    const ms = new MediaSource();
-    mediaSourceRef.current = ms;
-    
-    const onSourceOpen = () => {
-        // Failsafe: Listener entfernen, um doppelte Ausführung zu verhindern
-        ms.removeEventListener('sourceopen', onSourceOpen);
-        if (ms.readyState !== 'open') {
-            console.warn(`[MSE] sourceopen gefeuert, aber MediaSource ist nicht 'open'.`);
-            return;
-        }
-        try {
-            const mime = 'audio/webm; codecs="opus"';
-            const sb = ms.addSourceBuffer(mime);
-            
-            sb.addEventListener('updateend', () => {
-                isAppendingRef.current = false;
-                appendNextChunk();
-            });
-            
-            sourceBufferRef.current = sb;
-            
-            // Starte Wiedergabe und Abarbeitung der Warteschlange
-            audioRef.current?.play().catch(e => console.warn('[MSE] Autoplay wurde verhindert:', e));
-            appendNextChunk();
-
-        } catch (e) {
-            console.error('[MSE] Fehler beim Hinzufügen des SourceBuffer:', e);
-        }
-    };
-    
-    const onSourceEnded = () => {
-        // Finale Bereinigung, wenn der Stream offiziell zu Ende ist
-        ms.removeEventListener('sourceended', onSourceEnded);
-        endMseStream();
-    };
-
-    ms.addEventListener('sourceopen', onSourceOpen, { once: true });
-    ms.addEventListener('sourceended', onSourceEnded, { once: true });
-    audioRef.current.src = URL.createObjectURL(ms);
-  };
+  // MSE wird für die native Audioantwort nicht mehr benötigt (WAV Playback am Ende)
   
-  const endMseStream = () => {
-      const ms = mediaSourceRef.current;
-      
-      // Zustand 1: Nichts zu tun
-      if (!ms) return;
-
-      const performCleanup = () => {
-          if (audioRef.current && audioRef.current.src) {
-              URL.revokeObjectURL(audioRef.current.src);
-              audioRef.current.removeAttribute('src');
-              audioRef.current.load();
-          }
-          audioQueueRef.current = [];
-          sourceBufferRef.current = null;
-          mediaSourceRef.current = null;
-          isAppendingRef.current = false;
-      };
-      
-      // Zustand 2: Stream ist offen und kann beendet werden
-      if (ms.readyState === 'open') {
-          if (sourceBufferRef.current && !sourceBufferRef.current.updating) {
-              try {
-                  ms.endOfStream();
-              } catch (e) {
-                  console.error('[MSE] Fehler bei endOfStream, führe manuelle Bereinigung durch:', e);
-                  performCleanup();
-              }
-          } else if (!sourceBufferRef.current) {
-             // 'end' kam an, bevor 'sourceopen' feuerte. Stream kann nicht regulär beendet werden.
-             console.warn('[MSE] endMseStream: Stream wurde beendet, bevor er offen war. Führe harte Bereinigung durch.');
-             performCleanup();
-          }
-      } else if (ms.readyState === 'ended') {
-        // Stream ist bereits beendet, nur noch aufräumen
-        performCleanup();
-      }
-  };
+  // const endMseStream = () => {};
 
   // ===== WebSocket Streaming (Low Latency) ===== [F-LAT-1]
   const wsStreamRef = useRef<WebSocket | null>(null);
@@ -298,17 +199,34 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               if (payload?.text) pushLlmChunk(setAiResponse, payload.text);
               break;
             case 'audio_chunk':
+              // Sammle WAV/PCM Chunks (wir spielen am Ende als eine WAV-Datei ab)
               if (payload?.base64) {
-                audioQueueRef.current.push({ buffer: base64ToArrayBuffer(payload.base64) });
-                appendNextChunk();
+                const arr = new Uint8Array(base64ToArrayBuffer(payload.base64));
+                wavChunksRef.current.push(arr);
               }
               break;
             case 'audio_header':
-              setupMse();
+              // Reset Sammlung für neue Antwort
+              wavChunksRef.current = [] as any;
               setIsPlayingResponse(true);
               break;
             case 'end':
-              endMseStream();
+              // Am Ende: kombiniere Chunks zu einer WAV-Datei und spiele ab
+              try {
+                if (wavChunksRef.current.length > 0) {
+                  const totalLen = wavChunksRef.current.reduce((n, c) => n + c.length, 0);
+                  const merged = new Uint8Array(totalLen);
+                  let o = 0;
+                  for (const c of wavChunksRef.current) { merged.set(c, o); o += c.length; }
+                  const blob = new Blob([merged.buffer], { type: 'audio/wav' });
+                  const url = URL.createObjectURL(blob);
+                  const a = new Audio(url);
+                  a.onended = () => URL.revokeObjectURL(url);
+                  a.play().catch(e => console.warn('Audio play failed:', e));
+                }
+              } catch (e) {
+                console.error('WAV playback error:', e);
+              }
               setIsProcessing(false);
               break;
             case 'error':
