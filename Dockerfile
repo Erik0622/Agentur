@@ -1,5 +1,5 @@
 # Dockerfile für Fly.io Deployment
-FROM node:18-alpine
+FROM node:22-alpine
 # System-Tools für Builds (native Modules) und Healthchecks
 RUN apk add --no-cache curl python3 make g++
 WORKDIR /app

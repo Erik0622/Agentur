@@ -576,14 +576,27 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
             if (m.type === 'session_ready') {
               console.log('✅ Gemini Session bereit - starte PCM-Streaming');
               wsStreamRef.current?.removeEventListener('message', onSessionReady);
-              // Jetzt PCM-Streaming starten
-              startContinuousRecording();
+              // Jetzt PCM-Streaming starten (direkt hier, ohne Rekursion)
+              startPCMStreaming();
             }
           } catch {}
         };
         wsStreamRef.current.addEventListener('message', onSessionReady);
+        return; // Warten auf session_ready
       } else {
         console.error('❌ WebSocket nicht bereit für start_audio Signal. Status:', wsStreamRef.current?.readyState);
+        return;
+      }
+    } catch (e) {
+      console.error('❌ Fehler in startContinuousRecording:', e);
+    }
+  };
+
+  const startPCMStreaming = () => {
+    try {
+      console.log('🔊 Starte PCM-Audio-Streaming...');
+      if (!continuousStreamRef.current) {
+        console.error('❌ Kein Stream verfügbar für PCM-Streaming');
         return;
       }
 

@@ -6,8 +6,7 @@ import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
-import pkg from '@google/genai';
-const { GoogleGenerativeAI, Modality } = pkg;
+import { GoogleGenAI, Modality } from '@google/genai';
 
 const PORT = process.env.PORT || 8080;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -49,7 +48,7 @@ wss.on('connection', async (ws) => {
   let recording = false;
   let bytesIn = 0;
 
-  const ai = new GoogleGenerativeAI({ apiKey: GEMINI_API_KEY });
+  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
   const model = 'gemini-2.5-flash-preview-native-audio-dialog';
   const config = {
     responseModalities: [Modality.AUDIO], // zwingend für Audiooutput
@@ -60,11 +59,16 @@ wss.on('connection', async (ws) => {
     if (session) return;
     console.log(`[${id}] 🔧 Öffne Gemini Live session...`);
     session = await ai.live.connect({
-      model,
-      config,
+      model: 'gemini-2.5-flash-preview-native-audio-dialog',
+      config: { responseModalities: [Modality.AUDIO], systemInstruction: SYSTEM_PROMPT },
       callbacks: {
-        onopen: () => console.log(`[${id}] ✅ Gemini session open (AUDIO modality)`),
-        onmessage: (m) => {
+        onopen: () => {
+          console.log(`[${id}] ✅ Gemini session open (AUDIO modality)`);
+          ws.send(JSON.stringify({ type: 'session_ready' })); // Client darf senden
+          console.log(`[${id}] 🚀 Session ready - Client kann Audio senden`);
+        },
+        onmessage: (e) => {
+          const m = typeof e.data === 'string' ? JSON.parse(e.data) : null;
           // Audio kommt als Base64-Data in m.data (PCM 24kHz)
           if (m?.data) {
             console.log(`[${id}] 📥 Gemini audio response ${m.data.length} chars`);
@@ -79,8 +83,6 @@ wss.on('connection', async (ws) => {
         onclose: (e) => console.log(`[${id}] ⛔ Gemini closed:`, e?.reason),
       }
     });
-    ws.send(JSON.stringify({ type: 'session_ready' })); // Client darf senden
-    console.log(`[${id}] 🚀 Session ready - Client kann Audio senden`);
   }
 
   ws.on('message', async (raw) => {
@@ -113,7 +115,7 @@ wss.on('connection', async (ws) => {
           // Sanity-Test: Reine Text-Antwort
           console.log(`[${id}] 💬 Text-Trigger: "${msg.text || 'Hallo'}"`);
           session.sendClientContent({
-            turns: [{ role: 'user', parts: [{ text: msg.text || 'Sag Hallo.' }] }],
+            turns: [{ role: 'user', parts: [{ text: msg.text || 'Sag bitte deutlich „Hallo".' }] }],
             turnComplete: true
           });
           return;
