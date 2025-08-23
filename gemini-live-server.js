@@ -107,6 +107,8 @@ wss.on('connection', async (ws) => {
             if (!session) return; // Fehler schon an Client geschickt
             recording = true;
             console.log(`[${id}] ▶️ start_audio ack`);
+            // Sende session_ready erneut, falls der Client das erste verpasst hat
+            try { ws.send(JSON.stringify({ type: 'session_ready' })); } catch {}
             return;
           }
           if (m.type === 'audio_chunk_b64') {
