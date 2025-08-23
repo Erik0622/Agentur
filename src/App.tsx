@@ -278,6 +278,10 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               setIsProcessing(false);
               setIsPlayingResponse(false);
               break;
+            case 'server_error':
+              console.error('❌ Server error:', payload?.detail || (data && (data.detail || data.where)) || data);
+              setIsProcessing(false);
+              break;
             case 'error':
               if ((payload?.message || data.message) === 'No speech detected.') {
                 setTranscript('Keine Sprache erkannt. Bitte sprechen Sie lauter.');
