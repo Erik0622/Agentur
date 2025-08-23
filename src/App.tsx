@@ -72,19 +72,32 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const pcmSampleRateRef = useRef<number>(16000);
 
-  // batch UI updates for llm chunks
-  let llmChunkBuf = '';
-  let llmFlushTimer: number | null = null;
-  function pushLlmChunk(setter: (v: any) => void, txt: string) {
-    llmChunkBuf += txt;
-    if (llmFlushTimer) return;
-    llmFlushTimer = window.setTimeout(() => {
-      setter((prev: string) => prev + llmChunkBuf);
-      llmChunkBuf = '';
-      llmFlushTimer && clearTimeout(llmFlushTimer);
-      llmFlushTimer = null;
-    }, 50);
+  // Helper für Base64-Konvertierung
+  function arrayBufferToBase64(buf: ArrayBuffer): string {
+    return btoa(String.fromCharCode(...new Uint8Array(buf)));
   }
+
+  // Helper für 48kHz → 16kHz Downsampling
+  function float48kToInt16_16k(float32: Float32Array, inRate: number): Int16Array {
+    const ratio = inRate / 16000;
+    const outLen = Math.floor(float32.length / ratio);
+    const out = new Int16Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const start = Math.floor(i * ratio);
+      const end = Math.floor((i + 1) * ratio);
+      let sum = 0, count = 0;
+      for (let j = start; j < end && j < float32.length; j++) {
+        sum += float32[j];
+        count++;
+      }
+      const sample = sum / (count || 1);
+      const s = Math.max(-1, Math.min(1, sample));
+      out[i] = (s < 0 ? s * 0x8000 : s * 0x7FFF) | 0;
+    }
+    return out;
+  }
+
+
 
   // ===== Streaming Audio (MSE) – Refs & Helper =====  // [F0]
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -93,7 +106,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
   // const sourceBufferRef = useRef<SourceBuffer | null>(null);
   // const audioQueueRef = useRef<{ buffer: ArrayBuffer }[]>([]);
   // const isAppendingRef = useRef(false);
-  const wavChunksRef = useRef<Uint8Array[]>([]);
+
   
   // Mindestaufnahmedauer nach VAD-Start, um zu kurze Clips ("hallo") zu vermeiden
   const recordStartTsRef = useRef<number>(0);
@@ -211,6 +224,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
       console.log('🔗 Verbinde zu WebSocket Stream:', WS_URL);
       wsConnectingRef.current = true;
       const ws = new WebSocket(WS_URL);
+      ws.binaryType = 'arraybuffer'; // wichtig für Binary-Frames
       wsStreamRef.current = ws;
 
       // Promise, das auf Open wartet
@@ -239,45 +253,30 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
           const payload = (data && (data.data ?? data)) as any;
 
           switch (data.type) {
-            case 'transcript':
-              setTranscript(payload.text || '');
-              break;
-            case 'llm_chunk':
-              if (payload?.text) pushLlmChunk(setAiResponse, payload.text);
-              break;
-            case 'audio_chunk':
-              // Sammle WAV/PCM Chunks (wir spielen am Ende als eine WAV-Datei ab)
-              if (payload?.base64) {
-                const arr = new Uint8Array(base64ToArrayBuffer(payload.base64));
-                wavChunksRef.current.push(arr);
-              }
-              break;
-            case 'audio_header':
-              // Reset Sammlung für neue Antwort
-              wavChunksRef.current = [] as any;
-              setIsPlayingResponse(true);
-              break;
-            case 'end':
-              // Am Ende: kombiniere Chunks zu einer WAV-Datei und spiele ab
-              try {
-                if (wavChunksRef.current.length > 0) {
-                  const totalLen = wavChunksRef.current.reduce((n, c) => n + c.length, 0);
-                  const merged = new Uint8Array(totalLen);
-                  let o = 0;
-                  for (const c of wavChunksRef.current) { merged.set(c, o); o += c.length; }
-                  
-                  // Gemini liefert 24 kHz PCM - korrekter WAV-Header
-                  const wavBuffer = createWavFile(merged.buffer, 24000);
+            case 'audio_out':
+              // Neue Gemini-Antwort als Base64 (24 kHz PCM)
+              if (payload?.data) {
+                console.log(`📥 Audio response ${payload.data.length} chars (24 kHz PCM)`);
+                try {
+                  // Base64 zu PCM konvertieren
+                  const pcmData = base64ToArrayBuffer(payload.data);
+                  // WAV-Header erstellen (24 kHz!)
+                  const wavBuffer = createWavFile(pcmData, 24000);
                   const blob = new Blob([wavBuffer], { type: 'audio/wav' });
                   const url = URL.createObjectURL(blob);
                   const a = new Audio(url);
                   a.onended = () => URL.revokeObjectURL(url);
                   a.play().catch(e => console.warn('Audio play failed:', e));
+                  setIsPlayingResponse(true);
+                } catch (e) {
+                  console.error('WAV playback error:', e);
                 }
-              } catch (e) {
-                console.error('WAV playback error:', e);
               }
+              break;
+            case 'turn_complete':
+              console.log('🔄 Turn complete');
               setIsProcessing(false);
+              setIsPlayingResponse(false);
               break;
             case 'error':
               if ((payload?.message || data.message) === 'No speech detected.') {
@@ -606,8 +605,16 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
         for (let i = 0; i < outLength; i++) {
           down[i] = input[Math.floor(i * ratio)] || 0;
         }
-        const pcm = floatTo16BitPCM(down);
-        wsStreamRef.current!.send(pcm);
+        const pcm16 = float48kToInt16_16k(input, ac.sampleRate);
+        // Base64 senden (robuster als Binary)
+        const arrayBuffer = new ArrayBuffer(pcm16.length * 2); // Explizit ArrayBuffer erstellen
+        const view = new DataView(arrayBuffer);
+        for (let i = 0; i < pcm16.length; i++) {
+          view.setInt16(i * 2, pcm16[i], true); // little-endian
+        }
+        const b64 = arrayBufferToBase64(arrayBuffer);
+        console.log(`📤 Audio chunk ${pcm16.length * 2} bytes → Base64 ${b64.length} chars`);
+        wsStreamRef.current!.send(JSON.stringify({ type: 'audio_chunk_b64', data: b64 }));
       };
 
       source.connect(processor);
@@ -625,7 +632,15 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
       processorRef.current = null;
     }
     if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-      wsStreamRef.current.send(JSON.stringify({ type: 'end_audio' }));
+      wsStreamRef.current.send(JSON.stringify({ type: 'stop_audio' }));
+    }
+  };
+
+  // Sanity-Test: Reine Text-Nachricht senden
+  const sendTextMessage = (text: string) => {
+    if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
+      console.log(`💬 Sende Text-Nachricht: "${text}"`);
+      wsStreamRef.current.send(JSON.stringify({ type: 'say', text }));
     }
   };
 
@@ -1310,7 +1325,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               <h3 className="text-xl sm:text-2xl font-bold text-gray-900 mb-4 sm:mb-6 text-center">
                 Voice-Agent Demo
               </h3>
-               <p className="text-xs text-gray-500 text-center -mt-4 mb-4">UI Version: 1.3.0</p>
+               <p className="text-xs text-gray-500 text-center -mt-4 mb-4">UI Version: 1.4.0</p>
               
               <div className="space-y-4 sm:space-y-6">
                 {/* Audio Visualizer */}
@@ -1566,6 +1581,19 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
                       <span className="text-xs sm:text-sm text-gray-700">{scenario}</span>
                     </div>
                   ))}
+                </div>
+
+                {/* Text-Test Button */}
+                <div className="mb-4">
+                  <button
+                    onClick={() => sendTextMessage('Sag bitte deutlich "Hallo, ich bin da"')}
+                    className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                  >
+                    💬 Text-Test (ohne Audio)
+                  </button>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Testet, ob die Gemini-Session funktioniert (nur Text)
+                  </p>
                 </div>
 
                 {/* Live Demo Chat */}

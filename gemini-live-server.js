@@ -1,159 +1,128 @@
-import http from 'http';
-import express from 'express';
+// server.js - Minimal Gemini Live Audio Bridge (23.08.2025)
+import 'dotenv/config';
 import { WebSocketServer } from 'ws';
-import { GoogleGenAI, Modality } from '@google/genai';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { GoogleGenerativeAI, Modality } from '@google/genai';
 
-// --- Konfiguration ---
 const PORT = process.env.PORT || 8080;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 if (!GEMINI_API_KEY) {
-  console.error('FATAL ERROR: GEMINI_API_KEY environment variable is not set.');
+  console.error('❌ FATAL: GEMINI_API_KEY nicht gesetzt');
   process.exit(1);
 }
 
-// --- System Prompt ---
+// System Prompt für Restaurant
 const SYSTEM_PROMPT = [
   'Du bist der freundliche Telefon‑Assistent des Restaurants "Bella Vista" in München.',
-  'Aufgabe: Kunden am Telefon begrüßen, Reservierungen aufnehmen, Fragen zur Speisekarte, Allergenen und Öffnungszeiten beantworten.',
-  'Beantworte stets kurz, natürlich und hilfsbereit. Sprich max. 1–2 Sätze pro Antwort.',
-  'Details:',
-  '- Öffnungszeiten: Mo–Fr 12:00–22:00, Sa 12:00–23:00, So geschlossen',
-  '- Adresse: Sonnenstraße 12, 80331 München',
-  '- Telefon: +49 89 1234567',
-  '- Spezialitäten: Hausgemachte Pasta, Holzofen‑Pizza, Tiramisù',
-  '- Vegetarisch/Vegan: Margherita, Funghi, Pasta Arrabbiata, Salat Mediterran',
-  '- Glutenfrei auf Wunsch: Pizza‑Boden und Pasta',
-  'Bei Reservierungen immer Personenanzahl, Datum, Uhrzeit und Name erfragen. Bestätige freundlich.'
+  'Aufgabe: Kunden am Telefon begrüßen, Reservierungen aufnehmen, Fragen zur Speisekarte beantworten.',
+  'Beantworte stets kurz und natürlich. Max. 1–2 Sätze pro Antwort.',
+  'Details: Öffnungszeiten Mo–Fr 12:00–22:00, Sa 12:00–23:00, So geschlossen.',
+  'Telefon: +49 89 1234567, Adresse: Sonnenstraße 12, 80331 München.'
 ].join('\n');
 
-// --- Express App Setup ---
-const app = express();
-const server = http.createServer(app);
-
-// Statische Dateien (Vite Build Output) servieren
-app.use(express.static(join(__dirname, 'dist')));
-
-// Health Check für Fly.io
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
+const wss = new WebSocketServer({
+  port: PORT,
+  perMessageDeflate: false, // wichtig für Audio
+  host: '0.0.0.0' // Fly.io
 });
 
-// Fallback für SPA-Routing
-app.get('*', (req, res) => {
-  res.sendFile(join(__dirname, 'dist', 'index.html'));
-});
+wss.on('listening', () => console.log(`🔗 WebSocket server ready on 0.0.0.0:${PORT}`));
 
-// --- WebSocket Server Setup ---
-const wss = new WebSocketServer({ server });
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+wss.on('connection', async (ws) => {
+  const id = Date.now();
+  console.log(`[${id}] 🌐 WebSocket client connected.`);
 
-wss.on('connection', (ws) => {
-  const connectionId = `conn-${Date.now()}`;
-  console.log(`[${connectionId}] WebSocket client connected.`);
+  let session;
+  let recording = false;
+  let bytesIn = 0;
 
-  let liveSession = null;
-  let isRecording = false;
-
-  const startGeminiSession = async () => {
-    return new Promise((resolve, reject) => {
-      try {
-        console.log(`[${connectionId}] Initializing Gemini Live session...`);
-        ai.live.connect({
-          model: 'gemini-2.5-flash-preview-native-audio-dialog',
-          config: {
-            responseModalities: [Modality.AUDIO],
-            systemInstruction: SYSTEM_PROMPT,
-          },
-          callbacks: {
-            onopen: () => {
-              console.log(`[${connectionId}] Gemini Live session opened.`);
-              resolve(); // Session ist bereit
-            },
-            onmessage: (message) => {
-              if (ws.readyState !== ws.OPEN) return;
-              // Audio-Daten von Gemini empfangen (PCM @ 24kHz)
-              if (message.data) {
-                const audioData = Buffer.from(message.data, 'base64');
-                ws.send(JSON.stringify({ type: 'audio_chunk', data: { base64: audioData.toString('base64'), format: 'pcm_s16le_24k' } }));
-              }
-              // Ende des Gesprächszugs
-              if (message.serverContent?.turnComplete) {
-                console.log(`[${connectionId}] Gemini turn complete.`);
-                ws.send(JSON.stringify({ type: 'end' }));
-              }
-            },
-            onerror: (e) => {
-              console.error(`[${connectionId}] Gemini Live session error:`, e);
-              reject(e);
-            },
-            onclose: () => {
-              console.log(`[${connectionId}] Gemini Live session closed.`);
-            },
-          },
-        }).then(session => {
-          liveSession = session;
-          console.log(`[${connectionId}] Gemini Live session successfully initialized.`);
-        }).catch(reject);
-      } catch (error) {
-        console.error(`[${connectionId}] FAILED to initialize Gemini Live session:`, error);
-        reject(error);
-      }
-    });
+  const ai = new GoogleGenerativeAI({ apiKey: GEMINI_API_KEY });
+  const model = 'gemini-2.5-flash-preview-native-audio-dialog';
+  const config = {
+    responseModalities: [Modality.AUDIO], // zwingend für Audiooutput
+    systemInstruction: SYSTEM_PROMPT,
   };
 
-  ws.on('message', (message) => {
-    try {
-      const isBuffer = Buffer.isBuffer(message);
-
-      if (isBuffer) {
-        if (isRecording && liveSession) {
-          const base64 = message.toString('base64');
-          liveSession.sendRealtimeInput({
-            audio: { data: base64, mimeType: 'audio/pcm;rate=16000' },
-          });
-        }
-      } else {
-        const data = JSON.parse(message.toString());
-        if (data.type === 'start_audio') {
-          console.log(`[${connectionId}] start_audio → initializing Gemini...`);
-          // erst Session hochfahren, dann Recording scharf schalten
-          startGeminiSession().then(() => {
-            isRecording = true;
-            ws.send(JSON.stringify({ type: 'session_ready' }));
-          }).catch(e => {
-            console.error(`[${connectionId}] Failed to start session:`, e);
-            ws.send(JSON.stringify({ type: 'error', data: { message: 'Session initialization failed' } }));
-          });
-        } else if (data.type === 'end_audio') {
-          console.log(`[${connectionId}] Received end_audio signal.`);
-          isRecording = false;
-        }
+  async function openSessionOnce() {
+    if (session) return;
+    console.log(`[${id}] 🔧 Öffne Gemini Live session...`);
+    session = await ai.live.connect({
+      model,
+      config,
+      callbacks: {
+        onopen: () => console.log(`[${id}] ✅ Gemini session open (AUDIO modality)`),
+        onmessage: (m) => {
+          // Audio kommt als Base64-Data in m.data (PCM 24kHz)
+          if (m?.data) {
+            console.log(`[${id}] 📥 Gemini audio response ${m.data.length} chars`);
+            ws.send(JSON.stringify({ type: 'audio_out', data: m.data }));
+          }
+          if (m?.serverContent?.turnComplete) {
+            console.log(`[${id}] 🔄 Turn complete`);
+            ws.send(JSON.stringify({ type: 'turn_complete' }));
+          }
+        },
+        onerror: (e) => console.error(`[${id}] ❌ Gemini error:`, e?.message || e),
+        onclose: (e) => console.log(`[${id}] ⛔ Gemini closed:`, e?.reason),
       }
-    } catch (error) {
-      console.error(`[${connectionId}] Error processing message:`, error);
+    });
+    ws.send(JSON.stringify({ type: 'session_ready' })); // Client darf senden
+    console.log(`[${id}] 🚀 Session ready - Client kann Audio senden`);
+  }
+
+  ws.on('message', async (raw) => {
+    try {
+      // Text-Frames: Steuerkommandos & Base64
+      if (typeof raw === 'string') {
+        const msg = JSON.parse(raw);
+        if (msg.type === 'start_audio') {
+          await openSessionOnce();
+          recording = true;
+          console.log(`[${id}] ▶️ start_audio`);
+          return;
+        }
+        if (msg.type === 'stop_audio') {
+          recording = false;
+          session?.sendRealtimeInput({ audioStreamEnd: true });
+          console.log(`[${id}] ⏹ stop_audio`);
+          return;
+        }
+        if (msg.type === 'audio_chunk_b64') {
+          if (!recording || !session) return;
+          const buf = Buffer.from(msg.data, 'base64');
+          bytesIn += buf.length;
+          console.log(`[${id}] 📤 → Gemini audio ${buf.length} bytes (b64)`);
+          session.sendRealtimeInput({ audio: { data: msg.data, mimeType: 'audio/pcm;rate=16000' } });
+          return;
+        }
+        if (msg.type === 'say') {
+          await openSessionOnce();
+          // Sanity-Test: Reine Text-Antwort
+          console.log(`[${id}] 💬 Text-Trigger: "${msg.text || 'Hallo'}"`);
+          session.sendClientContent({
+            turns: [{ role: 'user', parts: [{ text: msg.text || 'Sag Hallo.' }] }],
+            turnComplete: true
+          });
+          return;
+        }
+      } else if (Buffer.isBuffer(raw)) {
+        // Binary-Frames: rohes Int16-PCM little-endian @ 16kHz
+        if (!recording || !session) return;
+        bytesIn += raw.length;
+        console.log(`[${id}] 📤 → Gemini audio ${raw.length} bytes (binary), head=${raw.readInt16LE(0)}`);
+        const b64 = raw.toString('base64');
+        session.sendRealtimeInput({ audio: { data: b64, mimeType: 'audio/pcm;rate=16000' } });
+        return;
+      }
+    } catch (e) {
+      console.error(`[${id}] parse/error`, e);
     }
   });
 
   ws.on('close', () => {
-    console.log(`[${connectionId}] WebSocket client disconnected.`);
-    liveSession?.close();
+    console.log(`[${id}] 🔚 closed, bytesIn=${bytesIn}`);
+    session?.close?.();
   });
-
-  ws.on('error', (error) => {
-    console.error(`[${connectionId}] WebSocket error:`, error);
-    liveSession?.close();
-  });
-
-  ws.send(JSON.stringify({ type: 'connected' }));
 });
 
-// --- Server Start ---
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
-  console.log(`🔗 WebSocket server ready`);
-});
+console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
