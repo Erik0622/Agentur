@@ -1,7 +1,8 @@
 // server.js - Minimal Gemini Live Audio Bridge (23.08.2025)
 import 'dotenv/config';
 import { WebSocketServer } from 'ws';
-import { GoogleGenerativeAI, Modality } from '@google/genai';
+import pkg from '@google/genai';
+const { GoogleGenerativeAI, Modality } = pkg;
 
 const PORT = process.env.PORT || 8080;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
