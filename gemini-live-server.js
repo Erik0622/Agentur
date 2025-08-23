@@ -1,5 +1,10 @@
 // server.js - Minimal Gemini Live Audio Bridge (23.08.2025)
+// Behebt "Upgrade Required" Fehler durch Service von statischen Files via Express
 import 'dotenv/config';
+import express from 'express';
+import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import pkg from '@google/genai';
 const { GoogleGenerativeAI, Modality } = pkg;
@@ -21,13 +26,20 @@ const SYSTEM_PROMPT = [
   'Telefon: +49 89 1234567, Adresse: Sonnenstraße 12, 80331 München.'
 ].join('\n');
 
-const wss = new WebSocketServer({
-  port: PORT,
-  perMessageDeflate: false, // wichtig für Audio
-  host: '0.0.0.0' // Fly.io
-});
 
-wss.on('listening', () => console.log(`🔗 WebSocket server ready on 0.0.0.0:${PORT}`));
+// --- Express App Setup ---
+const app = express();
+const server = http.createServer(app);
+
+// Statische Files aus dem 'dist' Ordner serven
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+app.use(express.static(path.join(__dirname, 'dist')));
+
+// --- WebSocket Server Setup ---
+const wss = new WebSocketServer({ server }); // An den HTTP-Server binden
+
+wss.on('listening', () => console.log(`🔗 WebSocket-Erweiterung für Server auf Port ${PORT} bereit.`));
 
 wss.on('connection', async (ws) => {
   const id = Date.now();
@@ -126,4 +138,7 @@ wss.on('connection', async (ws) => {
   });
 });
 
-console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
+// --- Server starten ---
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Kombinierter HTTP/WebSocket Server läuft auf http://0.0.0.0:${PORT}`);
+});
