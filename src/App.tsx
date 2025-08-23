@@ -131,6 +131,53 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
     return buffer;
   }
 
+  // Hilfsfunktion zur Erstellung einer WAV-Datei aus rohen PCM-Daten
+  function createWavFile(pcmData: ArrayBuffer, sampleRate: number): ArrayBuffer {
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const dataSize = pcmData.byteLength;
+    const blockAlign = (numChannels * bitsPerSample) / 8;
+    const byteRate = sampleRate * blockAlign;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    // RIFF header
+    view.setUint8(0, 'R'.charCodeAt(0));
+    view.setUint8(1, 'I'.charCodeAt(0));
+    view.setUint8(2, 'F'.charCodeAt(0));
+    view.setUint8(3, 'F'.charCodeAt(0));
+    view.setUint32(4, 36 + dataSize, true);
+    view.setUint8(8, 'W'.charCodeAt(0));
+    view.setUint8(9, 'A'.charCodeAt(0));
+    view.setUint8(10, 'V'.charCodeAt(0));
+    view.setUint8(11, 'E'.charCodeAt(0));
+    // "fmt " sub-chunk
+    view.setUint8(12, 'f'.charCodeAt(0));
+    view.setUint8(13, 'm'.charCodeAt(0));
+    view.setUint8(14, 't'.charCodeAt(0));
+    view.setUint8(15, ' '.charCodeAt(0));
+    view.setUint32(16, 16, true); // Sub-chunk size
+    view.setUint16(20, 1, true); // Audio format (1 = PCM)
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+    // "data" sub-chunk
+    view.setUint8(36, 'd'.charCodeAt(0));
+    view.setUint8(37, 'a'.charCodeAt(0));
+    view.setUint8(38, 't'.charCodeAt(0));
+    view.setUint8(39, 'a'.charCodeAt(0));
+    view.setUint32(40, dataSize, true);
+
+    // Write PCM data
+    const pcmView = new Uint8Array(pcmData);
+    const dataView = new Uint8Array(buffer, 44);
+    dataView.set(pcmView);
+
+    return buffer;
+  }
+
   function sendPCMFrame(float32: Float32Array) {
     if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
       wsStreamRef.current.send(floatTo16BitPCM(float32)); // binär
@@ -218,7 +265,10 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
                   const merged = new Uint8Array(totalLen);
                   let o = 0;
                   for (const c of wavChunksRef.current) { merged.set(c, o); o += c.length; }
-                  const blob = new Blob([merged.buffer], { type: 'audio/wav' });
+                  
+                  // Da wir jetzt PCM 24kHz bekommen, erstellen wir den WAV-Header hier
+                  const wavBuffer = createWavFile(merged.buffer, 24000);
+                  const blob = new Blob([wavBuffer], { type: 'audio/wav' });
                   const url = URL.createObjectURL(blob);
                   const a = new Audio(url);
                   a.onended = () => URL.revokeObjectURL(url);
@@ -1246,6 +1296,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               <h3 className="text-xl sm:text-2xl font-bold text-gray-900 mb-4 sm:mb-6 text-center">
                 Voice-Agent Demo
               </h3>
+               <p className="text-xs text-gray-500 text-center -mt-4 mb-4">UI Version: 1.3.0</p>
               
               <div className="space-y-4 sm:space-y-6">
                 {/* Audio Visualizer */}
