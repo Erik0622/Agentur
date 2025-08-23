@@ -9,12 +9,13 @@ import { WebSocketServer } from 'ws';
 import { GoogleGenAI, Modality } from '@google/genai';
 
 const PORT = process.env.PORT || 8080;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
 
-if (!GEMINI_API_KEY) {
-  console.error('❌ FATAL: GEMINI_API_KEY nicht gesetzt');
+if (!KEY) {
+  console.error('[BOOT] ❌ Kein GOOGLE_API_KEY/GEMINI_API_KEY gesetzt!');
   process.exit(1);
 }
+console.log('[BOOT] ✅ API-Key gefunden:', KEY ? `${KEY.slice(0,8)}...${KEY.slice(-4)}` : 'NONE');
 
 // System Prompt für Restaurant
 const SYSTEM_PROMPT = [
@@ -40,6 +41,46 @@ const wss = new WebSocketServer({ server }); // An den HTTP-Server binden
 
 wss.on('listening', () => console.log(`🔗 WebSocket-Erweiterung für Server auf Port ${PORT} bereit.`));
 
+const ai = new GoogleGenAI({ apiKey: KEY });
+
+async function openGeminiSession(ws, id) {
+  try {
+    console.log(`[${id}] 🔧 Öffne Gemini Live session...`);
+    const session = await ai.live.connect({
+      model: 'gemini-2.5-flash-preview-native-audio-dialog',
+      config: { responseModalities: [Modality.AUDIO], systemInstruction: SYSTEM_PROMPT },
+      callbacks: {
+        onopen: () => {
+          console.log(`[${id}] ✅ Gemini session open (AUDIO modality)`);
+          ws.send(JSON.stringify({ type: 'session_ready' })); // <-- ganz wichtig
+          console.log(`[${id}] 🚀 Session ready - Client kann Audio senden`);
+        },
+        onmessage: (msg) => {
+          // Audio kommt Base64-kodiert als 24kHz PCM zurück
+          if (msg?.data) {
+            console.log(`[${id}] 📥 Gemini audio response ${msg.data.length} chars`);
+            ws.send(JSON.stringify({ type: 'audio_out', data: msg.data }));
+          }
+          if (msg?.serverContent?.turnComplete) {
+            console.log(`[${id}] 🔄 Turn complete`);
+            ws.send(JSON.stringify({ type: 'turn_complete' }));
+          }
+        },
+        onerror: (e) => {
+          console.error(`[${id}] ❌ Gemini onerror`, e?.message || e);
+          ws.send(JSON.stringify({ type: 'server_error', where: 'onerror', detail: String(e?.message || e) }));
+        },
+        onclose: (e) => console.log(`[${id}] ⛔ Gemini closed`, e?.reason || ''),
+      }
+    });
+    return session;
+  } catch (e) {
+    console.error(`[${id}] ❌ connect failed`, e);
+    ws.send(JSON.stringify({ type: 'server_error', where: 'connect', detail: String(e?.message || e) }));
+    return null;
+  }
+}
+
 wss.on('connection', async (ws) => {
   const id = Date.now();
   console.log(`[${id}] 🌐 WebSocket client connected.`);
@@ -48,94 +89,66 @@ wss.on('connection', async (ws) => {
   let recording = false;
   let bytesIn = 0;
 
-  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-  const model = 'gemini-2.5-flash-preview-native-audio-dialog';
-  const config = {
-    responseModalities: [Modality.AUDIO], // zwingend für Audiooutput
-    systemInstruction: SYSTEM_PROMPT,
-  };
-
-  async function openSessionOnce() {
-    if (session) return;
-    console.log(`[${id}] 🔧 Öffne Gemini Live session...`);
-    session = await ai.live.connect({
-      model: 'gemini-2.5-flash-preview-native-audio-dialog',
-      config: { responseModalities: [Modality.AUDIO], systemInstruction: SYSTEM_PROMPT },
-      callbacks: {
-        onopen: () => {
-          console.log(`[${id}] ✅ Gemini session open (AUDIO modality)`);
-          ws.send(JSON.stringify({ type: 'session_ready' })); // Client darf senden
-          console.log(`[${id}] 🚀 Session ready - Client kann Audio senden`);
-        },
-        onmessage: (e) => {
-          const m = typeof e.data === 'string' ? JSON.parse(e.data) : null;
-          // Audio kommt als Base64-Data in m.data (PCM 24kHz)
-          if (m?.data) {
-            console.log(`[${id}] 📥 Gemini audio response ${m.data.length} chars`);
-            ws.send(JSON.stringify({ type: 'audio_out', data: m.data }));
-          }
-          if (m?.serverContent?.turnComplete) {
-            console.log(`[${id}] 🔄 Turn complete`);
-            ws.send(JSON.stringify({ type: 'turn_complete' }));
-          }
-        },
-        onerror: (e) => console.error(`[${id}] ❌ Gemini error:`, e?.message || e),
-        onclose: (e) => console.log(`[${id}] ⛔ Gemini closed:`, e?.reason),
-      }
-    });
-  }
-
   ws.on('message', async (raw) => {
     try {
-      // Text-Frames: Steuerkommandos & Base64
       if (typeof raw === 'string') {
-        const msg = JSON.parse(raw);
-        if (msg.type === 'start_audio') {
-          await openSessionOnce();
+        console.log(`[${id}] 📩 text>`, raw.slice(0, 120));
+        const m = JSON.parse(raw);
+
+        if (m.type === 'start_audio') {
+          session = session || await openGeminiSession(ws, id);
+          if (!session) return; // Fehler schon an Client geschickt
           recording = true;
-          console.log(`[${id}] ▶️ start_audio`);
+          console.log(`[${id}] ▶️ start_audio ack`);
           return;
         }
-        if (msg.type === 'stop_audio') {
-          recording = false;
-          session?.sendRealtimeInput({ audioStreamEnd: true });
-          console.log(`[${id}] ⏹ stop_audio`);
-          return;
-        }
-        if (msg.type === 'audio_chunk_b64') {
+        if (m.type === 'audio_chunk_b64') {
           if (!recording || !session) return;
-          const buf = Buffer.from(msg.data, 'base64');
+          const buf = Buffer.from(m.data, 'base64');
           bytesIn += buf.length;
           console.log(`[${id}] 📤 → Gemini audio ${buf.length} bytes (b64)`);
-          session.sendRealtimeInput({ audio: { data: msg.data, mimeType: 'audio/pcm;rate=16000' } });
+          // WICHTIG: genau dieser MIME
+          session.sendRealtimeInput({ audio: { data: m.data, mimeType: 'audio/pcm;rate=16000' } });
           return;
         }
-        if (msg.type === 'say') {
-          await openSessionOnce();
-          // Sanity-Test: Reine Text-Antwort
-          console.log(`[${id}] 💬 Text-Trigger: "${msg.text || 'Hallo'}"`);
+        if (m.type === 'stop_audio') {
+          recording = false;
+          session?.sendRealtimeInput({ audioStreamEnd: true });
+          console.log(`[${id}] ⏹ stop_audio ack`);
+          return;
+        }
+        if (m.type === 'say') {
+          session = session || await openGeminiSession(ws, id);
+          if (!session) return;
+          console.log(`[${id}] 💬 Text-Trigger: "${m.text || 'Hallo'}"`);
+          // Sanity-Test: Text zur Session senden
           session.sendClientContent({
-            turns: [{ role: 'user', parts: [{ text: msg.text || 'Sag bitte deutlich „Hallo".' }] }],
+            turns: [{ role: 'user', parts: [{ text: m.text || 'Sag deutlich „Hallo".' }] }],
             turnComplete: true
           });
           return;
         }
-      } else if (Buffer.isBuffer(raw)) {
-        // Binary-Frames: rohes Int16-PCM little-endian @ 16kHz
-        if (!recording || !session) return;
-        bytesIn += raw.length;
-        console.log(`[${id}] 📤 → Gemini audio ${raw.length} bytes (binary), head=${raw.readInt16LE(0)}`);
-        const b64 = raw.toString('base64');
-        session.sendRealtimeInput({ audio: { data: b64, mimeType: 'audio/pcm;rate=16000' } });
-        return;
+      } else {
+        console.log(`[${id}] 📦 bin>`, Buffer.isBuffer(raw), raw.length);
+        // (Falls du binär sendest, hier zu Base64 konvertieren)
+        if (Buffer.isBuffer(raw) && recording && session) {
+          bytesIn += raw.length;
+          const b64 = raw.toString('base64');
+          session.sendRealtimeInput({ audio: { data: b64, mimeType: 'audio/pcm;rate=16000' } });
+        }
       }
     } catch (e) {
-      console.error(`[${id}] parse/error`, e);
+      console.error(`[${id}] 🧨 onmessage error`, e);
+      ws.send(JSON.stringify({ type: 'server_error', where: 'onmessage', detail: String(e?.message || e) }));
     }
   });
 
+  // Optional: Keepalive (Fly trennt Idle-WS gern)
+  const ka = setInterval(() => { try { ws.ping(); } catch {} }, 25000);
+  
   ws.on('close', () => {
     console.log(`[${id}] 🔚 closed, bytesIn=${bytesIn}`);
+    clearInterval(ka);
     session?.close?.();
   });
 });
