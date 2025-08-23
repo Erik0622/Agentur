@@ -116,7 +116,8 @@ wss.on('connection', async (ws) => {
             const buf = Buffer.from(m.data, 'base64');
             bytesIn += buf.length;
             console.log(`[${id}] 📤 → Gemini audio ${buf.length} bytes (b64)`);
-            session.sendRealtimeInput({ audio: { data: m.data, mimeType: 'audio/pcm;rate=16000' } });
+            // Use 'media' per @google/genai live API
+            session.sendRealtimeInput({ media: { data: m.data, mimeType: 'audio/pcm;rate=16000' } });
             return;
           }
           if (m.type === 'stop_audio') {
@@ -147,7 +148,8 @@ wss.on('connection', async (ws) => {
         if (!recording || !session) return;
         bytesIn += raw.length;
         const b64 = raw.toString('base64');
-        session.sendRealtimeInput({ audio: { data: b64, mimeType: 'audio/pcm;rate=16000' } });
+        // Use 'media' per @google/genai live API
+        session.sendRealtimeInput({ media: { data: b64, mimeType: 'audio/pcm;rate=16000' } });
         return;
       }
     } catch (e) {
