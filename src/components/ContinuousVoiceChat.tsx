@@ -398,8 +398,8 @@ export const ContinuousVoiceChat: React.FC = () => {
     } catch {}
 
     // end_audio senden
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'end_audio' }));
     }
 
     setIsProcessing(true);

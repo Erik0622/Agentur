@@ -60,50 +60,50 @@ wss.on('connection', (ws) => {
   let isRecording = false;
 
   const startGeminiSession = async () => {
-    try {
-      console.log(`[${connectionId}] Initializing Gemini Live session...`);
-      liveSession = await ai.live.connect({
-        model: 'gemini-2.5-flash-preview-native-audio-dialog',
-        config: {
-          responseModalities: [Modality.AUDIO],
-          systemInstruction: SYSTEM_PROMPT,
-        },
-        callbacks: {
-          onopen: () => {
-            console.log(`[${connectionId}] Gemini Live session opened.`);
+    return new Promise((resolve, reject) => {
+      try {
+        console.log(`[${connectionId}] Initializing Gemini Live session...`);
+        ai.live.connect({
+          model: 'gemini-2.5-flash-preview-native-audio-dialog',
+          config: {
+            responseModalities: [Modality.AUDIO],
+            systemInstruction: SYSTEM_PROMPT,
           },
-          onmessage: (message) => {
-            if (ws.readyState !== ws.OPEN) return;
-            // Audio-Daten von Gemini empfangen (PCM @ 24kHz)
-            if (message.data) {
-              const audioData = Buffer.from(message.data, 'base64');
-              ws.send(JSON.stringify({ type: 'audio_chunk', data: { base64: audioData.toString('base64'), format: 'pcm_s16le_24k' } }));
-            }
-            // Ende des Gesprächszugs
-            if (message.serverContent?.turnComplete) {
-              console.log(`[${connectionId}] Gemini turn complete.`);
-              ws.send(JSON.stringify({ type: 'end' }));
-            }
+          callbacks: {
+            onopen: () => {
+              console.log(`[${connectionId}] Gemini Live session opened.`);
+              resolve(); // Session ist bereit
+            },
+            onmessage: (message) => {
+              if (ws.readyState !== ws.OPEN) return;
+              // Audio-Daten von Gemini empfangen (PCM @ 24kHz)
+              if (message.data) {
+                const audioData = Buffer.from(message.data, 'base64');
+                ws.send(JSON.stringify({ type: 'audio_chunk', data: { base64: audioData.toString('base64'), format: 'pcm_s16le_24k' } }));
+              }
+              // Ende des Gesprächszugs
+              if (message.serverContent?.turnComplete) {
+                console.log(`[${connectionId}] Gemini turn complete.`);
+                ws.send(JSON.stringify({ type: 'end' }));
+              }
+            },
+            onerror: (e) => {
+              console.error(`[${connectionId}] Gemini Live session error:`, e);
+              reject(e);
+            },
+            onclose: () => {
+              console.log(`[${connectionId}] Gemini Live session closed.`);
+            },
           },
-          onerror: (e) => {
-            console.error(`[${connectionId}] Gemini Live session error:`, e);
-            if (ws.readyState === ws.OPEN) {
-              ws.send(JSON.stringify({ type: 'error', data: { message: `Gemini session error: ${e.message}` } }));
-            }
-          },
-          onclose: () => {
-            console.log(`[${connectionId}] Gemini Live session closed.`);
-          },
-        },
-      });
-      console.log(`[${connectionId}] Gemini Live session successfully initialized.`);
-    } catch (error) {
-      console.error(`[${connectionId}] FAILED to initialize Gemini Live session:`, error);
-      if (ws.readyState === ws.OPEN) {
-        ws.send(JSON.stringify({ type: 'error', data: { message: `Gemini Live Session Fehler: ${error.message}` } }));
+        }).then(session => {
+          liveSession = session;
+          console.log(`[${connectionId}] Gemini Live session successfully initialized.`);
+        }).catch(reject);
+      } catch (error) {
+        console.error(`[${connectionId}] FAILED to initialize Gemini Live session:`, error);
+        reject(error);
       }
-      ws.close(1011, 'Gemini initialization failed');
-    }
+    });
   };
 
   ws.on('message', (message) => {
@@ -114,15 +114,21 @@ wss.on('connection', (ws) => {
         if (isRecording && liveSession) {
           const base64 = message.toString('base64');
           liveSession.sendRealtimeInput({
-            audio: { data: base64, mimeType: 'audio/l16;rate=16000;channels=1' },
+            audio: { data: base64, mimeType: 'audio/pcm;rate=16000' },
           });
         }
       } else {
         const data = JSON.parse(message.toString());
         if (data.type === 'start_audio') {
-          console.log(`[${connectionId}] Received start_audio signal.`);
-          isRecording = true;
-          startGeminiSession();
+          console.log(`[${connectionId}] start_audio → initializing Gemini...`);
+          // erst Session hochfahren, dann Recording scharf schalten
+          startGeminiSession().then(() => {
+            isRecording = true;
+            ws.send(JSON.stringify({ type: 'session_ready' }));
+          }).catch(e => {
+            console.error(`[${connectionId}] Failed to start session:`, e);
+            ws.send(JSON.stringify({ type: 'error', data: { message: 'Session initialization failed' } }));
+          });
         } else if (data.type === 'end_audio') {
           console.log(`[${connectionId}] Received end_audio signal.`);
           isRecording = false;

@@ -266,7 +266,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
                   let o = 0;
                   for (const c of wavChunksRef.current) { merged.set(c, o); o += c.length; }
                   
-                  // Da wir jetzt PCM 24kHz bekommen, erstellen wir den WAV-Header hier
+                  // Gemini liefert 24 kHz PCM - korrekter WAV-Header
                   const wavBuffer = createWavFile(merged.buffer, 24000);
                   const blob = new Blob([wavBuffer], { type: 'audio/wav' });
                   const url = URL.createObjectURL(blob);
@@ -487,7 +487,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
       console.log('🔍 [APP] Stream tracks:', stream.getTracks().length);
       console.log('🔍 [APP] Audio track enabled:', stream.getAudioTracks()[0]?.enabled);
       console.log('🔍 [APP] Audio track readyState:', stream.getAudioTracks()[0]?.readyState);
-      
+
       continuousStreamRef.current = stream;
       console.log('🔍 [APP] Setting isListening to TRUE...');
       setIsListening(true);
@@ -564,11 +564,25 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
         console.error('❌ Kein Stream verfügbar');
         return;
       }
-
+      
       // Sende start_audio BEVOR Frames kommen
       if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
         console.log('📤 Sende start_audio Signal an Gateway');
         wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
+
+        // Warte, bis Server meldet, dass Gemini live ist
+        const onSessionReady = (ev: MessageEvent) => {
+          try {
+            const m = JSON.parse(ev.data || '{}');
+            if (m.type === 'session_ready') {
+              console.log('✅ Gemini Session bereit - starte PCM-Streaming');
+              wsStreamRef.current?.removeEventListener('message', onSessionReady);
+              // Jetzt PCM-Streaming starten
+              startContinuousRecording();
+            }
+          } catch {}
+        };
+        wsStreamRef.current.addEventListener('message', onSessionReady);
       } else {
         console.error('❌ WebSocket nicht bereit für start_audio Signal. Status:', wsStreamRef.current?.readyState);
         return;
