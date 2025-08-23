@@ -35,9 +35,10 @@ const server = http.createServer(app);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 app.use(express.static(path.join(__dirname, 'dist')));
+app.get('/health', (_req, res) => res.status(200).send('ok'));
 
 // --- WebSocket Server Setup ---
-const wss = new WebSocketServer({ server }); // An den HTTP-Server binden
+const wss = new WebSocketServer({ server, perMessageDeflate: false }); // An den HTTP-Server binden
 
 wss.on('listening', () => console.log(`🔗 WebSocket-Erweiterung für Server auf Port ${PORT} bereit.`));
 
@@ -89,53 +90,63 @@ wss.on('connection', async (ws) => {
   let recording = false;
   let bytesIn = 0;
 
+  // Session sofort öffnen, damit der Client session_ready früh bekommt
+  session = await openGeminiSession(ws, id);
+
   ws.on('message', async (raw) => {
     try {
-      if (typeof raw === 'string') {
-        console.log(`[${id}] 📩 text>`, raw.slice(0, 120));
-        const m = JSON.parse(raw);
+      // Normalisiere: immer erst versuchen, JSON zu lesen (auch bei Buffer)
+      const asText = Buffer.isBuffer(raw) ? raw.toString('utf8') : (typeof raw === 'string' ? raw : '');
+      if (asText) {
+        try {
+          console.log(`[${id}] 📩 text>`, asText.slice(0, 120));
+          const m = JSON.parse(asText);
 
-        if (m.type === 'start_audio') {
-          session = session || await openGeminiSession(ws, id);
-          if (!session) return; // Fehler schon an Client geschickt
-          recording = true;
-          console.log(`[${id}] ▶️ start_audio ack`);
-          return;
+          if (m.type === 'start_audio') {
+            session = session || await openGeminiSession(ws, id);
+            if (!session) return; // Fehler schon an Client geschickt
+            recording = true;
+            console.log(`[${id}] ▶️ start_audio ack`);
+            return;
+          }
+          if (m.type === 'audio_chunk_b64') {
+            if (!recording || !session) return;
+            const buf = Buffer.from(m.data, 'base64');
+            bytesIn += buf.length;
+            console.log(`[${id}] 📤 → Gemini audio ${buf.length} bytes (b64)`);
+            session.sendRealtimeInput({ audio: { data: m.data, mimeType: 'audio/pcm;rate=16000' } });
+            return;
+          }
+          if (m.type === 'stop_audio') {
+            recording = false;
+            session?.sendRealtimeInput({ audioStreamEnd: true });
+            console.log(`[${id}] ⏹ stop_audio ack`);
+            return;
+          }
+          if (m.type === 'say') {
+            session = session || await openGeminiSession(ws, id);
+            if (!session) return;
+            console.log(`[${id}] 💬 Text-Trigger: "${m.text || 'Hallo'}"`);
+            session.sendClientContent({
+              turns: [{ role: 'user', parts: [{ text: m.text || 'Sag deutlich „Hallo".' }] }],
+              turnComplete: true
+            });
+            return;
+          }
+        } catch (e) {
+          // Kein valides JSON → als Binär behandeln (falls Buffer)
+          if (!Buffer.isBuffer(raw)) throw e;
         }
-        if (m.type === 'audio_chunk_b64') {
-          if (!recording || !session) return;
-          const buf = Buffer.from(m.data, 'base64');
-          bytesIn += buf.length;
-          console.log(`[${id}] 📤 → Gemini audio ${buf.length} bytes (b64)`);
-          // WICHTIG: genau dieser MIME
-          session.sendRealtimeInput({ audio: { data: m.data, mimeType: 'audio/pcm;rate=16000' } });
-          return;
-        }
-        if (m.type === 'stop_audio') {
-          recording = false;
-          session?.sendRealtimeInput({ audioStreamEnd: true });
-          console.log(`[${id}] ⏹ stop_audio ack`);
-          return;
-        }
-        if (m.type === 'say') {
-          session = session || await openGeminiSession(ws, id);
-          if (!session) return;
-          console.log(`[${id}] 💬 Text-Trigger: "${m.text || 'Hallo'}"`);
-          // Sanity-Test: Text zur Session senden
-          session.sendClientContent({
-            turns: [{ role: 'user', parts: [{ text: m.text || 'Sag deutlich „Hallo".' }] }],
-            turnComplete: true
-          });
-          return;
-        }
-      } else {
-        console.log(`[${id}] 📦 bin>`, Buffer.isBuffer(raw), raw.length);
-        // (Falls du binär sendest, hier zu Base64 konvertieren)
-        if (Buffer.isBuffer(raw) && recording && session) {
-          bytesIn += raw.length;
-          const b64 = raw.toString('base64');
-          session.sendRealtimeInput({ audio: { data: b64, mimeType: 'audio/pcm;rate=16000' } });
-        }
+      }
+
+      // Binär-Frames: rohes Int16-PCM little-endian @ 16kHz
+      if (Buffer.isBuffer(raw)) {
+        console.log(`[${id}] 📦 bin> true ${raw.length}`);
+        if (!recording || !session) return;
+        bytesIn += raw.length;
+        const b64 = raw.toString('base64');
+        session.sendRealtimeInput({ audio: { data: b64, mimeType: 'audio/pcm;rate=16000' } });
+        return;
       }
     } catch (e) {
       console.error(`[${id}] 🧨 onmessage error`, e);
