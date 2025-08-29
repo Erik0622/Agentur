@@ -26,11 +26,11 @@ function App() {
   });
 
   // Voice Agent State
-  const [isRecording, setIsRecording] = useState(false);
+  const [isRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPlayingResponse, setIsPlayingResponse] = useState(false);
   const [isListening, setIsListening] = useState(false); // Kontinuierliches Zuhören
-  const [conversationMode, setConversationMode] = useState(true); // Standard: Gespräch-Modus
+  // Gesprächsmodus ist Standard – Klassikmodus entfernt
   const [transcript, setTranscript] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [wsConnected, setWsConnected] = useState(false);
@@ -41,11 +41,7 @@ function App() {
   const silenceCountRef = useRef(0);
   const isListeningRef = useRef(false); // REF für aktuellen State
   
-  // Deutsche Stimmenauswahl für Bella Vista (nur geklonte deutsche Stimmen)
-  const [selectedVoice, setSelectedVoice] = useState<keyof typeof germanVoices>('bella_vista_german_voice');
-  const germanVoices = {
-    'bella_vista_german_voice': { name: 'Bella Vista Original', gender: 'Weiblich', description: 'Authentische deutsche Stimme (geklont, Standard)' }
-  } as const;
+  // Stimmenauswahl entfernt – die Ausgabe erfolgt direkt aus der KI (Deutsch)
   
   // Legacy WebSocket ref (nicht mehr genutzt)
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -68,9 +64,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
 // -------- Laufzeit-Schalter --------------------------------
 
   // ===== PCM Streaming Nodes =====
-  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
-  const pcmSampleRateRef = useRef<number>(16000);
 
   // Helper für Base64-Konvertierung
   function arrayBufferToBase64(buf: ArrayBuffer): string {
@@ -133,69 +127,50 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
   const wsStreamRef = useRef<WebSocket | null>(null);
   const wsConnectingRef = useRef<boolean>(false);
 
+  // ===== WebAudio-Ausgabe (für Streaming-Wiedergabe ohne MSE) =====
+  const playbackCursorRef = useRef<number>(0);
+
+  function ensureOutputAudioContext(): AudioContext {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new AudioContext();
+    }
+    // Nach User-Interaktion sicherstellen, dass Context läuft
+    if (audioContextRef.current.state === 'suspended') {
+      try { audioContextRef.current.resume(); } catch { /* no-op */ }
+    }
+    return audioContextRef.current;
+  }
+
+  function playPcmBase64ViaWebAudio(base64: string, sampleRate: number): void {
+    if (!base64) return;
+    const ac = ensureOutputAudioContext();
+    try {
+      const buf = base64ToArrayBuffer(base64);
+      const dv = new DataView(buf);
+      const frameCount = Math.floor(buf.byteLength / 2);
+      const audioBuffer = ac.createBuffer(1, frameCount, sampleRate);
+      const channel = audioBuffer.getChannelData(0);
+      for (let i = 0; i < frameCount; i++) {
+        const s = dv.getInt16(i * 2, true);
+        channel[i] = s / 32768;
+      }
+      const source = ac.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ac.destination);
+      const startAt = Math.max(ac.currentTime, playbackCursorRef.current);
+      source.start(startAt);
+      playbackCursorRef.current = startAt + (frameCount / sampleRate);
+    } catch (e) {
+      console.error('WebAudio playback error:', e);
+    }
+  }
+
   // ===== PCM Helper Functions =====
-  function floatTo16BitPCM(float32: Float32Array): ArrayBuffer {
-    const buffer = new ArrayBuffer(float32.length * 2);
-    const view = new DataView(buffer);
-    for (let i = 0; i < float32.length; i++) {
-      let s = Math.max(-1, Math.min(1, float32[i]));
-      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    }
-    return buffer;
-  }
+  // Legacy Helper entfernt (nicht mehr benötigt)
 
-  // Hilfsfunktion zur Erstellung einer WAV-Datei aus rohen PCM-Daten
-  function createWavFile(pcmData: ArrayBuffer, sampleRate: number): ArrayBuffer {
-    const numChannels = 1;
-    const bitsPerSample = 16;
-    const dataSize = pcmData.byteLength;
-    const blockAlign = (numChannels * bitsPerSample) / 8;
-    const byteRate = sampleRate * blockAlign;
-    const buffer = new ArrayBuffer(44 + dataSize);
-    const view = new DataView(buffer);
+  // (entfernt) WAV-Erzeugung war ungenutzt und führte zu TS6133 im Build
 
-    // RIFF header
-    view.setUint8(0, 'R'.charCodeAt(0));
-    view.setUint8(1, 'I'.charCodeAt(0));
-    view.setUint8(2, 'F'.charCodeAt(0));
-    view.setUint8(3, 'F'.charCodeAt(0));
-    view.setUint32(4, 36 + dataSize, true);
-    view.setUint8(8, 'W'.charCodeAt(0));
-    view.setUint8(9, 'A'.charCodeAt(0));
-    view.setUint8(10, 'V'.charCodeAt(0));
-    view.setUint8(11, 'E'.charCodeAt(0));
-    // "fmt " sub-chunk
-    view.setUint8(12, 'f'.charCodeAt(0));
-    view.setUint8(13, 'm'.charCodeAt(0));
-    view.setUint8(14, 't'.charCodeAt(0));
-    view.setUint8(15, ' '.charCodeAt(0));
-    view.setUint32(16, 16, true); // Sub-chunk size
-    view.setUint16(20, 1, true); // Audio format (1 = PCM)
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, byteRate, true);
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, bitsPerSample, true);
-    // "data" sub-chunk
-    view.setUint8(36, 'd'.charCodeAt(0));
-    view.setUint8(37, 'a'.charCodeAt(0));
-    view.setUint8(38, 't'.charCodeAt(0));
-    view.setUint8(39, 'a'.charCodeAt(0));
-    view.setUint32(40, dataSize, true);
-
-    // Write PCM data
-    const pcmView = new Uint8Array(pcmData);
-    const dataView = new Uint8Array(buffer, 44);
-    dataView.set(pcmView);
-
-    return buffer;
-  }
-
-  function sendPCMFrame(float32: Float32Array) {
-    if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-      wsStreamRef.current.send(floatTo16BitPCM(float32)); // binär
-    }
-  }
+  // sendPCMFrame entfernt – Legacy (klassischer Modus)
 
   const startWebSocketStream = async (): Promise<void> => {
     // Bereits offen
@@ -254,23 +229,13 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
 
           switch (data.type) {
             case 'audio_out':
-              // Neue Gemini-Antwort als Base64 (24 kHz PCM)
-              if (payload?.data) {
-                console.log(`📥 Audio response ${payload.data.length} chars (24 kHz PCM)`);
-                try {
-                  // Base64 zu PCM konvertieren
-                  const pcmData = base64ToArrayBuffer(payload.data);
-                  // WAV-Header erstellen (24 kHz!)
-                  const wavBuffer = createWavFile(pcmData, 24000);
-                  const blob = new Blob([wavBuffer], { type: 'audio/wav' });
-                  const url = URL.createObjectURL(blob);
-                  const a = new Audio(url);
-                  a.onended = () => URL.revokeObjectURL(url);
-                  a.play().catch(e => console.warn('Audio play failed:', e));
-                  setIsPlayingResponse(true);
-                } catch (e) {
-                  console.error('WAV playback error:', e);
-                }
+              {
+                const b64 = typeof data.data === 'string' ? data.data : (payload?.data || '');
+                if (!b64) break;
+                console.log(`📥 Audio response ${b64.length} chars (24 kHz PCM)`);
+                // Direkt via WebAudio streamen (lückenarm und zuverlässig)
+                playPcmBase64ViaWebAudio(b64, 24000);
+                setIsPlayingResponse(true);
               }
               break;
             case 'turn_complete':
@@ -572,7 +537,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
       if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
         console.log('📤 Sende start_audio Signal an Gateway');
         wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
-
+        
         // Warte, bis Server meldet, dass Gemini live ist
         const onSessionReady = (ev: MessageEvent) => {
           try {
@@ -660,98 +625,6 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
       wsStreamRef.current.send(JSON.stringify({ type: 'say', text }));
     }
   };
-
-  
-
-  // ===== START/STOP RECORDING (PCM Streaming) ===== [F-LAT-2]
-  const startRecording = async () => {
-    try {
-      setIsRecording(true);
-      setTranscript('');
-      setAiResponse('');
-
-      // iOS-freundlicher getUserMedia
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          sampleRate: 48000, // Höhere Sample-Rate für bessere Qualität
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
-
-      // AudioContext für PCM-Streaming
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-      }
-      
-      const audioContext = audioContextRef.current;
-      pcmSampleRateRef.current = audioContext.sampleRate;
-
-      // Source Node vom Stream
-      const sourceNode = audioContext.createMediaStreamSource(stream);
-      sourceNodeRef.current = sourceNode;
-
-      // ScriptProcessor für PCM-Sampling (1024 Samples)
-      const bufferSize = 1024;
-      const processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
-      processorRef.current = processor;
-
-      // PCM-Frame-Verarbeitung
-      processor.onaudioprocess = (event) => {
-        const inputBuffer = event.inputBuffer;
-        const inputData = inputBuffer.getChannelData(0);
-        
-        // Sende PCM-Frame sofort
-        sendPCMFrame(inputData);
-      };
-
-      // Verbinde Nodes
-      sourceNode.connect(processor);
-      processor.connect(audioContext.destination);
-
-      // Starte WebSocket-Stream
-      await startWebSocketStream();
-      if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-        wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
-      }
-      
-      console.log('🎤 PCM-Streaming gestartet mit Sample-Rate:', pcmSampleRateRef.current);
-      
-    } catch (err) {
-      console.error('Fehler beim Starten der PCM-Aufnahme:', err);
-      setIsRecording(false);
-    }
-  };
-
-  const stopRecording = () => {
-    if (isRecording) {
-      // PCM-Streaming stoppen
-      if (processorRef.current) {
-        processorRef.current.disconnect();
-        processorRef.current = null;
-      }
-      if (sourceNodeRef.current) {
-        sourceNodeRef.current.disconnect();
-        sourceNodeRef.current = null;
-      }
-      
-      // Sende end_audio an Server
-      if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-        wsStreamRef.current.send(JSON.stringify({ type: 'end_audio' }));
-      }
-      
-      setIsRecording(false);
-      console.log('🛑 PCM-Streaming gestoppt');
-    }
-  };
-
-
-
-
-
-
 
 
 
@@ -1088,7 +961,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               Das Problem kennen Sie
             </h2>
             <p className="text-xl text-gray-600 max-w-3xl mx-auto">
-              Jeden Tag verlieren Restaurants wertvolle Kunden, weil der Telefonservice überlastet ist
+              Jeden Tag verlieren Unternehmen wertvolle Kunden, weil der Telefonservice überlastet ist
             </p>
           </motion.div>
 
@@ -1141,15 +1014,16 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               transition={{ duration: 0.8 }}
               viewport={{ once: true }}
             >
-              <h3 className="text-3xl font-bold text-gray-900 mb-8">Was unsere KI kann:</h3>
-              
+              <h3 className="text-3xl font-bold text-gray-900 mb-8">Fähigkeiten & Integrationen (Beispiele)</h3>
+
               {[
-                "Reservierungen automatisch entgegennehmen",
-                "Menüfragen professionell beantworten", 
-                "Öffnungszeiten und Informationen mitteilen",
-                "Kundendaten sicher verwalten",
-                "Bei Bedarf an Mitarbeiter weiterleiten",
-                "In mehreren Sprachen kommunizieren"
+                "Terminbuchungen & Kalender‑Integration",
+                "E‑Mails & SMS automatisch versenden",
+                "Bestellungen aufnehmen & weiterleiten",
+                "Lead‑Qualifizierung & CRM‑Updates",
+                "Daten aus Datenbanken/APIs abfragen",
+                "Intelligentes Call‑Routing",
+                "Konfiguration nach Wunsch: nur bei besetzter Leitung oder 100% der Anrufe"
               ].map((feature, index) => (
                 <motion.div
                   key={index}
@@ -1185,6 +1059,181 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               </div>
             </motion.div>
           </div>
+        </div>
+      </section>
+
+      {/* Capabilities & Value Section (Global) */}
+      <section className="py-20 bg-gray-50">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <motion.div
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            transition={{ duration: 0.8 }}
+            viewport={{ once: true }}
+            className="text-center mb-12"
+          >
+            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">Fähigkeiten & Nutzen</h2>
+            <p className="text-lg md:text-xl text-gray-600 max-w-4xl mx-auto">
+              Vocaris AI entwickelt Voice‑Agents mit individuellen Funktionsaufrufen – exakt an Ihre Prozesse angepasst. 
+              Die folgenden Punkte sind Beispiele und werden für Ihr Unternehmen maßgeschneidert.
+            </p>
+          </motion.div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6 }}
+              viewport={{ once: true }}
+              className="bg-white p-8 rounded-2xl shadow-sm"
+            >
+              <h3 className="text-2xl font-bold text-gray-900 mb-6">Funktionen (Auswahl)</h3>
+              <div className="space-y-3">
+                {[
+                  "Terminbuchungen & Kalender‑Integration",
+                  "E‑Mails & SMS automatisch versenden",
+                  "Bestellungen aufnehmen & weiterleiten",
+                  "Lead‑Qualifizierung & CRM‑Updates",
+                  "Daten aus Datenbanken/APIs abfragen",
+                  "Intelligentes Call‑Routing",
+                  "Konfiguration nach Wunsch: nur bei besetzter Leitung oder 100% der Anrufe"
+                ].map((feature, index) => (
+                  <div key={index} className="flex items-start">
+                    <CheckCircle className="h-5 w-5 text-green-500 mr-3 mt-0.5" />
+                    <span className="text-gray-700">{feature}</span>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: 0.1 }}
+              viewport={{ once: true }}
+              className="bg-white p-8 rounded-2xl shadow-sm"
+            >
+              <h3 className="text-2xl font-bold text-gray-900 mb-6">Ihr Nutzen</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {[
+                  { title: "24/7 Erreichbarkeit", desc: "Keine verpassten Anrufe – auch nachts & an Feiertagen" },
+                  { title: "Schnelle Skalierung", desc: "Beliebig viele parallele Gespräche" },
+                  { title: "Kostenersparnis", desc: "Routineaufgaben automatisieren, Team entlasten" },
+                  { title: "Bessere Datenqualität", desc: "Automatische CRM‑/ERP‑Updates in Echtzeit" },
+                  { title: "DSGVO‑konform", desc: "Sichere Verarbeitung gemäß EU‑Standards" },
+                  { title: "Nahtlose Integration", desc: "+2000 Plattformen (Kalender, CRM, ERP, Support)" },
+                ].map((b, i) => (
+                  <div key={i} className="p-4 rounded-xl bg-gray-50 border border-gray-100">
+                    <div className="font-semibold text-gray-900">{b.title}</div>
+                    <div className="text-gray-600 text-sm">{b.desc}</div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          </div>
+        </div>
+      </section>
+
+      {/* Use Cases Section */}
+      <section className="py-20">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <motion.div
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            transition={{ duration: 0.8 }}
+            viewport={{ once: true }}
+            className="text-center mb-12"
+          >
+            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">Use Cases nach Branche</h2>
+            <p className="text-lg text-gray-600 max-w-3xl mx-auto">
+              So setzen Unternehmen Vocaris AI gewinnbringend ein – von Kundenservice bis Terminmanagement.
+            </p>
+          </motion.div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            {[
+              { 
+                title: "Kundenservice", 
+                items: [
+                  "Automatisierte FAQs & Ticketanlage",
+                  "Intelligentes Routing an Teams",
+                  "Rückrufe & Status‑Updates"
+                ],
+                kpi: "24/7 Support, reduzierte Wartezeiten (vgl. Tenios)"
+              },
+              { 
+                title: "Marketing & Sales", 
+                items: [
+                  "Lead‑Qualifizierung in Echtzeit",
+                  "Follow‑ups per E‑Mail/SMS",
+                  "CRM‑Einträge automatisch"
+                ],
+                kpi: "Schnellere Reaktionszeiten, höhere Conversion (vgl. Tenios)"
+              },
+              { 
+                title: "Healthcare", 
+                items: [
+                  "Terminverwaltung & Erinnerungen",
+                  "Patientenanfragen vorqualifizieren",
+                  "Befund‑/Hinweisweitergabe"
+                ],
+                kpi: "Bis zu −40% Terminausfälle durch Erinnerungen (Quelle: Doctolib³)"
+              },
+              { 
+                title: "Banken & Finanzen", 
+                items: [
+                  "Zahlungserinnerungen & Mahnwesen",
+                  "Kundenverifizierung",
+                  "Kreditanfragen aufnehmen"
+                ],
+                kpi: "Sichere Prozesse, mehrsprachige Kommunikation (vgl. Tenios)"
+              },
+              { 
+                title: "Logistik", 
+                items: [
+                  "Sendungsstatus abfragen",
+                  "Abhol‑/Liefertermine koordinieren",
+                  "Proaktive Zustell‑Benachrichtigungen"
+                ],
+                kpi: "Weniger Nachfragen, transparente Kommunikation"
+              },
+              { 
+                title: "E‑Commerce & Dienstleister", 
+                items: [
+                  "Bestellungen aufnehmen & weiterleiten",
+                  "Termin‑/Ressourcenplanung",
+                  "Rückfragen automatisiert beantworten"
+                ],
+                kpi: "+Verkäufe durch sofortige Erreichbarkeit"
+              }
+            ].map((uc, idx) => (
+              <motion.div
+                key={idx}
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.6, delay: idx * 0.05 }}
+                viewport={{ once: true }}
+                className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100"
+              >
+                <h3 className="text-xl font-bold text-gray-900 mb-4">{uc.title}</h3>
+                <ul className="space-y-2 mb-4">
+                  {uc.items.map((it, i) => (
+                    <li key={i} className="flex items-start">
+                      <CheckCircle className="h-4 w-4 text-green-500 mr-2 mt-0.5" />
+                      <span className="text-gray-700 text-sm">{it}</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="text-sm text-gray-500">{uc.kpi}</div>
+              </motion.div>
+            ))}
+          </div>
+
+          <p className="text-xs text-gray-500 mt-6">
+            Quellen: <a href="https://www.tenios.de/ki-telefonassistent" target="_blank" rel="noreferrer" className="underline">Tenios</a>,
+            <span> </span>
+            <a href="https://info.doctolib.de/presentation/praxisdigitalisierung/" target="_blank" rel="noreferrer" className="underline">Doctolib</a>
+          </p>
         </div>
       </section>
 
@@ -1340,9 +1389,9 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               className="bg-white p-4 sm:p-6 lg:p-8 rounded-2xl shadow-xl"
             >
               <h3 className="text-xl sm:text-2xl font-bold text-gray-900 mb-4 sm:mb-6 text-center">
-                Voice-Agent Demo
+                Individuelle Voice‑Agents für Unternehmen
               </h3>
-               <p className="text-xs text-gray-500 text-center -mt-4 mb-4">UI Version: 1.4.0</p>
+               <p className="text-xs text-gray-500 text-center -mt-4 mb-4">Live‑Demo – natürlich auf Deutsch</p>
               
               <div className="space-y-4 sm:space-y-6">
                 {/* Audio Visualizer */}
@@ -1392,121 +1441,36 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
                         ? 'text-primary-600'
                         : 'text-gray-500'
                     }`}>
-                      {conversationMode ? (
-                        // Gespräch-Modus Status
-                        isListening
-                          ? isSpeechDetected
-                            ? 'Nehme auf...'
-                            : 'Höre zu...'
+                      {isListening
+                        ? (isSpeechDetected ? 'Nehme auf...' : 'Höre zu...')
                           : isProcessing 
                             ? 'Denkt nach...'
                             : isPlayingResponse
                               ? 'Spricht...'
-                              : 'Bereit für Gespräch'
-                      ) : (
-                        // Klassischer Modus Status
-                        isRecording 
-                        ? 'Hört zu...' 
-                        : isProcessing 
-                        ? 'Denkt nach...'
-                        : isPlayingResponse
-                        ? 'Spricht...'
-                        : !wsConnected
-                        ? 'Verbinde...'
-                        : 'Bereit zum Sprechen'
-                      )}
+                        : wsConnected
+                        ? 'Bereit für Gespräch'
+                        : 'Verbinde...'}
                     </div>
                     <div className="text-sm text-gray-500 mt-1">
-                      {conversationMode ? (
-                        isListening
-                          ? isSpeechDetected
-                            ? 'Ihre Worte werden aufgenommen...'
-                            : 'Sprechen Sie einfach – ich höre automatisch zu'
+                      {isListening
+                        ? (isSpeechDetected ? 'Ihre Worte werden aufgenommen...' : 'Sprechen Sie einfach – ich höre automatisch zu')
                           : isProcessing 
                             ? 'KI verarbeitet Ihre Anfrage...'
                             : isPlayingResponse
-                              ? 'KI-Agent antwortet...'
-                              : 'Klicken Sie „Gespräch starten" für eine natürliche Unterhaltung'
-                      ) : (
-                        isRecording 
-                        ? 'Sprechen Sie deutlich ins Mikrofon' 
-                        : isProcessing 
-                        ? 'KI verarbeitet Ihre Anfrage...'
-                        : isPlayingResponse
-                        ? 'KI-Agent antwortet...'
-                        : !wsConnected
-                        ? 'Verbindung wird hergestellt...'
-                        : 'Klicken Sie den Button, um zu sprechen'
-                      )}
+                        ? 'KI‑Agent antwortet...'
+                        : wsConnected
+                        ? 'Klicken Sie „Gespräch starten" für die Live‑Demo'
+                        : 'Verbindung wird hergestellt...'}
                     </div>
                   </div>
                 </div>
                 
-                {/* Deutsche Stimmenauswahl für Bella Vista */}
-                <div className="mb-4 sm:mb-6">
-                  <h4 className="text-base sm:text-lg font-semibold text-gray-700 mb-2 sm:mb-3 text-center">
-                    Deutsche Stimme wählen
-                  </h4>
-                  <div className="grid grid-cols-2 gap-1.5 sm:gap-2">
-                    {Object.entries(germanVoices).map(([voiceKey, voice]) => (
-                      <button
-                        key={voiceKey}
-                        onClick={() => setSelectedVoice(voiceKey as keyof typeof germanVoices)}
-                        className={`p-2 sm:p-3 rounded-lg border-2 transition-all text-left ${
-                          selectedVoice === voiceKey
-                            ? 'bg-primary-50 border-primary-300 text-primary-700'
-                            : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
-                        }`}
-                      >
-                        <div className="font-medium text-sm sm:text-base">{voice.name}</div>
-                        <div className="text-xs opacity-75">{voice.gender}</div>
-                        <div className="text-xs opacity-60 hidden sm:block">{voice.description}</div>
-                      </button>
-                    ))}
-                  </div>
-                  <div className="text-center mt-1 sm:mt-2">
-                    <span className="text-xs sm:text-sm text-gray-500">
-                      Aktuell: <strong>{germanVoices[selectedVoice].name}</strong> ({germanVoices[selectedVoice].gender})
-                    </span>
-                  </div>
-                </div>
+                {/* Stimmenauswahl entfernt */}
                 
                 {/* Voice Control Buttons */}
                 <div className="text-center">
-                  {/* Mode Selection */}
-                  <div className="mb-4 sm:mb-6">
-                    <div className="flex justify-center gap-1.5 sm:gap-2 mb-3 sm:mb-4">
-                      <button 
-                        onClick={() => setConversationMode(false)}
-                        className={`px-3 sm:px-4 py-2 rounded-lg font-medium transition-all text-sm sm:text-base ${
-                          !conversationMode 
-                            ? 'bg-primary-100 text-primary-700 border-2 border-primary-300' 
-                            : 'bg-gray-100 text-gray-600 border-2 border-gray-200'
-                        }`}
-                      >
-                        Klassisch
-                      </button>
-                      <button 
-                        onClick={() => setConversationMode(true)}
-                        className={`px-3 sm:px-4 py-2 rounded-lg font-medium transition-all text-sm sm:text-base ${
-                          conversationMode 
-                            ? 'bg-green-100 text-green-700 border-2 border-green-300' 
-                            : 'bg-gray-100 text-gray-600 border-2 border-gray-200'
-                        }`}
-                      >
-                        Gespräch
-                      </button>
-                    </div>
-                    <div className="text-xs sm:text-sm text-gray-600 text-center">
-                      {conversationMode 
-                        ? 'Kontinuierliches Gespräch wie am Telefon' 
-                        : 'Aufnehmen → Stoppen → Antwort'
-                      }
-                    </div>
-                  </div>
-
-                  {/* Voice Control Button(s) */}
-                  {conversationMode ? (
+                  {/* Voice Control Button(s) – nur Gesprächsmodus */}
+                  {true ? (
                     // Kontinuierlicher Gesprächsmodus
                     <motion.button 
                       onClick={() => {
@@ -1533,33 +1497,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
                         : 'Gespräch starten'
                       }
                     </motion.button>
-                  ) : (
-                    // Klassischer Aufnahme-Modus
-                  <motion.button 
-                    onClick={isRecording ? stopRecording : startRecording}
-                    disabled={isProcessing || !wsConnected}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    className={`px-6 sm:px-8 lg:px-12 py-3 sm:py-4 rounded-xl sm:rounded-2xl font-bold text-base sm:text-lg lg:text-xl transition-all shadow-xl ${
-                      isRecording 
-                        ? 'bg-gradient-to-r from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800' 
-                        : isProcessing
-                        ? 'bg-gradient-to-r from-gray-400 to-gray-500 text-white cursor-not-allowed'
-                        : !wsConnected
-                        ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white cursor-not-allowed'
-                        : 'bg-gradient-to-r from-primary-600 to-accent-600 text-white hover:from-primary-700 hover:to-accent-700'
-                    }`}
-                  >
-                    {isRecording 
-                      ? 'Stoppen' 
-                      : isProcessing
-                      ? 'Verarbeite...'
-                      : !wsConnected
-                      ? 'Verbinde...'
-                      : 'Sprechen'
-                    }
-                  </motion.button>
-                  )}
+                  ) : null}
                   
                   {/* Status Indicators */}
                   <div className="mt-3 sm:mt-4 space-y-2">
@@ -1585,21 +1523,6 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               </div>
               
               <div className="mt-6 sm:mt-8 space-y-3 sm:space-y-4">
-                <h4 className="font-semibold text-gray-900 text-sm sm:text-base">Demo-Szenarien:</h4>
-                <div className="grid grid-cols-1 gap-2">
-                  {[
-                    "Tischreservierung für 4 Personen",
-                    "Nachfrage zu Allergenen im Menü", 
-                    "Öffnungszeiten und Anfahrt",
-                    "Stornierung einer Reservierung"
-                  ].map((scenario, index) => (
-                    <div key={index} className="flex items-center p-2 sm:p-3 bg-gray-50 rounded-lg">
-                      <CheckCircle className="h-4 w-4 sm:h-5 sm:w-5 text-green-500 mr-2 sm:mr-3 flex-shrink-0" />
-                      <span className="text-xs sm:text-sm text-gray-700">{scenario}</span>
-                    </div>
-                  ))}
-                </div>
-
                 {/* Text-Test Button */}
                 <div className="mb-4">
                   <button
@@ -1618,7 +1541,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
                   <div className="mt-8 p-6 bg-gray-50 rounded-xl">
                     <h4 className="font-semibold text-gray-900 mb-4 flex items-center">
                       <Volume2 className="h-5 w-5 mr-2" />
-                      {conversationMode ? 'Live Gespräch' : 'Live Demo Chat'}
+                      {'Live Gespräch'}
                     </h4>
                     
                     <div className="space-y-4">
@@ -1655,7 +1578,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
                 )}
 
                 {/* Konversations-Historie (nur im Gespräch-Modus) */}
-                {conversationMode && conversationHistory.length > 0 && (
+                {conversationHistory.length > 0 && (
                   <div className="mt-8 p-6 bg-white border-2 border-green-200 rounded-xl">
                     <h4 className="font-semibold text-gray-900 mb-4 flex items-center">
                       <MessageCircle className="h-5 w-5 mr-2 text-green-600" />
@@ -1707,22 +1630,17 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
             >
               <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg">
                 <h4 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 sm:mb-4">
-                  Unsere Technologie
+                  Was Ihr Voice‑Agent kann
                 </h4>
-                <div className="space-y-3 sm:space-y-4">
-                  <div className="flex items-center">
-                    <div className="w-3 h-3 bg-blue-500 rounded-full mr-3"></div>
-                    <span className="text-sm sm:text-base text-gray-700"><strong>Deepgram:</strong> Präzise Spracherkennung</span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 text-sm sm:text-base text-gray-700">
+                  <div className="bg-gray-50 p-3 rounded-lg">Terminbuchungen & Kalender‑Integration</div>
+                  <div className="bg-gray-50 p-3 rounded-lg">E‑Mails & SMS automatisch versenden</div>
+                  <div className="bg-gray-50 p-3 rounded-lg">Bestellungen aufnehmen & weiterleiten</div>
+                  <div className="bg-gray-50 p-3 rounded-lg">Lead‑Qualifizierung & CRM‑Updates</div>
+                  <div className="bg-gray-50 p-3 rounded-lg">Daten aus Datenbanken/APIs abfragen</div>
+                  <div className="bg-gray-50 p-3 rounded-lg">Intelligentes Call‑Routing</div>
                   </div>
-                  <div className="flex items-center">
-                    <div className="w-3 h-3 bg-green-500 rounded-full mr-3"></div>
-                    <span className="text-sm sm:text-base text-gray-700"><strong>Gemini Flash:</strong> Blitzschnelle KI-Antworten</span>
-                  </div>
-                  <div className="flex items-center">
-                    <div className="w-3 h-3 bg-purple-500 rounded-full mr-3"></div>
-                    <span className="text-sm sm:text-base text-gray-700"><strong>smallest.ai:</strong> Natürliche Sprachsynthese</span>
-                  </div>
-                </div>
+                <p className="text-xs text-gray-500 mt-3">Konfiguration nach Wunsch: nur bei besetzter Leitung annehmen oder 100% der Anrufe.</p>
               </div>
 
               <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg">
@@ -1861,14 +1779,17 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
           <div className="text-center">
             <div className="flex items-center justify-center space-x-2 mb-4">
               <Bot className="h-8 w-8 text-primary-500" />
-              <span className="font-bold text-xl">KI-Service Pro</span>
+              <span className="font-bold text-xl">Vocaris AI</span>
             </div>
-            <p className="text-gray-400 mb-8">
-              Revolutionieren Sie Ihren Kundenservice mit künstlicher Intelligenz
+            <p className="text-gray-400 mb-2">
+              Individuelle Voice‑Agents für Unternehmen – entwickelt nach Ihren Prozessen
+            </p>
+            <p className="text-gray-300 mb-8">
+              Kontakt: <a href="mailto:info@vocaris-solutions.de" className="underline">info@vocaris-solutions.de</a>
             </p>
             <div className="border-t border-gray-700 pt-8">
               <p className="text-gray-500 text-sm">
-                © 2024 KI-Service Pro. Alle Rechte vorbehalten.
+                © 2025 Vocaris AI. Alle Rechte vorbehalten.
               </p>
             </div>
           </div>

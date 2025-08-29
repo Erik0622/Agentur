@@ -1,0 +1,5 @@
+warning: in the working copy of 'dist/index.html', LF will be replaced by CRLF the next time Git touches it
+dist/assets/index-aaa71f5a.js
+dist/index.html
+gemini-live-server.js
+src/App.tsx

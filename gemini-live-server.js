@@ -17,19 +17,60 @@ if (!KEY) {
 }
 console.log('[BOOT] ✅ API-Key gefunden:', KEY ? `${KEY.slice(0,8)}...${KEY.slice(-4)}` : 'NONE');
 
-// System Prompt für Restaurant
+// Allgemeiner System‑Prompt (Deutsch, B2B, Voice Agents mit Funktionsaufrufen)
 const SYSTEM_PROMPT = [
-  'Du bist der freundliche Telefon‑Assistent des Restaurants "Bella Vista" in München.',
-  'Aufgabe: Kunden am Telefon begrüßen, Reservierungen aufnehmen, Fragen zur Speisekarte beantworten.',
-  'Beantworte stets kurz und natürlich. Max. 1–2 Sätze pro Antwort.',
-  'Details: Öffnungszeiten Mo–Fr 12:00–22:00, Sa 12:00–23:00, So geschlossen.',
-  'Telefon: +49 89 1234567, Adresse: Sonnenstraße 12, 80331 München.'
+  'Sprich ausschließlich Deutsch. Du bist ein professioneller Voice‑Agent für Unternehmen.',
+  'Ziel: Telefonate effizient und natürlich führen. Antworte präzise, freundlich und kurz (1–2 Sätze).',
+  'Wenn der Anwendungsfall es erfordert, frage gezielt nach fehlenden Informationen.',
+  'Unterstützte Funktionsaufrufe (je nach Kunde konfigurierbar):',
+  '- Terminbuchungen und Kalender‑Integration (Google/Microsoft, ICS).',
+  '- E‑Mail und SMS versenden (z. B. Bestätigungen, Benachrichtigungen).',
+  '- Bestellungen entgegennehmen und per SMS/E-Mail/Webhook weiterleiten.',
+  '- Leads qualifizieren und Informationen ins CRM schreiben/aktualisieren.',
+  '- Daten aus Datenbanken/REST‑APIs abfragen (Kundendaten, Verfügbarkeiten, Preise).',
+  '- Call‑Routing (z. B. nur bei besetzter Leitung annehmen oder 100% aller Anrufe).',
+  'Richtlinien:',
+  '- Keine vertraulichen Daten vorlesen. Frage bei Sensiblem nach Opt‑in.',
+  '- Bleibe immer sachlich, hilfreich und respektvoll.',
+  '- Falls dir Informationen fehlen, frage nach oder gib transparent an, was du brauchst.'
 ].join('\n');
 
 
 // --- Express App Setup ---
 const app = express();
 const server = http.createServer(app);
+
+// JSON Body Parser für Voice Agent API
+app.use(express.json({ limit: '6mb' }));
+
+// Voice Agent API Route
+app.post('/api/voice-agent', async (req, res) => {
+  try {
+    console.log('📨 Voice Agent Request:', req.body?.audio?.length || 0, 'chars');
+    
+    // Import voice agent module
+    const { default: voiceAgentHandler } = await import('./api/voice-agent.js');
+    
+    // Create mock Vercel-style request/response
+    const mockReq = { 
+      method: 'POST', 
+      body: req.body,
+      headers: req.headers 
+    };
+    const mockRes = {
+      status: (code) => ({ json: (data) => res.status(code).json(data) }),
+      json: (data) => res.json(data),
+      setHeader: (name, value) => res.setHeader(name, value),
+      write: (chunk) => res.write(chunk),
+      end: (chunk) => res.end(chunk)
+    };
+    
+    await voiceAgentHandler(mockReq, mockRes);
+  } catch (error) {
+    console.error('❌ Voice Agent Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // Statische Files aus dem 'dist' Ordner serven
 const __filename = fileURLToPath(import.meta.url);
@@ -57,14 +98,79 @@ async function openGeminiSession(ws, id) {
           console.log(`[${id}] 🚀 Session ready - Client kann Audio senden`);
         },
         onmessage: (msg) => {
-          // Audio kommt Base64-kodiert als 24kHz PCM zurück
-          if (msg?.data) {
-            console.log(`[${id}] 📥 Gemini audio response ${msg.data.length} chars`);
-            ws.send(JSON.stringify({ type: 'audio_out', data: msg.data }));
-          }
-          if (msg?.serverContent?.turnComplete) {
-            console.log(`[${id}] 🔄 Turn complete`);
-            ws.send(JSON.stringify({ type: 'turn_complete' }));
+          try {
+            // Diagnose: Struktur ausgeben
+            const topKeys = msg && typeof msg === 'object' ? Object.keys(msg) : typeof msg;
+            console.log(`[${id}] 🔔 onmessage keys:`, topKeys);
+            
+            // Detaillierte serverContent Analyse
+            if (msg?.serverContent) {
+              console.log(`[${id}] 🔍 serverContent struktur:`, JSON.stringify(msg.serverContent, null, 2).slice(0, 500));
+            }
+
+            // 1) Direkte data-Payload (Base64 PCM)
+            if (msg?.data && typeof msg.data === 'string' && msg.data.length > 0) {
+              console.log(`[${id}] 📥 Gemini audio response (data) ${msg.data.length} chars`);
+              ws.send(JSON.stringify({ type: 'audio_out', data: msg.data }));
+            }
+
+            // 2) modelContent → parts → inlineData (Base64 PCM)
+            const partsA = msg?.modelContent?.[0]?.parts;
+            if (Array.isArray(partsA)) {
+              for (const p of partsA) {
+                const inline = p?.inlineData;
+                if (inline?.mimeType?.startsWith('audio/pcm') && typeof inline?.data === 'string') {
+                  console.log(`[${id}] 📥 Gemini audio inlineData ${inline.data.length} chars @ ${inline.mimeType}`);
+                  ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                }
+                if (p?.text) {
+                  console.log(`[${id}] 💬 Gemini text:`, String(p.text).slice(0, 120));
+                }
+              }
+            }
+
+            // 3) candidates[0].content.parts style
+            const partsB = msg?.candidates?.[0]?.content?.parts;
+            if (Array.isArray(partsB)) {
+              for (const p of partsB) {
+                const inline = p?.inlineData;
+                if (inline?.mimeType?.startsWith('audio/pcm') && typeof inline?.data === 'string') {
+                  console.log(`[${id}] 📥 Gemini audio candidate inlineData ${inline.data.length} chars @ ${inline.mimeType}`);
+                  ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                }
+                if (p?.text) {
+                  console.log(`[${id}] 💬 Gemini text (cand):`, String(p.text).slice(0, 120));
+                }
+              }
+            }
+
+            // 4) serverContent → modelTurn → parts style (das ist was wir bekommen!)
+            const partsC = msg?.serverContent?.modelTurn?.parts;
+            if (Array.isArray(partsC)) {
+              for (const p of partsC) {
+                const inline = p?.inlineData;
+                if (inline?.mimeType?.startsWith('audio/pcm') && typeof inline?.data === 'string') {
+                  console.log(`[${id}] 📥 Gemini audio serverContent.modelTurn inlineData ${inline.data.length} chars @ ${inline.mimeType}`);
+                  console.log(`[${id}] 📤 WebSocket readyState: ${ws.readyState} (sending audio_out)`);
+                  try {
+                    ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                    console.log(`[${id}] ✅ Audio_out sent successfully`);
+                  } catch (e) {
+                    console.error(`[${id}] ❌ Failed to send audio_out:`, e);
+                  }
+                }
+                if (p?.text) {
+                  console.log(`[${id}] 💬 Gemini text (server):`, String(p.text).slice(0, 120));
+                }
+              }
+            }
+
+            if (msg?.serverContent?.turnComplete) {
+              console.log(`[${id}] 🔄 Turn complete`);
+              ws.send(JSON.stringify({ type: 'turn_complete' }));
+            }
+          } catch (err) {
+            console.error(`[${id}] ❌ onmessage parse error`, err);
           }
         },
         onerror: (e) => {
@@ -89,9 +195,26 @@ wss.on('connection', async (ws) => {
   let session;
   let recording = false;
   let bytesIn = 0;
+  let chunkCount = 0;
+  let inactivityTimer = null;
 
   // Session sofort öffnen, damit der Client session_ready früh bekommt
   session = await openGeminiSession(ws, id);
+
+  function scheduleTurnEnd() {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(() => {
+      try {
+        if (!session) return;
+        console.log(`[${id}] ⛳ Inaktivität erreicht – sende audioStreamEnd + turnComplete (chunks=${chunkCount})`);
+        session.sendRealtimeInput({ media: [], audioStreamEnd: true, turnComplete: true });
+        recording = false;
+        chunkCount = 0;
+      } catch (e) {
+        console.error(`[${id}] ❌ Fehler bei turnComplete:`, e?.message || e);
+      }
+    }, 800); // 800ms ohne neuen Chunk => Turn beenden
+  }
 
   ws.on('message', async (raw) => {
     try {
@@ -102,10 +225,63 @@ wss.on('connection', async (ws) => {
           console.log(`[${id}] 📩 text>`, asText.slice(0, 120));
           const m = JSON.parse(asText);
 
+          // Voice Agent Route - traditioneller Text/Audio Chat
+          if (m.type === 'voice_agent') {
+            console.log(`[${id}] 🎤 Voice Agent Request:`, m.data?.audio?.length || 0, 'chars');
+            try {
+              // Import voice agent module
+              const { default: voiceAgentHandler } = await import('./api/voice-agent.js');
+              
+              // Create streaming response handler
+              let responseText = '';
+              const mockRes = {
+                setHeader: () => {},
+                write: (chunk) => {
+                  try {
+                    const lines = chunk.toString().split('\n').filter(line => line.trim());
+                    for (const line of lines) {
+                      if (line.startsWith('data: ')) {
+                        const data = JSON.parse(line.slice(6));
+                        console.log(`[${id}] 📤 Voice Agent Event:`, data.type);
+                        
+                        // Forward voice agent events to WebSocket
+                        ws.send(JSON.stringify(data));
+                        
+                        if (data.type === 'llm_chunk' && data.data?.text) {
+                          responseText += data.data.text;
+                        }
+                      }
+                    }
+                  } catch (e) {
+                    console.warn(`[${id}] ⚠️ Parse voice agent chunk:`, e.message);
+                  }
+                },
+                end: () => {
+                  console.log(`[${id}] ✅ Voice Agent Response complete:`, responseText.slice(0, 50));
+                  ws.send(JSON.stringify({ type: 'end' }));
+                }
+              };
+              
+              const mockReq = { 
+                method: 'POST', 
+                body: m.data,
+                headers: { 'content-type': 'application/json' }
+              };
+              
+              await voiceAgentHandler(mockReq, mockRes);
+            } catch (error) {
+              console.error(`[${id}] ❌ Voice Agent Error:`, error);
+              ws.send(JSON.stringify({ type: 'error', data: { message: error.message } }));
+            }
+            return;
+          }
+
           if (m.type === 'start_audio') {
             session = session || await openGeminiSession(ws, id);
             if (!session) return; // Fehler schon an Client geschickt
             recording = true;
+            chunkCount = 0;
+            if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
             console.log(`[${id}] ▶️ start_audio ack`);
             // Sende session_ready erneut, falls der Client das erste verpasst hat
             try { ws.send(JSON.stringify({ type: 'session_ready' })); } catch {}
@@ -115,15 +291,19 @@ wss.on('connection', async (ws) => {
             if (!recording || !session) return;
             const buf = Buffer.from(m.data, 'base64');
             bytesIn += buf.length;
-            console.log(`[${id}] 📤 → Gemini audio ${buf.length} bytes (b64)`);
-            // Use 'media' per @google/genai live API
-            session.sendRealtimeInput({ media: { data: m.data, mimeType: 'audio/pcm;rate=16000' } });
+            chunkCount += 1;
+            console.log(`[${id}] 📤 → Gemini audio ${buf.length} bytes (b64) [chunk #${chunkCount}]`);
+            // Use 'media' array per @google/genai live API
+            session.sendRealtimeInput({ media: [{ data: m.data, mimeType: 'audio/pcm;rate=24000' }] });
+            scheduleTurnEnd();
             return;
           }
           if (m.type === 'stop_audio') {
             recording = false;
-            session?.sendRealtimeInput({ audioStreamEnd: true });
-            console.log(`[${id}] ⏹ stop_audio ack`);
+            if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
+            // Markiere Turn-Ende explizit
+            session?.sendRealtimeInput({ media: [], audioStreamEnd: true, turnComplete: true });
+            console.log(`[${id}] ⏹ stop_audio ack (audioStreamEnd + turnComplete)`);
             return;
           }
           if (m.type === 'say') {
@@ -147,9 +327,12 @@ wss.on('connection', async (ws) => {
         console.log(`[${id}] 📦 bin> true ${raw.length}`);
         if (!recording || !session) return;
         bytesIn += raw.length;
+        chunkCount += 1;
         const b64 = raw.toString('base64');
-        // Use 'media' per @google/genai live API
-        session.sendRealtimeInput({ media: { data: b64, mimeType: 'audio/pcm;rate=16000' } });
+        // Use 'media' array per @google/genai live API
+        session.sendRealtimeInput({ media: [{ data: b64, mimeType: 'audio/pcm;rate=24000' }] });
+        console.log(`[${id}] 📤 → Gemini audio ${Math.max(0, raw.length - (raw.length - 1364))} bytes (bin) [chunk #${chunkCount}]`);
+        scheduleTurnEnd();
         return;
       }
     } catch (e) {
