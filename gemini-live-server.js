@@ -8,6 +8,78 @@ import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import { GoogleGenAI, Modality } from '@google/genai';
 
+// ===== Audio Helpers for Twilio Media Streams (PCM16 ↔ μ-law, Resample) =====
+function muLawEncodeSample(pcmSample) {
+  // pcmSample: Int16 (-32768..32767)
+  const MAX = 32768;
+  const MU = 255;
+  const x = Math.max(-MAX, Math.min(MAX, pcmSample)) / MAX; // normalize to [-1,1]
+  const sign = x < 0 ? 0x80 : 0x00;
+  const abs = Math.abs(x);
+  const muEncoded = Math.log(1 + MU * abs) / Math.log(1 + MU);
+  let quantized = ((muEncoded * 127) | 0) & 0x7F;
+  return (~(sign | quantized)) & 0xFF; // 8-bit μ-law
+}
+
+function resamplePCM16(int16Array, inRate, outRate) {
+  if (inRate === outRate) return int16Array;
+  const ratio = outRate / inRate;
+  const outLen = Math.floor(int16Array.length * ratio);
+  const out = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const srcIndex = i / ratio;
+    const i0 = Math.floor(srcIndex);
+    const i1 = Math.min(i0 + 1, int16Array.length - 1);
+    const t = srcIndex - i0;
+    out[i] = ((1 - t) * int16Array[i0] + t * int16Array[i1]) | 0;
+  }
+  return out;
+}
+
+function bytesToInt16LE(buf) {
+  const len = Math.floor(buf.length / 2);
+  const out = new Int16Array(len);
+  for (let i = 0; i < len; i++) {
+    out[i] = buf.readInt16LE(i * 2);
+  }
+  return out;
+}
+
+function encodePCM16ToMuLaw8k(pcmInt16, sourceRate) {
+  const pcm8k = resamplePCM16(pcmInt16, sourceRate, 8000);
+  const out = Buffer.alloc(pcm8k.length);
+  for (let i = 0; i < pcm8k.length; i++) out[i] = muLawEncodeSample(pcm8k[i]);
+  return out;
+}
+
+function chunkBuffer(buf, size) {
+  const chunks = [];
+  for (let i = 0; i < buf.length; i += size) chunks.push(buf.slice(i, i + size));
+  return chunks;
+}
+
+function parsePcmRateFromMime(mime) {
+  const m = typeof mime === 'string' ? mime.match(/rate=(\d+)/i) : null;
+  return m ? parseInt(m[1], 10) : 16000; // fallback
+}
+
+function sendTwilioOutboundAudio(ws, streamSid, base64PcmLE, mime) {
+  if (!streamSid) return;
+  const sourceRate = parsePcmRateFromMime(mime);
+  const pcmBytes = Buffer.from(base64PcmLE, 'base64');
+  const pcm16 = bytesToInt16LE(pcmBytes);
+  const mulaw8k = encodePCM16ToMuLaw8k(pcm16, sourceRate);
+  // Twilio erwartet ~20ms Frames @8kHz => 160 Samples/Bytes pro Frame
+  const frames = chunkBuffer(mulaw8k, 160);
+  for (const frame of frames) {
+    ws.send(JSON.stringify({
+      event: 'media',
+      streamSid,
+      media: { payload: frame.toString('base64') }
+    }));
+  }
+}
+
 const PORT = process.env.PORT || 8080;
 const KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
 
@@ -153,12 +225,7 @@ async function openGeminiSession(ws, id) {
                 if (inline?.mimeType?.startsWith('audio/pcm') && typeof inline?.data === 'string') {
                   console.log(`[${id}] 📥 Gemini audio inlineData ${inline.data.length} chars @ ${inline.mimeType}`);
                   if (isTwilio) {
-                    const audioBuffer = Buffer.from(inline.data, 'base64');
-                    const media = {
-                      event: 'media',
-                      media: { payload: audioBuffer.toString('base64') }
-                    };
-                    ws.send(JSON.stringify(media));
+                    sendTwilioOutboundAudio(ws, twilioStreamSid, inline.data, inline.mimeType);
                   } else {
                     ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
                   }
@@ -177,12 +244,7 @@ async function openGeminiSession(ws, id) {
                 if (inline?.mimeType?.startsWith('audio/pcm') && typeof inline?.data === 'string') {
                   console.log(`[${id}] 📥 Gemini audio candidate inlineData ${inline.data.length} chars @ ${inline.mimeType}`);
                   if (isTwilio) {
-                    const audioBuffer = Buffer.from(inline.data, 'base64');
-                    const media = {
-                      event: 'media',
-                      media: { payload: audioBuffer.toString('base64') }
-                    };
-                    ws.send(JSON.stringify(media));
+                    sendTwilioOutboundAudio(ws, twilioStreamSid, inline.data, inline.mimeType);
                   } else {
                     ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
                   }
@@ -203,17 +265,7 @@ async function openGeminiSession(ws, id) {
                   console.log(`[${id}] 📤 WebSocket readyState: ${ws.readyState} (sending audio_out)`);
                   try {
                     if (isTwilio) {
-                      // Für Twilio: Sende Audio als Media Stream Format
-                      const audioBuffer = Buffer.from(inline.data, 'base64');
-                      const media = {
-                        event: 'media',
-                        streamSid: 'stream_sid', // Twilio wird das beim Start setzen
-                        media: {
-                          payload: audioBuffer.toString('base64')
-                        }
-                      };
-                      ws.send(JSON.stringify(media));
-                      console.log(`[${id}] 📞 Audio sent to Twilio (${audioBuffer.length} bytes)`);
+                      sendTwilioOutboundAudio(ws, twilioStreamSid, inline.data, inline.mimeType);
                     } else {
                       // Für Web Clients: Normal audio_out
                       ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
@@ -265,6 +317,7 @@ wss.on('connection', async (ws, req) => {
   let bytesIn = 0;
   let chunkCount = 0;
   let inactivityTimer = null;
+  let twilioStreamSid = null;
 
   // Session sofort öffnen, damit der Client session_ready früh bekommt
   session = await openGeminiSession(ws, id);
@@ -293,7 +346,7 @@ wss.on('connection', async (ws, req) => {
           console.log(`[${id}] 📩 text>`, asText.slice(0, 120));
           const m = JSON.parse(asText);
 
-          // Twilio Media Stream Handling
+          // ===== Twilio Media Stream Handling =====
           if (isTwilio && m.event) {
             console.log(`[${id}] 📞 Twilio event:`, m.event);
             
@@ -301,6 +354,7 @@ wss.on('connection', async (ws, req) => {
               case 'start':
                 console.log(`[${id}] 📞 Twilio call started, streamSid:`, m.start?.streamSid);
                 recording = true;
+                twilioStreamSid = m.start?.streamSid || twilioStreamSid;
                 // Sende session_ready an Twilio (falls noch nicht gesendet)
                 if (session) {
                   ws.send(JSON.stringify({ type: 'session_ready' }));
@@ -309,20 +363,19 @@ wss.on('connection', async (ws, req) => {
                 
               case 'media':
                 if (recording && session && m.media?.payload) {
-                  // Twilio sendet Audio als base64-encoded µ-law (mulaw)
-                  // Konvertiere zu Binary und sende an Gemini Live API
-                  const audioData = Buffer.from(m.media.payload, 'base64');
-                  bytesIn += audioData.length;
+                  // Twilio sendet µ-law @8kHz, 20ms Frames → dekodieren zu PCM16 und auf 16kHz hochsamplen
+                  const ulawBuffer = Buffer.from(m.media.payload, 'base64');
+                  const pcm16 = muLawBufferToPCM16(ulawBuffer);
+                  const pcm16_16k = resamplePCM16(pcm16, 8000, 16000);
+                  const pcm16_16k_bytes = int16ToBytes(pcm16_16k);
+                  bytesIn += ulawBuffer.length;
                   chunkCount++;
-                  
-                  // Sende an Gemini Live API
+
+                  // Sende an Gemini (PCM 16k, base64)
                   session.send(JSON.stringify({
                     type: 'realtimeInput',
                     realtimeInput: {
-                      mediaChunks: [{
-                        mimeType: 'audio/pcm',
-                        data: audioData.toString('base64')
-                      }]
+                      mediaChunks: [{ mimeType: 'audio/pcm', data: Buffer.from(pcm16_16k_bytes).toString('base64') }]
                     }
                   }));
                   
