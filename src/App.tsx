@@ -862,8 +862,35 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               className="flex items-center space-x-2"
             >
               <Bot className="h-8 w-8 text-primary-600" />
-              <span className="font-bold text-xl text-gray-900">KI-Service Pro mit Vocaris AI</span>
+              <span className="font-bold text-xl text-gray-900">Vocaris AI</span>
             </motion.div>
+            
+            <div className="hidden md:flex items-center space-x-8">
+              <button
+                onClick={() => document.getElementById('use-cases-section')?.scrollIntoView({ behavior: 'smooth' })}
+                className="text-gray-600 hover:text-primary-600 transition-colors font-medium"
+              >
+                Use Cases
+              </button>
+              <button
+                onClick={() => document.getElementById('demo-section')?.scrollIntoView({ behavior: 'smooth' })}
+                className="text-gray-600 hover:text-primary-600 transition-colors font-medium"
+              >
+                Demo
+              </button>
+              <button
+                onClick={() => document.getElementById('preise-section')?.scrollIntoView({ behavior: 'smooth' })}
+                className="text-gray-600 hover:text-primary-600 transition-colors font-medium"
+              >
+                Preise
+              </button>
+              <button
+                onClick={scrollToCalendar}
+                className="text-gray-600 hover:text-primary-600 transition-colors font-medium"
+              >
+                Kontakt
+              </button>
+            </div>
             
             <motion.button
               initial={{ opacity: 0, x: 20 }}
@@ -872,9 +899,9 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               whileTap={{ scale: 0.95 }}
               onClick={scrollToCalendar}
               className="bg-primary-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-primary-700 transition-colors shadow-glow"
-                          >
-                Kostenlos Termin buchen
-              </motion.button>
+            >
+              Kostenlos Termin buchen
+            </motion.button>
           </div>
         </div>
       </nav>
@@ -970,7 +997,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
         </div>
       </section>
 
-      {/* Technology & Integration Section */}
+      {/* Service Excellence Section */}
       <section className="py-20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <motion.div
@@ -981,161 +1008,124 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
             className="text-center mb-16"
           >
             <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
-              Enterprise-<span className="gradient-text">Technologie</span> & nahtlose Integration
+              Rundum-sorglos <span className="gradient-text">Service</span>
             </h2>
             <p className="text-xl text-gray-600 max-w-4xl mx-auto">
-              Modernste KI-Technologie mit höchsten Sicherheitsstandards – entwickelt für Unternehmen, die auf Qualität und Datenschutz setzen
+              Null Aufwand für Sie – wir übernehmen alles von der Telefonnummer bis zum 24/7 Support
             </p>
           </motion.div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-16">
-            {/* Sicherheit & Datenschutz */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 mb-16">
+            {/* Service & Support */}
             <motion.div
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6 }}
+              initial={{ opacity: 0, x: -50 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.8 }}
               viewport={{ once: true }}
-              className="bg-gradient-to-br from-blue-50 to-indigo-50 p-8 rounded-2xl border border-blue-100"
+              className="space-y-8"
             >
-              <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-6">
-                <CheckCircle className="h-8 w-8 text-blue-600" />
-              </div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-4">Sicherheit & Datenschutz</h3>
-              <div className="space-y-3 text-gray-700">
-                <div className="flex items-start">
-                  <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
-                  <span>DSGVO-konforme Datenverarbeitung in Deutschland</span>
+              <div className="bg-gradient-to-br from-green-50 to-emerald-50 p-8 rounded-2xl border border-green-100">
+                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-6">
+                  <CheckCircle className="h-8 w-8 text-green-600" />
                 </div>
-                <div className="flex items-start">
-                  <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
-                  <span>End-to-End Verschlüsselung aller Gespräche</span>
-                </div>
-                <div className="flex items-start">
-                  <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
-                  <span>ISO 27001 zertifizierte Infrastruktur</span>
-                </div>
-                <div className="flex items-start">
-                  <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
-                  <span>Audit-Logs für vollständige Nachvollziehbarkeit</span>
+                <h3 className="text-2xl font-bold text-gray-900 mb-6">Komplettservice ohne Aufwand</h3>
+                <div className="space-y-4">
+                  <div className="flex items-start">
+                    <div className="w-3 h-3 bg-green-500 rounded-full mt-2 mr-4 flex-shrink-0"></div>
+                    <div>
+                      <div className="font-semibold text-gray-900">Telefonnummer-Bereitstellung</div>
+                      <div className="text-gray-600 text-sm">Wir besorgen und konfigurieren Ihre geschäftliche Rufnummer</div>
+                    </div>
+                  </div>
+                  <div className="flex items-start">
+                    <div className="w-3 h-3 bg-green-500 rounded-full mt-2 mr-4 flex-shrink-0"></div>
+                    <div>
+                      <div className="font-semibold text-gray-900">Keine Einrichtungskosten</div>
+                      <div className="text-gray-600 text-sm">Setup, Konfiguration und Testphase kostenfrei</div>
+                    </div>
+                  </div>
+                  <div className="flex items-start">
+                    <div className="w-3 h-3 bg-green-500 rounded-full mt-2 mr-4 flex-shrink-0"></div>
+                    <div>
+                      <div className="font-semibold text-gray-900">24/7 Premium Support</div>
+                      <div className="text-gray-600 text-sm">Unser Expertenteam steht Ihnen rund um die Uhr zur Verfügung</div>
+                    </div>
+                  </div>
+                  <div className="flex items-start">
+                    <div className="w-3 h-3 bg-green-500 rounded-full mt-2 mr-4 flex-shrink-0"></div>
+                    <div>
+                      <div className="font-semibold text-gray-900">Individuelle API-Integration</div>
+                      <div className="text-gray-600 text-sm">Maßgeschneiderte Anbindung an Ihre bestehenden Systeme</div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </motion.div>
 
-            {/* Integration & Setup */}
+            {/* Performance & Technologie */}
             <motion.div
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.1 }}
+              initial={{ opacity: 0, x: 50 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.8 }}
               viewport={{ once: true }}
-              className="bg-gradient-to-br from-green-50 to-emerald-50 p-8 rounded-2xl border border-green-100"
+              className="space-y-8"
             >
-              <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-6">
-                <Bot className="h-8 w-8 text-green-600" />
+              <div className="bg-gradient-to-br from-blue-50 to-indigo-50 p-8 rounded-2xl border border-blue-100">
+                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-6">
+                  <Bot className="h-8 w-8 text-blue-600" />
+                </div>
+                <h3 className="text-2xl font-bold text-gray-900 mb-6">Premium Performance</h3>
+                <div className="grid grid-cols-2 gap-6 mb-6">
+                  <div className="text-center p-4 bg-white rounded-xl shadow-sm">
+                    <div className="text-2xl font-bold text-blue-600">&lt; 500ms</div>
+                    <div className="text-sm text-gray-600">Antwortzeit</div>
+                  </div>
+                  <div className="text-center p-4 bg-white rounded-xl shadow-sm">
+                    <div className="text-2xl font-bold text-green-600">99.9%</div>
+                    <div className="text-sm text-gray-600">Uptime</div>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <div className="flex items-center">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full mr-3"></div>
+                    <span className="text-gray-700">Unbegrenzte parallele Gespräche</span>
+                  </div>
+                  <div className="flex items-center">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full mr-3"></div>
+                    <span className="text-gray-700">Qualitativ hochwertigste KI-Stimmen</span>
+                  </div>
+                  <div className="flex items-center">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full mr-3"></div>
+                    <span className="text-gray-700">Failover-Systeme für maximale Ausfallsicherheit</span>
+                  </div>
+                </div>
               </div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-4">Schnelle Integration</h3>
-              <div className="space-y-3 text-gray-700">
-                <div className="flex items-start">
-                  <div className="w-2 h-2 bg-green-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
-                  <span>Setup in unter 48h ohne IT-Aufwand</span>
-                </div>
-                <div className="flex items-start">
-                  <div className="w-2 h-2 bg-green-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
-                  <span>Nahtlose API-Anbindung an 2000+ Tools</span>
-                </div>
-                <div className="flex items-start">
-                  <div className="w-2 h-2 bg-green-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
-                  <span>Direktanbindung an CRM, ERP, Kalender</span>
-                </div>
-                <div className="flex items-start">
-                  <div className="w-2 h-2 bg-green-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
-                  <span>White-Label Lösung für Ihr Branding</span>
-                </div>
-              </div>
-            </motion.div>
 
-            {/* Performance & Skalierung */}
-            <motion.div
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.2 }}
-              viewport={{ once: true }}
-              className="bg-gradient-to-br from-purple-50 to-violet-50 p-8 rounded-2xl border border-purple-100"
-            >
-              <div className="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mb-6">
-                <TrendingDown className="h-8 w-8 text-purple-600 transform rotate-180" />
-              </div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-4">Enterprise Performance</h3>
-              <div className="space-y-3 text-gray-700">
-                <div className="flex items-start">
-                  <div className="w-2 h-2 bg-purple-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
-                  <span>&lt; 500ms Antwortzeit garantiert</span>
-                </div>
-                <div className="flex items-start">
-                  <div className="w-2 h-2 bg-purple-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
-                  <span>Unbegrenzte parallele Gespräche</span>
-                </div>
-                <div className="flex items-start">
-                  <div className="w-2 h-2 bg-purple-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
-                  <span>99.9% Uptime mit Failover-Systemen</span>
-                </div>
-                <div className="flex items-start">
-                  <div className="w-2 h-2 bg-purple-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
-                  <span>Auto-Scaling bei Lastspitzen</span>
+              {/* Datenschutz */}
+              <div className="bg-gradient-to-br from-purple-50 to-violet-50 p-6 rounded-xl border border-purple-100">
+                <h4 className="font-bold text-gray-900 mb-3">Datenschutz & Sicherheit</h4>
+                <div className="space-y-2 text-sm text-gray-700">
+                  <div className="flex items-center">
+                    <div className="w-2 h-2 bg-purple-500 rounded-full mr-3"></div>
+                    <span>Google Live API Standards - höchste Sicherheit</span>
+                  </div>
+                  <div className="flex items-center">
+                    <div className="w-2 h-2 bg-purple-500 rounded-full mr-3"></div>
+                    <span>DSGVO-konforme Datenverarbeitung</span>
+                  </div>
+                  <div className="flex items-center">
+                    <div className="w-2 h-2 bg-purple-500 rounded-full mr-3"></div>
+                    <span>End-to-End Verschlüsselung aller Gespräche</span>
+                  </div>
                 </div>
               </div>
             </motion.div>
           </div>
-
-          {/* Kostenmodell & ROI */}
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8 }}
-            viewport={{ once: true }}
-            className="bg-gradient-to-r from-gray-900 to-gray-800 p-8 lg:p-12 rounded-3xl text-white"
-          >
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
-              <div>
-                <h3 className="text-3xl font-bold mb-6">Transparentes Kostenmodell</h3>
-                <p className="text-gray-300 mb-8">
-                  Keine versteckten Kosten, keine Mindestlaufzeit – Sie zahlen nur für das, was Sie nutzen
-                </p>
-                <div className="grid grid-cols-2 gap-6">
-                  <div className="text-center p-4 bg-white/10 rounded-xl">
-                    <div className="text-2xl font-bold text-accent-400">€0.02</div>
-                    <div className="text-sm text-gray-300">pro Gespräch</div>
-                  </div>
-                  <div className="text-center p-4 bg-white/10 rounded-xl">
-                    <div className="text-2xl font-bold text-green-400">2-4 Wo.</div>
-                    <div className="text-sm text-gray-300">ROI Amortisation</div>
-                  </div>
-                </div>
-              </div>
-              <div className="space-y-4">
-                <div className="flex justify-between items-center p-4 bg-white/5 rounded-lg">
-                  <span>Setup & Konfiguration</span>
-                  <span className="text-green-400 font-semibold">Einmalig €2.500</span>
-                </div>
-                <div className="flex justify-between items-center p-4 bg-white/5 rounded-lg">
-                  <span>Monatliche Grundgebühr</span>
-                  <span className="text-green-400 font-semibold">Ab €299</span>
-                </div>
-                <div className="flex justify-between items-center p-4 bg-white/5 rounded-lg">
-                  <span>24/7 Premium Support</span>
-                  <span className="text-green-400 font-semibold">Inklusive</span>
-                </div>
-                <div className="flex justify-between items-center p-4 bg-accent-500/20 rounded-lg border border-accent-500/30">
-                  <span className="font-semibold">Ersparnis vs. Personal</span>
-                  <span className="text-accent-400 font-bold">85% weniger Kosten</span>
-                </div>
-              </div>
-            </div>
-          </motion.div>
         </div>
       </section>
 
       {/* Use Cases Section */}
-      <section className="py-20">
+      <section id="use-cases-section" className="py-20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <motion.div
             initial={{ opacity: 0 }}
@@ -1257,6 +1247,184 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
           </div>
 
 
+        </div>
+      </section>
+
+      {/* Pricing Section */}
+      <section id="preise-section" className="py-20 bg-gray-50">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <motion.div
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            transition={{ duration: 0.8 }}
+            viewport={{ once: true }}
+            className="text-center mb-16"
+          >
+            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
+              Transparente <span className="gradient-text">Preise</span>
+            </h2>
+            <p className="text-xl text-gray-600 max-w-3xl mx-auto">
+              Faire Preismodelle ohne versteckte Kosten – wählen Sie das Paket, das zu Ihrem Gesprächsvolumen passt
+            </p>
+          </motion.div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
+            {[
+              {
+                name: "Starter",
+                minutes: "3.000",
+                hours: "50",
+                price: "300",
+                pricePerMinute: "10",
+                features: [
+                  "3.000 Minuten Gesprächszeit",
+                  "Telefonnummer inklusive",
+                  "24/7 Support",
+                  "Individuelle API-Integration",
+                  "DSGVO-konforme Verarbeitung"
+                ],
+                popular: false
+              },
+              {
+                name: "Professional",
+                minutes: "6.000",
+                hours: "100",
+                price: "500",
+                pricePerMinute: "8,3",
+                features: [
+                  "6.000 Minuten Gesprächszeit",
+                  "Telefonnummer inklusive",
+                  "24/7 Premium Support",
+                  "Erweiterte API-Integration",
+                  "DSGVO-konforme Verarbeitung",
+                  "Prioritäts-Support"
+                ],
+                popular: true
+              },
+              {
+                name: "Enterprise",
+                minutes: "10.000",
+                hours: "166",
+                price: "750",
+                pricePerMinute: "7,5",
+                features: [
+                  "10.000 Minuten Gesprächszeit",
+                  "Telefonnummer inklusive",
+                  "24/7 VIP Support",
+                  "Vollständige API-Integration",
+                  "DSGVO-konforme Verarbeitung",
+                  "Dedicated Account Manager",
+                  "Custom Features"
+                ],
+                popular: false
+              }
+            ].map((plan, index) => (
+              <motion.div
+                key={index}
+                initial={{ opacity: 0, y: 30 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.6, delay: index * 0.1 }}
+                viewport={{ once: true }}
+                className={`relative bg-white p-8 rounded-2xl shadow-lg border-2 ${
+                  plan.popular 
+                    ? 'border-primary-500 ring-4 ring-primary-100' 
+                    : 'border-gray-200 hover:border-primary-300'
+                } transition-all duration-300`}
+              >
+                {plan.popular && (
+                  <div className="absolute -top-4 left-1/2 transform -translate-x-1/2">
+                    <span className="bg-primary-500 text-white px-4 py-2 rounded-full text-sm font-semibold">
+                      Beliebtester Plan
+                    </span>
+                  </div>
+                )}
+                
+                <div className="text-center mb-8">
+                  <h3 className="text-2xl font-bold text-gray-900 mb-2">{plan.name}</h3>
+                  <div className="text-5xl font-bold text-primary-600 mb-2">
+                    €{plan.price}
+                    <span className="text-lg text-gray-500 font-normal">/Monat</span>
+                  </div>
+                  <div className="text-gray-600">
+                    {plan.minutes} Min. ({plan.hours}h) • {plan.pricePerMinute}ct/Min.
+                  </div>
+                </div>
+
+                <ul className="space-y-4 mb-8">
+                  {plan.features.map((feature, idx) => (
+                    <li key={idx} className="flex items-start">
+                      <CheckCircle className="h-5 w-5 text-green-500 mr-3 mt-0.5 flex-shrink-0" />
+                      <span className="text-gray-700">{feature}</span>
+                    </li>
+                  ))}
+                </ul>
+
+                <button
+                  onClick={scrollToCalendar}
+                  className={`w-full py-3 px-6 rounded-lg font-semibold transition-colors ${
+                    plan.popular
+                      ? 'bg-primary-600 text-white hover:bg-primary-700'
+                      : 'bg-gray-100 text-gray-900 hover:bg-gray-200'
+                  }`}
+                >
+                  Plan wählen
+                </button>
+              </motion.div>
+            ))}
+          </div>
+
+          {/* Pay-as-you-go Info */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6 }}
+            viewport={{ once: true }}
+            className="bg-gradient-to-r from-blue-50 to-indigo-50 p-8 rounded-2xl border border-blue-200"
+          >
+            <div className="text-center">
+              <h4 className="text-2xl font-bold text-gray-900 mb-4">
+                Flexible Abrechnung bei Überschreitung
+              </h4>
+              <p className="text-lg text-gray-700 mb-6">
+                Sollten Sie Ihr monatliches Kontingent überschreiten, rechnen wir transparent nach dem 
+                <span className="font-semibold text-primary-600"> Pay-as-you-go Prinzip</span> ab:
+              </p>
+              <div className="inline-flex items-center bg-white px-8 py-4 rounded-xl shadow-sm border border-blue-200">
+                <div className="text-3xl font-bold text-primary-600 mr-4">10ct</div>
+                <div className="text-left">
+                  <div className="font-semibold text-gray-900">pro zusätzliche Minute</div>
+                  <div className="text-sm text-gray-600">Keine Mindestabnahme</div>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+
+          {/* Zusatzinfo */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            transition={{ duration: 0.6, delay: 0.2 }}
+            viewport={{ once: true }}
+            className="mt-12 text-center"
+          >
+            <div className="bg-white p-6 rounded-xl shadow-sm max-w-3xl mx-auto">
+              <h5 className="font-semibold text-gray-900 mb-3">Was ist inklusive?</h5>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-gray-700">
+                <div className="flex items-center justify-center">
+                  <CheckCircle className="h-4 w-4 text-green-500 mr-2" />
+                  <span>Keine Einrichtungskosten</span>
+                </div>
+                <div className="flex items-center justify-center">
+                  <CheckCircle className="h-4 w-4 text-green-500 mr-2" />
+                  <span>Keine Mindestlaufzeit</span>
+                </div>
+                <div className="flex items-center justify-center">
+                  <CheckCircle className="h-4 w-4 text-green-500 mr-2" />
+                  <span>Monatlich kündbar</span>
+                </div>
+              </div>
+            </div>
+          </motion.div>
         </div>
       </section>
 
@@ -1386,7 +1554,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
       </section>
 
       {/* Demo Section */}
-      <section className="py-12 sm:py-16 lg:py-20 bg-gradient-to-br from-primary-50 to-accent-50">
+      <section id="demo-section" className="py-12 sm:py-16 lg:py-20 bg-gradient-to-br from-primary-50 to-accent-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <motion.div
             initial={{ opacity: 0 }}
