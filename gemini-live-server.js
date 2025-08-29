@@ -72,6 +72,37 @@ app.post('/api/voice-agent', async (req, res) => {
   }
 });
 
+// Twilio Webhook Route für eingehende Anrufe
+app.post('/twilio/incoming', (req, res) => {
+  console.log('📞 Twilio incoming call webhook triggered');
+  console.log('📋 Twilio request body:', req.body);
+  
+  // TwiML Response für Twilio - verbindet den Anruf mit unserem WebSocket Voice Agent
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="wss://agentur.fly.dev?source=twilio" track="both_tracks"/>
+  </Connect>
+</Response>`;
+
+  res.type('text/xml');
+  res.send(twiml);
+  
+  console.log('📤 TwiML response sent - connecting to WebSocket voice agent');
+});
+
+// Health check für Twilio Webhook
+app.get('/twilio/incoming', (req, res) => {
+  console.log('🔍 Twilio webhook health check');
+  res.json({ 
+    status: 'ready', 
+    service: 'Vocaris AI Voice Agent',
+    webhook_url: 'https://agentur.fly.dev/twilio/incoming',
+    websocket_url: 'wss://agentur.fly.dev',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Statische Files aus dem 'dist' Ordner serven
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -121,7 +152,16 @@ async function openGeminiSession(ws, id) {
                 const inline = p?.inlineData;
                 if (inline?.mimeType?.startsWith('audio/pcm') && typeof inline?.data === 'string') {
                   console.log(`[${id}] 📥 Gemini audio inlineData ${inline.data.length} chars @ ${inline.mimeType}`);
-                  ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                  if (isTwilio) {
+                    const audioBuffer = Buffer.from(inline.data, 'base64');
+                    const media = {
+                      event: 'media',
+                      media: { payload: audioBuffer.toString('base64') }
+                    };
+                    ws.send(JSON.stringify(media));
+                  } else {
+                    ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                  }
                 }
                 if (p?.text) {
                   console.log(`[${id}] 💬 Gemini text:`, String(p.text).slice(0, 120));
@@ -136,7 +176,16 @@ async function openGeminiSession(ws, id) {
                 const inline = p?.inlineData;
                 if (inline?.mimeType?.startsWith('audio/pcm') && typeof inline?.data === 'string') {
                   console.log(`[${id}] 📥 Gemini audio candidate inlineData ${inline.data.length} chars @ ${inline.mimeType}`);
-                  ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                  if (isTwilio) {
+                    const audioBuffer = Buffer.from(inline.data, 'base64');
+                    const media = {
+                      event: 'media',
+                      media: { payload: audioBuffer.toString('base64') }
+                    };
+                    ws.send(JSON.stringify(media));
+                  } else {
+                    ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                  }
                 }
                 if (p?.text) {
                   console.log(`[${id}] 💬 Gemini text (cand):`, String(p.text).slice(0, 120));
@@ -153,7 +202,22 @@ async function openGeminiSession(ws, id) {
                   console.log(`[${id}] 📥 Gemini audio serverContent.modelTurn inlineData ${inline.data.length} chars @ ${inline.mimeType}`);
                   console.log(`[${id}] 📤 WebSocket readyState: ${ws.readyState} (sending audio_out)`);
                   try {
-                    ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                    if (isTwilio) {
+                      // Für Twilio: Sende Audio als Media Stream Format
+                      const audioBuffer = Buffer.from(inline.data, 'base64');
+                      const media = {
+                        event: 'media',
+                        streamSid: 'stream_sid', // Twilio wird das beim Start setzen
+                        media: {
+                          payload: audioBuffer.toString('base64')
+                        }
+                      };
+                      ws.send(JSON.stringify(media));
+                      console.log(`[${id}] 📞 Audio sent to Twilio (${audioBuffer.length} bytes)`);
+                    } else {
+                      // Für Web Clients: Normal audio_out
+                      ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                    }
                     console.log(`[${id}] ✅ Audio_out sent successfully`);
                   } catch (e) {
                     console.error(`[${id}] ❌ Failed to send audio_out:`, e);
@@ -188,9 +252,13 @@ async function openGeminiSession(ws, id) {
   }
 }
 
-wss.on('connection', async (ws) => {
+wss.on('connection', async (ws, req) => {
   const id = Date.now();
-  console.log(`[${id}] 🌐 WebSocket client connected.`);
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const source = url.searchParams.get('source');
+  const isTwilio = source === 'twilio';
+  
+  console.log(`[${id}] 🌐 WebSocket client connected ${isTwilio ? '(📞 Twilio Call)' : '(💻 Web Client)'}`);
 
   let session;
   let recording = false;
@@ -224,6 +292,51 @@ wss.on('connection', async (ws) => {
         try {
           console.log(`[${id}] 📩 text>`, asText.slice(0, 120));
           const m = JSON.parse(asText);
+
+          // Twilio Media Stream Handling
+          if (isTwilio && m.event) {
+            console.log(`[${id}] 📞 Twilio event:`, m.event);
+            
+            switch (m.event) {
+              case 'start':
+                console.log(`[${id}] 📞 Twilio call started, streamSid:`, m.start?.streamSid);
+                recording = true;
+                // Sende session_ready an Twilio (falls noch nicht gesendet)
+                if (session) {
+                  ws.send(JSON.stringify({ type: 'session_ready' }));
+                }
+                break;
+                
+              case 'media':
+                if (recording && session && m.media?.payload) {
+                  // Twilio sendet Audio als base64-encoded µ-law (mulaw)
+                  // Konvertiere zu Binary und sende an Gemini Live API
+                  const audioData = Buffer.from(m.media.payload, 'base64');
+                  bytesIn += audioData.length;
+                  chunkCount++;
+                  
+                  // Sende an Gemini Live API
+                  session.send(JSON.stringify({
+                    type: 'realtimeInput',
+                    realtimeInput: {
+                      mediaChunks: [{
+                        mimeType: 'audio/pcm',
+                        data: audioData.toString('base64')
+                      }]
+                    }
+                  }));
+                  
+                  console.log(`[${id}] 📞 Twilio audio chunk: ${audioData.length} bytes (total: ${bytesIn} bytes, ${chunkCount} chunks)`);
+                }
+                break;
+                
+              case 'stop':
+                console.log(`[${id}] 📞 Twilio call ended`);
+                recording = false;
+                break;
+            }
+            return; // Twilio-spezifische Behandlung ist abgeschlossen
+          }
 
           // Voice Agent Route - traditioneller Text/Audio Chat
           if (m.type === 'voice_agent') {
