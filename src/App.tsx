@@ -862,7 +862,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               className="flex items-center space-x-2"
             >
               <Bot className="h-8 w-8 text-primary-600" />
-              <span className="font-bold text-xl text-gray-900">KI-Service Pro</span>
+              <span className="font-bold text-xl text-gray-900">KI-Service Pro mit Vocaris AI</span>
             </motion.div>
             
             <motion.button
@@ -924,26 +924,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
             </motion.div>
           </div>
 
-          {/* Stats */}
-          <motion.div 
-            initial={{ opacity: 0, y: 50 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, delay: 0.6 }}
-            className="mt-20 grid grid-cols-1 md:grid-cols-3 gap-8"
-          >
-            <div className="text-center">
-              <div className="text-4xl font-bold text-red-500 mb-2">30%</div>
-              <div className="text-gray-600">verlorene Kunden durch Nichterreichbarkeit</div>
-            </div>
-            <div className="text-center">
-              <div className="text-4xl font-bold text-green-500 mb-2">85%</div>
-              <div className="text-gray-600">Kosteneinsparung im Kundenservice</div>
-            </div>
-            <div className="text-center">
-              <div className="text-4xl font-bold text-blue-500 mb-2">24/7</div>
-              <div className="text-gray-600">Verfügbarkeit ohne Unterbrechung</div>
-            </div>
-          </motion.div>
+
         </div>
       </section>
 
@@ -989,7 +970,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
         </div>
       </section>
 
-      {/* Solution Section */}
+      {/* Technology & Integration Section */}
       <section className="py-20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <motion.div
@@ -1000,137 +981,156 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
             className="text-center mb-16"
           >
             <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
-              Die <span className="gradient-text">KI-Lösung</span>
+              Enterprise-<span className="gradient-text">Technologie</span> & nahtlose Integration
             </h2>
-            <p className="text-xl text-gray-600 max-w-3xl mx-auto">
-              Unser intelligentes System übernimmt Ihren kompletten Telefondienst
+            <p className="text-xl text-gray-600 max-w-4xl mx-auto">
+              Modernste KI-Technologie mit höchsten Sicherheitsstandards – entwickelt für Unternehmen, die auf Qualität und Datenschutz setzen
             </p>
           </motion.div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-16">
+            {/* Sicherheit & Datenschutz */}
             <motion.div
-              initial={{ opacity: 0, x: -50 }}
-              whileInView={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.8 }}
+              initial={{ opacity: 0, y: 30 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6 }}
               viewport={{ once: true }}
+              className="bg-gradient-to-br from-blue-50 to-indigo-50 p-8 rounded-2xl border border-blue-100"
             >
-              <h3 className="text-3xl font-bold text-gray-900 mb-8">Fähigkeiten & Integrationen (Beispiele)</h3>
-
-              {[
-                "Terminbuchungen & Kalender‑Integration",
-                "E‑Mails & SMS automatisch versenden",
-                "Bestellungen aufnehmen & weiterleiten",
-                "Lead‑Qualifizierung & CRM‑Updates",
-                "Daten aus Datenbanken/APIs abfragen",
-                "Intelligentes Call‑Routing",
-                "Konfiguration nach Wunsch: nur bei besetzter Leitung oder 100% der Anrufe"
-              ].map((feature, index) => (
-                <motion.div
-                  key={index}
-                  initial={{ opacity: 0, x: -20 }}
-                  whileInView={{ opacity: 1, x: 0 }}
-                  transition={{ duration: 0.5, delay: index * 0.1 }}
-                  viewport={{ once: true }}
-                  className="flex items-center mb-4"
-                >
-                  <CheckCircle className="h-6 w-6 text-green-500 mr-3 flex-shrink-0" />
-                  <span className="text-lg text-gray-700">{feature}</span>
-                </motion.div>
-              ))}
+              <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-6">
+                <CheckCircle className="h-8 w-8 text-blue-600" />
+              </div>
+              <h3 className="text-2xl font-bold text-gray-900 mb-4">Sicherheit & Datenschutz</h3>
+              <div className="space-y-3 text-gray-700">
+                <div className="flex items-start">
+                  <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <span>DSGVO-konforme Datenverarbeitung in Deutschland</span>
+                </div>
+                <div className="flex items-start">
+                  <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <span>End-to-End Verschlüsselung aller Gespräche</span>
+                </div>
+                <div className="flex items-start">
+                  <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <span>ISO 27001 zertifizierte Infrastruktur</span>
+                </div>
+                <div className="flex items-start">
+                  <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <span>Audit-Logs für vollständige Nachvollziehbarkeit</span>
+                </div>
+              </div>
             </motion.div>
 
+            {/* Integration & Setup */}
             <motion.div
-              initial={{ opacity: 0, x: 50 }}
-              whileInView={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.8 }}
+              initial={{ opacity: 0, y: 30 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: 0.1 }}
               viewport={{ once: true }}
-              className="bg-gradient-to-br from-primary-50 to-accent-50 p-8 rounded-2xl"
+              className="bg-gradient-to-br from-green-50 to-emerald-50 p-8 rounded-2xl border border-green-100"
             >
-              <div className="text-center">
-                <Bot className="h-24 w-24 text-primary-600 mx-auto mb-6 animate-bounce-slow" />
-                <h4 className="text-2xl font-bold text-gray-900 mb-4">Immer verfügbar</h4>
-                <p className="text-gray-600 mb-6">
-                  Ihre KI arbeitet rund um die Uhr, auch an Feiertagen und Wochenenden
-                </p>
-                <div className="bg-white p-4 rounded-lg shadow-sm">
-                  <div className="text-3xl font-bold text-green-500">100%</div>
-                  <div className="text-sm text-gray-600">Verfügbarkeit garantiert</div>
+              <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-6">
+                <Bot className="h-8 w-8 text-green-600" />
+              </div>
+              <h3 className="text-2xl font-bold text-gray-900 mb-4">Schnelle Integration</h3>
+              <div className="space-y-3 text-gray-700">
+                <div className="flex items-start">
+                  <div className="w-2 h-2 bg-green-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <span>Setup in unter 48h ohne IT-Aufwand</span>
+                </div>
+                <div className="flex items-start">
+                  <div className="w-2 h-2 bg-green-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <span>Nahtlose API-Anbindung an 2000+ Tools</span>
+                </div>
+                <div className="flex items-start">
+                  <div className="w-2 h-2 bg-green-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <span>Direktanbindung an CRM, ERP, Kalender</span>
+                </div>
+                <div className="flex items-start">
+                  <div className="w-2 h-2 bg-green-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <span>White-Label Lösung für Ihr Branding</span>
+                </div>
+              </div>
+            </motion.div>
+
+            {/* Performance & Skalierung */}
+            <motion.div
+              initial={{ opacity: 0, y: 30 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: 0.2 }}
+              viewport={{ once: true }}
+              className="bg-gradient-to-br from-purple-50 to-violet-50 p-8 rounded-2xl border border-purple-100"
+            >
+              <div className="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mb-6">
+                <TrendingDown className="h-8 w-8 text-purple-600 transform rotate-180" />
+              </div>
+              <h3 className="text-2xl font-bold text-gray-900 mb-4">Enterprise Performance</h3>
+              <div className="space-y-3 text-gray-700">
+                <div className="flex items-start">
+                  <div className="w-2 h-2 bg-purple-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <span>&lt; 500ms Antwortzeit garantiert</span>
+                </div>
+                <div className="flex items-start">
+                  <div className="w-2 h-2 bg-purple-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <span>Unbegrenzte parallele Gespräche</span>
+                </div>
+                <div className="flex items-start">
+                  <div className="w-2 h-2 bg-purple-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <span>99.9% Uptime mit Failover-Systemen</span>
+                </div>
+                <div className="flex items-start">
+                  <div className="w-2 h-2 bg-purple-500 rounded-full mt-2 mr-3 flex-shrink-0"></div>
+                  <span>Auto-Scaling bei Lastspitzen</span>
                 </div>
               </div>
             </motion.div>
           </div>
-        </div>
-      </section>
 
-      {/* Capabilities & Value Section (Global) */}
-      <section className="py-20 bg-gray-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          {/* Kostenmodell & ROI */}
           <motion.div
-            initial={{ opacity: 0 }}
-            whileInView={{ opacity: 1 }}
+            initial={{ opacity: 0, y: 30 }}
+            whileInView={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8 }}
             viewport={{ once: true }}
-            className="text-center mb-12"
+            className="bg-gradient-to-r from-gray-900 to-gray-800 p-8 lg:p-12 rounded-3xl text-white"
           >
-            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">Fähigkeiten & Nutzen</h2>
-            <p className="text-lg md:text-xl text-gray-600 max-w-4xl mx-auto">
-              Vocaris AI entwickelt Voice‑Agents mit individuellen Funktionsaufrufen – exakt an Ihre Prozesse angepasst. 
-              Die folgenden Punkte sind Beispiele und werden für Ihr Unternehmen maßgeschneidert.
-            </p>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+              <div>
+                <h3 className="text-3xl font-bold mb-6">Transparentes Kostenmodell</h3>
+                <p className="text-gray-300 mb-8">
+                  Keine versteckten Kosten, keine Mindestlaufzeit – Sie zahlen nur für das, was Sie nutzen
+                </p>
+                <div className="grid grid-cols-2 gap-6">
+                  <div className="text-center p-4 bg-white/10 rounded-xl">
+                    <div className="text-2xl font-bold text-accent-400">€0.02</div>
+                    <div className="text-sm text-gray-300">pro Gespräch</div>
+                  </div>
+                  <div className="text-center p-4 bg-white/10 rounded-xl">
+                    <div className="text-2xl font-bold text-green-400">2-4 Wo.</div>
+                    <div className="text-sm text-gray-300">ROI Amortisation</div>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-4">
+                <div className="flex justify-between items-center p-4 bg-white/5 rounded-lg">
+                  <span>Setup & Konfiguration</span>
+                  <span className="text-green-400 font-semibold">Einmalig €2.500</span>
+                </div>
+                <div className="flex justify-between items-center p-4 bg-white/5 rounded-lg">
+                  <span>Monatliche Grundgebühr</span>
+                  <span className="text-green-400 font-semibold">Ab €299</span>
+                </div>
+                <div className="flex justify-between items-center p-4 bg-white/5 rounded-lg">
+                  <span>24/7 Premium Support</span>
+                  <span className="text-green-400 font-semibold">Inklusive</span>
+                </div>
+                <div className="flex justify-between items-center p-4 bg-accent-500/20 rounded-lg border border-accent-500/30">
+                  <span className="font-semibold">Ersparnis vs. Personal</span>
+                  <span className="text-accent-400 font-bold">85% weniger Kosten</span>
+                </div>
+              </div>
+            </div>
           </motion.div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6 }}
-              viewport={{ once: true }}
-              className="bg-white p-8 rounded-2xl shadow-sm"
-            >
-              <h3 className="text-2xl font-bold text-gray-900 mb-6">Funktionen (Auswahl)</h3>
-              <div className="space-y-3">
-                {[
-                  "Terminbuchungen & Kalender‑Integration",
-                  "E‑Mails & SMS automatisch versenden",
-                  "Bestellungen aufnehmen & weiterleiten",
-                  "Lead‑Qualifizierung & CRM‑Updates",
-                  "Daten aus Datenbanken/APIs abfragen",
-                  "Intelligentes Call‑Routing",
-                  "Konfiguration nach Wunsch: nur bei besetzter Leitung oder 100% der Anrufe"
-                ].map((feature, index) => (
-                  <div key={index} className="flex items-start">
-                    <CheckCircle className="h-5 w-5 text-green-500 mr-3 mt-0.5" />
-                    <span className="text-gray-700">{feature}</span>
-                  </div>
-                ))}
-              </div>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.1 }}
-              viewport={{ once: true }}
-              className="bg-white p-8 rounded-2xl shadow-sm"
-            >
-              <h3 className="text-2xl font-bold text-gray-900 mb-6">Ihr Nutzen</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {[
-                  { title: "24/7 Erreichbarkeit", desc: "Keine verpassten Anrufe – auch nachts & an Feiertagen" },
-                  { title: "Schnelle Skalierung", desc: "Beliebig viele parallele Gespräche" },
-                  { title: "Kostenersparnis", desc: "Routineaufgaben automatisieren, Team entlasten" },
-                  { title: "Bessere Datenqualität", desc: "Automatische CRM‑/ERP‑Updates in Echtzeit" },
-                  { title: "DSGVO‑konform", desc: "Sichere Verarbeitung gemäß EU‑Standards" },
-                  { title: "Nahtlose Integration", desc: "+2000 Plattformen (Kalender, CRM, ERP, Support)" },
-                ].map((b, i) => (
-                  <div key={i} className="p-4 rounded-xl bg-gray-50 border border-gray-100">
-                    <div className="font-semibold text-gray-900">{b.title}</div>
-                    <div className="text-gray-600 text-sm">{b.desc}</div>
-                  </div>
-                ))}
-              </div>
-            </motion.div>
-          </div>
         </div>
       </section>
 
@@ -1205,6 +1205,33 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
                   "Rückfragen automatisiert beantworten"
                 ],
                 kpi: "+Verkäufe durch sofortige Erreichbarkeit"
+              },
+              { 
+                title: "Immobilienmakler", 
+                items: [
+                  "Besichtigungstermine koordinieren",
+                  "Interessentenanfragen vorqualifizieren",
+                  "Exposé‑Versendung automatisieren"
+                ],
+                kpi: "Höhere Conversion bei Immobilienanfragen"
+              },
+              { 
+                title: "Rechtsanwälte & Steuerberater", 
+                items: [
+                  "Mandantenanfragen strukturiert erfassen",
+                  "Termine für Erstberatung koordinieren",
+                  "Fachbereich‑spezifisches Routing"
+                ],
+                kpi: "Professioneller Erstkontakt, weniger Admin‑Aufwand"
+              },
+              { 
+                title: "Handwerk & Reparaturdienste", 
+                items: [
+                  "Notfall‑ & Serviceanfragen priorisieren",
+                  "Techniker‑Verfügbarkeit abgleichen",
+                  "Kostenvoranschläge koordinieren"
+                ],
+                kpi: "Schnellere Reaktion bei Notfällen, bessere Auslastung"
               }
             ].map((uc, idx) => (
               <motion.div
@@ -1229,11 +1256,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
             ))}
           </div>
 
-          <p className="text-xs text-gray-500 mt-6">
-            Quellen: <a href="https://www.tenios.de/ki-telefonassistent" target="_blank" rel="noreferrer" className="underline">Tenios</a>,
-            <span> </span>
-            <a href="https://info.doctolib.de/presentation/praxisdigitalisierung/" target="_blank" rel="noreferrer" className="underline">Doctolib</a>
-          </p>
+
         </div>
       </section>
 
@@ -1628,20 +1651,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               viewport={{ once: true }}
               className="space-y-6 lg:space-y-8"
             >
-              <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg">
-                <h4 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 sm:mb-4">
-                  Was Ihr Voice‑Agent kann
-                </h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 text-sm sm:text-base text-gray-700">
-                  <div className="bg-gray-50 p-3 rounded-lg">Terminbuchungen & Kalender‑Integration</div>
-                  <div className="bg-gray-50 p-3 rounded-lg">E‑Mails & SMS automatisch versenden</div>
-                  <div className="bg-gray-50 p-3 rounded-lg">Bestellungen aufnehmen & weiterleiten</div>
-                  <div className="bg-gray-50 p-3 rounded-lg">Lead‑Qualifizierung & CRM‑Updates</div>
-                  <div className="bg-gray-50 p-3 rounded-lg">Daten aus Datenbanken/APIs abfragen</div>
-                  <div className="bg-gray-50 p-3 rounded-lg">Intelligentes Call‑Routing</div>
-                  </div>
-                <p className="text-xs text-gray-500 mt-3">Konfiguration nach Wunsch: nur bei besetzter Leitung annehmen oder 100% der Anrufe.</p>
-              </div>
+
 
               <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg">
                 <h4 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 sm:mb-4">
