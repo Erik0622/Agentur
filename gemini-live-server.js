@@ -178,9 +178,10 @@ app.post('/twilio/incoming', (req, res) => {
   // TwiML Response für Twilio - verbindet den Anruf mit unserem WebSocket Voice Agent
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Connect>
-    <Stream url="wss://agentur.fly.dev?source=twilio" track="inbound_track"/>
-  </Connect>
+  <Start>
+    <Stream url="wss://agentur.fly.dev?source=twilio" track="both_tracks"/>
+  </Start>
+  <Pause length="3600"/>
 </Response>`;
 
   res.type('text/xml');
@@ -393,9 +394,9 @@ wss.on('connection', async (ws, req) => {
             
             switch (m.event) {
               case 'start':
-                console.log(`[${id}] 📞 Twilio call started, streamSid:`, m.start?.streamSid);
+                console.log(`[${id}] 📞 Twilio call started, streamSid:`, m.start?.streamSid || m.streamSid);
                 recording = true;
-                twilioStreamSid = m.start?.streamSid || twilioStreamSid;
+                twilioStreamSid = m.start?.streamSid || m.streamSid || twilioStreamSid;
                 // Sende session_ready an Twilio (falls noch nicht gesendet)
                 // Keine JSON-Messages an Twilio zurücksenden (Twilio akzeptiert nur eigene Events)
                 break;
