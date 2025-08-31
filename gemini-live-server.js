@@ -447,16 +447,16 @@ wss.on('connection', async (ws, req) => {
               case 'media':
                 // Nur eingehendes Audio verarbeiten, Echo ignorieren
                 if (m.media?.track === 'inbound' && recording && session && m.media?.payload) {
-                  // Twilio sendet µ-law @8kHz, 20ms Frames → dekodieren zu PCM16 und auf 16kHz hochsamplen
+                  // Twilio sendet µ-law @8kHz, 20ms Frames → dekodieren zu PCM16 und auf 24kHz hochsamplen
                   const ulawBuffer = Buffer.from(m.media.payload, 'base64');
                   const pcm16 = muLawBufferToPCM16(ulawBuffer);
-                  const pcm16_16k = resamplePCM16(pcm16, 8000, 16000);
-                  const pcm16_16k_bytes = int16ToBytes(pcm16_16k);
+                  const pcm16_24k = resamplePCM16(pcm16, 8000, 24000);
+                  const pcm16_24k_bytes = int16ToBytes(pcm16_24k);
                   bytesIn += ulawBuffer.length;
                   chunkCount++;
 
-                  // Sende an Gemini (PCM 16k, base64)
-                  session.sendRealtimeInput({ media: [{ data: Buffer.from(pcm16_16k_bytes).toString('base64'), mimeType: 'audio/pcm;rate=16000' }] });
+                  // Sende an Gemini (PCM 24k, base64)
+                  session.sendRealtimeInput({ media: [{ data: Buffer.from(pcm16_24k_bytes).toString('base64'), mimeType: 'audio/pcm;rate=24000' }] });
                   
                   console.log(`[${id}] 📞 Twilio inbound audio chunk: ${ulawBuffer.length} bytes processed`);
                 }
