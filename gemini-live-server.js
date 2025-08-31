@@ -179,7 +179,7 @@ app.post('/twilio/incoming', (req, res) => {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://agentur.fly.dev?source=twilio" track="both_tracks"/>
+    <Stream url="wss://agentur.fly.dev?source=twilio" track="inbound_track"/>
   </Connect>
 </Response>`;
 
