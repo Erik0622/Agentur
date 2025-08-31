@@ -178,10 +178,11 @@ app.post('/twilio/incoming', (req, res) => {
   // TwiML Response für Twilio - verbindet den Anruf mit unserem WebSocket Voice Agent
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Start>
-    <Stream url="wss://agentur.fly.dev?source=twilio" track="both_tracks"/>
-  </Start>
-  <Pause length="3600"/>
+    <Say voice="alice" language="de-DE">Einen Moment, die Verbindung wird hergestellt.</Say>
+    <Start>
+        <Stream url="wss://agentur.fly.dev?source=twilio" track="both_tracks"/>
+    </Start>
+    <Pause length="3600"/>
 </Response>`;
 
   res.type('text/xml');
