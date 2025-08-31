@@ -341,6 +341,19 @@ async function openGeminiSession(ws, id) {
 function attachTwilioHelpers(ws, id, getTwilioStreamSid) {
   if (ws._twilioSendAudio) return; // Already attached
   console.log(`[${id}] ➕ Attaching Twilio audio helpers to WebSocket.`);
+
+  // Outbound Frame Queue mit 20ms Pacing
+  ws._outboundQueue = [];
+  ws._outboundTimer = setInterval(() => {
+    try {
+      const twilioStreamSid = getTwilioStreamSid();
+      if (!twilioStreamSid || ws.readyState !== 1) return;
+      if (ws._outboundQueue.length === 0) return;
+      const frame = ws._outboundQueue.shift();
+      ws.send(JSON.stringify({ event: 'media', streamSid: twilioStreamSid, media: { payload: frame.toString('base64') } }));
+    } catch {}
+  }, 20);
+
   ws._twilioSendAudio = (base64PcmLE, mime) => {
     const twilioStreamSid = getTwilioStreamSid();
     if (!twilioStreamSid) {
@@ -352,12 +365,8 @@ function attachTwilioHelpers(ws, id, getTwilioStreamSid) {
     const pcm16 = bytesToInt16LE(pcmBytes);
     const mulaw8k = encodePCM16ToMuLaw8k(pcm16, rate);
     const frames = chunkBuffer(mulaw8k, 160);
-    console.log(`[${id}] 📤 Sending ${frames.length} audio frames to Twilio stream ${twilioStreamSid}`);
-    frames.forEach((frame, i) => {
-      setTimeout(() => {
-        ws.send(JSON.stringify({ event: 'media', streamSid: twilioStreamSid, media: { payload: frame.toString('base64') } }));
-      }, i * 20);
-    });
+    console.log(`[${id}] 📤 Enqueue ${frames.length} frames to Twilio stream ${twilioStreamSid}`);
+    for (const f of frames) ws._outboundQueue.push(f);
   };
 }
 
@@ -592,6 +601,7 @@ wss.on('connection', async (ws, req) => {
   ws.on('close', () => {
     console.log(`[${id}] 🔚 closed, bytesIn=${bytesIn}`);
     clearInterval(ka);
+    if (ws._outboundTimer) try { clearInterval(ws._outboundTimer); } catch {}
     session?.close?.();
   });
 });
