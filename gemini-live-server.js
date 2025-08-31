@@ -178,7 +178,6 @@ app.post('/twilio/incoming', (req, res) => {
   // TwiML Response für Twilio - verbindet den Anruf mit unserem WebSocket Voice Agent
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="alice" language="de-DE">Einen Moment, die Verbindung wird hergestellt.</Say>
     <Start>
         <Stream url="wss://agentur.fly.dev?source=twilio" track="both_tracks"/>
     </Start>
@@ -353,7 +352,7 @@ function attachTwilioHelpers(ws, id, getTwilioStreamSid) {
     const frames = chunkBuffer(mulaw8k, 160);
     console.log(`[${id}] 📤 Sending ${frames.length} audio frames to Twilio stream ${twilioStreamSid}`);
     for (const frame of frames) {
-      ws.send(JSON.stringify({ event: 'media', streamSid: twilioStreamSid, media: { payload: frame.toString('base64') } }));
+      ws.send(JSON.stringify({ event: 'media', streamSid: twilioStreamSid, media: { payload: frame.toString('base64'), track: 'outbound' } }));
     }
   };
 }
