@@ -402,10 +402,25 @@ wss.on('connection', async (ws, req) => {
             ws._isTwilio = true;
             isTwilio = true;
             console.log(`[${id}] 🔄 Socket als Twilio-Stream erkannt`);
+            // Da oft kein 'start' Event kommt, hier die Begrüßung auslösen
+            if (session) {
+              console.log(`[${id}] 💬 Sending initial greeting to Gemini after dynamic detection.`);
+              session.sendClientContent({
+                turns: [{ role: 'user', parts: [{ text: 'Sag "Hallo und herzlich willkommen."' }] }],
+                turnComplete: true
+              });
+            } else {
+              console.warn(`[${id}] ⚠️ Twilio detected, but no Gemini session available to send greeting.`);
+            }
           }
 
           // ===== Twilio Media Stream Handling =====
           if (isTwilio && m.event) {
+            // StreamSID bei jeder Gelegenheit aktualisieren, falls sie beim Start gefehlt hat
+            if (m.streamSid && !twilioStreamSid) {
+              twilioStreamSid = m.streamSid;
+              console.log(`[${id}] 📞 Captured streamSid: ${twilioStreamSid}`);
+            }
             console.log(`[${id}] 📞 Twilio event:`, m.event);
             
             switch (m.event) {
@@ -413,13 +428,7 @@ wss.on('connection', async (ws, req) => {
                 console.log(`[${id}] 📞 Twilio call started, streamSid:`, m.start?.streamSid || m.streamSid);
                 recording = true;
                 twilioStreamSid = m.start?.streamSid || m.streamSid || twilioStreamSid;
-                if (session) {
-                  console.log(`[${id}] 💬 Sending initial greeting to Gemini to generate audio response.`);
-                  session.sendClientContent({
-                    turns: [{ role: 'user', parts: [{ text: 'Sag "Hallo und herzlich willkommen."' }] }],
-                    turnComplete: true
-                  });
-                }
+                // Begrüßung wird jetzt oben ausgelöst, um Fälle ohne 'start' abzudecken
                 break;
                 
               case 'media':
