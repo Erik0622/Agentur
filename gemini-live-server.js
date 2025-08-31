@@ -254,8 +254,12 @@ async function openGeminiSession(ws, id) {
                 const inline = p?.inlineData;
                 if (inline?.mimeType?.startsWith('audio/pcm') && typeof inline?.data === 'string') {
                   console.log(`[${id}] 📥 Gemini audio inlineData ${inline.data.length} chars @ ${inline.mimeType}`);
-                  if (ws._isTwilio) ws._twilioSendAudio?.(inline.data, inline.mimeType);
-                  else ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                  if (ws._isTwilio) {
+                    console.log(`[${id}] 📞➡️ Calling _twilioSendAudio for modelContent audio`);
+                    ws._twilioSendAudio?.(inline.data, inline.mimeType);
+                  } else {
+                    ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                  }
                 }
                 if (p?.text) {
                   console.log(`[${id}] 💬 Gemini text:`, String(p.text).slice(0, 120));
@@ -270,8 +274,12 @@ async function openGeminiSession(ws, id) {
                 const inline = p?.inlineData;
                 if (inline?.mimeType?.startsWith('audio/pcm') && typeof inline?.data === 'string') {
                   console.log(`[${id}] 📥 Gemini audio candidate inlineData ${inline.data.length} chars @ ${inline.mimeType}`);
-                  if (ws._isTwilio) ws._twilioSendAudio?.(inline.data, inline.mimeType);
-                  else ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                  if (ws._isTwilio) {
+                    console.log(`[${id}] 📞➡️ Calling _twilioSendAudio for candidate audio`);
+                    ws._twilioSendAudio?.(inline.data, inline.mimeType);
+                  } else {
+                    ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                  }
                 }
                 if (p?.text) {
                   console.log(`[${id}] 💬 Gemini text (cand):`, String(p.text).slice(0, 120));
@@ -288,8 +296,12 @@ async function openGeminiSession(ws, id) {
                   console.log(`[${id}] 📥 Gemini audio serverContent.modelTurn inlineData ${inline.data.length} chars @ ${inline.mimeType}`);
                   console.log(`[${id}] 📤 WebSocket readyState: ${ws.readyState} (sending audio_out)`);
                   try {
-                    if (ws._isTwilio) ws._twilioSendAudio?.(inline.data, inline.mimeType);
-                    else ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                    if (ws._isTwilio) {
+                      console.log(`[${id}] 📞➡️ Calling _twilioSendAudio for serverContent audio`);
+                      ws._twilioSendAudio?.(inline.data, inline.mimeType);
+                    } else {
+                      ws.send(JSON.stringify({ type: 'audio_out', data: inline.data }));
+                    }
                     console.log(`[${id}] ✅ Audio_out sent successfully`);
                   } catch (e) {
                     console.error(`[${id}] ❌ Failed to send audio_out:`, e);
@@ -367,8 +379,9 @@ wss.on('connection', async (ws, req) => {
       const pcm16 = bytesToInt16LE(pcmBytes);
       const mulaw8k = encodePCM16ToMuLaw8k(pcm16, rate);
       const frames = chunkBuffer(mulaw8k, 160);
+      console.log(`[${id}] 📤 Sending ${frames.length} audio frames to Twilio stream ${twilioStreamSid}`);
       for (const frame of frames) {
-        ws.send(JSON.stringify({ event: 'media', streamSid: twilioStreamSid, media: { payload: frame.toString('base64') } }));
+        ws.send(JSON.stringify({ event: 'media', streamSid: twilioStreamSid, media: { payload: frame.toString('base64'), track: 'outbound' } }));
       }
     };
   }
@@ -402,7 +415,8 @@ wss.on('connection', async (ws, req) => {
                 break;
                 
               case 'media':
-                if (recording && session && m.media?.payload) {
+                // Nur eingehendes Audio verarbeiten, Echo ignorieren
+                if (m.media?.track === 'inbound' && recording && session && m.media?.payload) {
                   // Twilio sendet µ-law @8kHz, 20ms Frames → dekodieren zu PCM16 und auf 16kHz hochsamplen
                   const ulawBuffer = Buffer.from(m.media.payload, 'base64');
                   const pcm16 = muLawBufferToPCM16(ulawBuffer);
@@ -414,7 +428,7 @@ wss.on('connection', async (ws, req) => {
                   // Sende an Gemini (PCM 16k, base64)
                   session.sendRealtimeInput({ media: [{ data: Buffer.from(pcm16_16k_bytes).toString('base64'), mimeType: 'audio/pcm;rate=16000' }] });
                   
-                  console.log(`[${id}] 📞 Twilio audio chunk: ${ulawBuffer.length} bytes (total: ${bytesIn} bytes, ${chunkCount} chunks)`);
+                  console.log(`[${id}] 📞 Twilio inbound audio chunk: ${ulawBuffer.length} bytes processed`);
                 }
                 break;
                 
