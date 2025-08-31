@@ -178,9 +178,10 @@ app.post('/twilio/incoming', (req, res) => {
   // TwiML Response für Twilio - verbindet den Anruf mit unserem WebSocket Voice Agent
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Connect>
-    <Stream url="wss://agentur.fly.dev?source=twilio" track="inbound_track"/>
-  </Connect>
+  <Pause length="1"/>
+  <Start>
+    <Stream url="wss://agentur.fly.dev?source=twilio" track="both_tracks"/>
+  </Start>
 </Response>`;
 
   res.type('text/xml');
@@ -223,10 +224,6 @@ async function openGeminiSession(ws, id) {
       callbacks: {
         onopen: () => {
           console.log(`[${id}] ✅ Gemini session open (AUDIO modality)`);
-          // Nur an Web-Clients senden; Twilio akzeptiert nur Media/Mark-Nachrichten
-          if (!ws._isTwilio) {
-            ws.send(JSON.stringify({ type: 'session_ready' }));
-          }
           console.log(`[${id}] 🚀 Session ready - Client kann Audio senden`);
         },
         onmessage: (msg) => {
@@ -331,7 +328,7 @@ wss.on('connection', async (ws, req) => {
   const id = Date.now();
   const url = new URL(req.url, `http://${req.headers.host}`);
   const source = url.searchParams.get('source');
-  const isTwilio = source === 'twilio';
+  let isTwilio = source === 'twilio';
   ws._isTwilio = isTwilio;
   
   console.log(`[${id}] 🌐 WebSocket client connected ${isTwilio ? '(📞 Twilio Call)' : '(💻 Web Client)'}`);
@@ -384,6 +381,12 @@ wss.on('connection', async (ws, req) => {
         try {
           console.log(`[${id}] 📩 text>`, asText.slice(0, 120));
           const m = JSON.parse(asText);
+          // Dynamisch Twilio erkennen, falls Query fehlt
+          if (!ws._isTwilio && typeof m === 'object' && m && 'event' in m && typeof m.event === 'string') {
+            ws._isTwilio = true;
+            isTwilio = true;
+            console.log(`[${id}] 🔄 Socket als Twilio-Stream erkannt`);
+          }
 
           // ===== Twilio Media Stream Handling =====
           if (isTwilio && m.event) {
@@ -395,8 +398,7 @@ wss.on('connection', async (ws, req) => {
                 recording = true;
                 twilioStreamSid = m.start?.streamSid || twilioStreamSid;
                 // Sende session_ready an Twilio (falls noch nicht gesendet)
-                // Keine JSON-Messages an Twilio schicken — nur Twilio-Events zurückgeben
-                // session_ready bleibt für Web-Clients reserviert
+                // Keine JSON-Messages an Twilio zurücksenden (Twilio akzeptiert nur eigene Events)
                 break;
                 
               case 'media':
