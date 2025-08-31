@@ -136,6 +136,8 @@ const SYSTEM_PROMPT = [
 const DIAG_LOOPBACK_MS = parseInt(process.env.TWILIO_LOOPBACK_MS || '0', 10); // 0=aus
 const DIAG_TESTTONE_MS = parseInt(process.env.TWILIO_TESTTONE_MS || '0', 10); // 0=aus
 const AGGREGATE_MS = parseInt(process.env.TWILIO_AGGREGATE_MS || '300', 10); // min. 300ms pro Outbound-Chunk
+const TURN_END_SILENCE_MS = parseInt(process.env.TURN_END_SILENCE_MS || '700', 10); // Stille-Dauer bis Turn-Ende
+const VAD_RMS_THRESHOLD = parseInt(process.env.VAD_RMS_THRESHOLD || '600', 10); // ~0..32767
 
 function generateMuLawTone(durationMs, freqHz = 1000, sampleRate = 8000) {
   const totalSamples = Math.floor((durationMs / 1000) * sampleRate);
@@ -430,6 +432,9 @@ wss.on('connection', async (ws, req) => {
   let inactivityTimer = null;
   let twilioStreamSid = null;
   const getTwilioStreamSid = () => twilioStreamSid;
+  let silenceFrames = 0;
+  const framesPerSecond = 50; // 20ms pro Frame @8kHz von Twilio
+  const silenceFramesNeeded = Math.max(1, Math.floor((TURN_END_SILENCE_MS / 1000) * framesPerSecond));
 
   // Session sofort öffnen, damit der Client session_ready früh bekommt
   session = await openGeminiSession(ws, id);
@@ -508,19 +513,50 @@ wss.on('connection', async (ws, req) => {
                   if (ws._outboundQueue) ws._outboundQueue.push(f);
                 }
                 // Nur eingehendes Audio verarbeiten, Echo ignorieren
-                if (m.media?.track === 'inbound' && recording && session && m.media?.payload) {
-                  // Twilio sendet µ-law @8kHz, 20ms Frames → dekodieren zu PCM16 und auf 24kHz hochsamplen
+                if (m.media?.track === 'inbound' && session && m.media?.payload) {
                   const ulawBuffer = Buffer.from(m.media.payload, 'base64');
                   const pcm16 = muLawBufferToPCM16(ulawBuffer);
-                  const pcm16_24k = resamplePCM16(pcm16, 8000, 24000);
-                  const pcm16_24k_bytes = int16ToBytes(pcm16_24k);
-                  bytesIn += ulawBuffer.length;
-                  chunkCount++;
 
-                  // Sende an Gemini (PCM 24k, base64)
-                  session.sendRealtimeInput({ media: [{ data: Buffer.from(pcm16_24k_bytes).toString('base64'), mimeType: 'audio/pcm;rate=24000' }] });
-                  
-                  console.log(`[${id}] 📞 Twilio inbound audio chunk: ${ulawBuffer.length} bytes processed`);
+                  // VAD (einfach): durchschnittlicher Absolutwert
+                  let sumAbs = 0;
+                  for (let i = 0; i < pcm16.length; i++) sumAbs += Math.abs(pcm16[i]);
+                  const avgAbs = pcm16.length > 0 ? (sumAbs / pcm16.length) : 0;
+                  const isSpeech = avgAbs >= VAD_RMS_THRESHOLD;
+
+                  if (isSpeech) {
+                    // Aufnahme ggf. automatisch starten
+                    if (!recording) {
+                      console.log(`[${id}] 🎙️ Speech detected → start turn`);
+                      recording = true;
+                      chunkCount = 0;
+                    }
+                    silenceFrames = 0;
+                    // Hochsamplen und an Gemini senden (24kHz)
+                    const pcm16_24k = resamplePCM16(pcm16, 8000, 24000);
+                    const pcm16_24k_bytes = int16ToBytes(pcm16_24k);
+                    bytesIn += ulawBuffer.length;
+                    chunkCount++;
+                    session.sendRealtimeInput({ media: [{ data: Buffer.from(pcm16_24k_bytes).toString('base64'), mimeType: 'audio/pcm;rate=24000' }] });
+                    console.log(`[${id}] 📞 Twilio inbound audio chunk: ${ulawBuffer.length} bytes processed (avgAbs=${avgAbs|0})`);
+                  } else {
+                    // Stilleframe
+                    if (recording) {
+                      silenceFrames += 1;
+                      if (silenceFrames >= silenceFramesNeeded) {
+                        // Turn beenden
+                        try {
+                          ws._flushPcmAgg?.();
+                          session.sendRealtimeInput({ media: [], audioStreamEnd: true, turnComplete: true });
+                          console.log(`[${id}] 🛑 VAD silence ${TURN_END_SILENCE_MS}ms → turnComplete`);
+                        } catch (e) {
+                          console.warn(`[${id}] ⚠️ turnComplete error:`, e?.message || e);
+                        }
+                        recording = false;
+                        silenceFrames = 0;
+                        chunkCount = 0;
+                      }
+                    }
+                  }
                 }
                 break;
                 
