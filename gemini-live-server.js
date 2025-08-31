@@ -133,6 +133,20 @@ const SYSTEM_PROMPT = [
   '- Falls dir Informationen fehlen, frage nach oder gib transparent an, was du brauchst.'
 ].join('\n');
 
+const DIAG_LOOPBACK_MS = parseInt(process.env.TWILIO_LOOPBACK_MS || '0', 10); // 0=aus
+const DIAG_TESTTONE_MS = parseInt(process.env.TWILIO_TESTTONE_MS || '0', 10); // 0=aus
+const AGGREGATE_MS = parseInt(process.env.TWILIO_AGGREGATE_MS || '300', 10); // min. 300ms pro Outbound-Chunk
+
+function generateMuLawTone(durationMs, freqHz = 1000, sampleRate = 8000) {
+  const totalSamples = Math.floor((durationMs / 1000) * sampleRate);
+  const ulaw = Buffer.alloc(totalSamples);
+  for (let i = 0; i < totalSamples; i++) {
+    const t = i / sampleRate;
+    const pcm = Math.round(32767 * Math.sin(2 * Math.PI * freqHz * t));
+    ulaw[i] = muLawEncodeSample(pcm);
+  }
+  return chunkBuffer(ulaw, 160); // 20ms Frames
+}
 
 // --- Express App Setup ---
 const app = express();
@@ -342,13 +356,36 @@ function attachTwilioHelpers(ws, id, getTwilioStreamSid) {
   if (ws._twilioSendAudio) return; // Already attached
   console.log(`[${id}] ➕ Attaching Twilio audio helpers to WebSocket.`);
 
-  // Outbound Frame Queue mit 20ms Pacing
+  // Aggregator für PCM (z. B. 24 kHz) → bündelt ≥ AGGREGATE_MS, bevor zu μ-law konvertiert wird
+  ws._pcmAgg = { buf: Buffer.alloc(0), rate: 24000 };
+  ws._enqueuePcm = (b64, mime) => {
+    const rate = parsePcmRateFromMime(mime) || 24000;
+    if (!ws._pcmAgg || ws._pcmAgg.rate !== rate) ws._pcmAgg = { buf: Buffer.alloc(0), rate };
+    const bytes = Buffer.from(b64, 'base64');
+    ws._pcmAgg.buf = Buffer.concat([ws._pcmAgg.buf, bytes]);
+    const minBytes = Math.floor(rate * 2 * (AGGREGATE_MS / 1000));
+    while (ws._pcmAgg.buf.length >= minBytes) {
+      const chunk = ws._pcmAgg.buf.slice(0, minBytes);
+      ws._pcmAgg.buf = ws._pcmAgg.buf.slice(minBytes);
+      ws._twilioSendAudio(chunk.toString('base64'), `audio/pcm;rate=${rate}`);
+    }
+  };
+  ws._flushPcmAgg = () => {
+    if (ws._pcmAgg && ws._pcmAgg.buf.length > 0) {
+      const { rate, buf } = ws._pcmAgg;
+      ws._pcmAgg.buf = Buffer.alloc(0);
+      ws._twilioSendAudio(buf.toString('base64'), `audio/pcm;rate=${rate}`);
+    }
+  };
+
+  // Outbound Frame Queue mit 20ms Pacing + Mark-Burst
   ws._outboundQueue = [];
+  ws._outboundBurstActive = false;
   ws._outboundTimer = setInterval(() => {
     try {
       const twilioStreamSid = getTwilioStreamSid();
       if (!twilioStreamSid || ws.readyState !== 1) return;
-      if (ws._outboundQueue.length === 0) return;
+      if (ws._outboundQueue.length === 0) { ws._outboundBurstActive = false; return; }
       const frame = ws._outboundQueue.shift();
       ws.send(JSON.stringify({ event: 'media', streamSid: twilioStreamSid, media: { payload: frame.toString('base64') } }));
     } catch {}
@@ -359,6 +396,13 @@ function attachTwilioHelpers(ws, id, getTwilioStreamSid) {
     if (!twilioStreamSid) {
       console.warn(`[${id}] ⚠️ _twilioSendAudio called but twilioStreamSid is not set.`);
       return;
+    }
+    // Sende Mark bei neuem Burst
+    if (!ws._outboundBurstActive) {
+      try {
+        ws.send(JSON.stringify({ event: 'mark', streamSid: twilioStreamSid, mark: { name: 'agent-response-start' } }));
+      } catch {}
+      ws._outboundBurstActive = true;
     }
     const rate = parsePcmRateFromMime(mime);
     const pcmBytes = Buffer.from(base64PcmLE, 'base64');
@@ -446,6 +490,9 @@ wss.on('connection', async (ws, req) => {
             console.log(`[${id}] 📞 Twilio event:`, m.event);
             
             switch (m.event) {
+              case 'mark':
+                console.log(`[${id}] 🏷️ Twilio mark received:`, m.mark?.name || '(no name)');
+                break;
               case 'start':
                 console.log(`[${id}] 📞 Twilio call started, streamSid:`, m.start?.streamSid || m.streamSid);
                 recording = true;
@@ -454,6 +501,12 @@ wss.on('connection', async (ws, req) => {
                 break;
                 
               case 'media':
+                // Loopback-Diagnose: μ-law Payload 1:1 zurücksenden (innerhalb des Diagnosefensters)
+                const loopbackActive = DIAG_LOOPBACK_MS > 0 && recording;
+                if (loopbackActive && m.media?.payload && typeof m.media.payload === 'string') {
+                  const f = Buffer.from(m.media.payload, 'base64');
+                  if (ws._outboundQueue) ws._outboundQueue.push(f);
+                }
                 // Nur eingehendes Audio verarbeiten, Echo ignorieren
                 if (m.media?.track === 'inbound' && recording && session && m.media?.payload) {
                   // Twilio sendet µ-law @8kHz, 20ms Frames → dekodieren zu PCM16 und auf 24kHz hochsamplen
@@ -602,6 +655,7 @@ wss.on('connection', async (ws, req) => {
     console.log(`[${id}] 🔚 closed, bytesIn=${bytesIn}`);
     clearInterval(ka);
     if (ws._outboundTimer) try { clearInterval(ws._outboundTimer); } catch {}
+    ws._outboundQueue = [];
     session?.close?.();
   });
 });
