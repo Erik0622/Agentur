@@ -138,7 +138,7 @@ const DIAG_TESTTONE_MS = parseInt(process.env.TWILIO_TESTTONE_MS || '0', 10); //
 const AGGREGATE_MS = parseInt(process.env.TWILIO_AGGREGATE_MS || '300', 10); // min. 300ms pro Outbound-Chunk
 const TURN_END_SILENCE_MS = parseInt(process.env.TURN_END_SILENCE_MS || '700', 10); // Stille-Dauer bis Turn-Ende
 const VAD_RMS_THRESHOLD = parseInt(process.env.VAD_RMS_THRESHOLD || '600', 10); // ~0..32767
-const FIRST_TURN_GUARD_MS = parseInt(process.env.FIRST_TURN_GUARD_MS || '0', 10); // 0=aus; optional Guard
+// First-Turn-Guard entfernt – VAD/Turn-Handling übernimmt Steuerung
 
 function generateMuLawTone(durationMs, freqHz = 1000, sampleRate = 8000) {
   const totalSamples = Math.floor((durationMs / 1000) * sampleRate);
@@ -437,27 +437,7 @@ wss.on('connection', async (ws, req) => {
   const framesPerSecond = 50; // 20ms pro Frame @8kHz von Twilio
   const silenceFramesNeeded = Math.max(1, Math.floor((TURN_END_SILENCE_MS / 1000) * framesPerSecond));
 
-  // First‑Turn Guard
-  let firstSpeechAt = 0;
-  let firstTurnCompleted = false;
-  let firstTurnTimer = null;
-  if (FIRST_TURN_GUARD_MS > 0) {
-    firstTurnTimer = setInterval(() => {
-      try {
-        if (!firstSpeechAt || firstTurnCompleted || !session) return;
-        if (Date.now() - firstSpeechAt >= FIRST_TURN_GUARD_MS) {
-          try {
-            ws._flushPcmAgg?.();
-            session.sendRealtimeInput({ media: [], audioStreamEnd: true, turnComplete: true });
-            console.log(`[${id}] 🛎️ First‑Turn guard → forced turnComplete after ${FIRST_TURN_GUARD_MS}ms`);
-          } catch (e) { console.warn(`[${id}] ⚠️ first‑turn guard error:`, e?.message || e); }
-          firstTurnCompleted = true;
-          silenceFrames = 0;
-          recording = false;
-        }
-      } catch {}
-    }, 100);
-  }
+  // Kein First‑Turn Guard – reine VAD/Turn-Steuerung
 
   // Session sofort öffnen, damit der Client session_ready früh bekommt
   session = await openGeminiSession(ws, id);
@@ -547,7 +527,6 @@ wss.on('connection', async (ws, req) => {
                   const isSpeech = avgAbs >= VAD_RMS_THRESHOLD;
 
                   if (isSpeech) {
-                    if (!firstSpeechAt) firstSpeechAt = Date.now();
                     // Aufnahme ggf. automatisch starten
                     if (!recording) {
                       console.log(`[${id}] 🎙️ Speech detected → start turn`);
@@ -575,7 +554,6 @@ wss.on('connection', async (ws, req) => {
                         } catch (e) {
                           console.warn(`[${id}] ⚠️ turnComplete error:`, e?.message || e);
                         }
-                        firstTurnCompleted = true;
                         recording = false;
                         silenceFrames = 0;
                         chunkCount = 0;
@@ -715,7 +693,6 @@ wss.on('connection', async (ws, req) => {
   ws.on('close', () => {
     console.log(`[${id}] 🔚 closed, bytesIn=${bytesIn}`);
     clearInterval(ka);
-    if (firstTurnTimer) try { clearInterval(firstTurnTimer); } catch {}
     if (ws._outboundTimer) try { clearInterval(ws._outboundTimer); } catch {}
     ws._outboundQueue = [];
     session?.close?.();
