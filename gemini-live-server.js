@@ -141,6 +141,9 @@ const server = http.createServer(app);
 // JSON Body Parser für Voice Agent API
 app.use(express.json({ limit: '6mb' }));
 
+// Twilio Webhook Form-Parser
+app.use(express.urlencoded({ extended: false }));
+
 // Voice Agent API Route
 app.post('/api/voice-agent', async (req, res) => {
   try {
@@ -178,10 +181,9 @@ app.post('/twilio/incoming', (req, res) => {
   // TwiML Response für Twilio - verbindet den Anruf mit unserem WebSocket Voice Agent
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Start>
-        <Stream url="wss://agentur.fly.dev?source=twilio" track="both_tracks"/>
-    </Start>
-    <Pause length="3600"/>
+  <Connect>
+    <Stream url="wss://agentur.fly.dev?source=twilio"/>
+  </Connect>
 </Response>`;
 
   res.type('text/xml');
@@ -351,9 +353,11 @@ function attachTwilioHelpers(ws, id, getTwilioStreamSid) {
     const mulaw8k = encodePCM16ToMuLaw8k(pcm16, rate);
     const frames = chunkBuffer(mulaw8k, 160);
     console.log(`[${id}] 📤 Sending ${frames.length} audio frames to Twilio stream ${twilioStreamSid}`);
-    for (const frame of frames) {
-      ws.send(JSON.stringify({ event: 'media', streamSid: twilioStreamSid, media: { payload: frame.toString('base64'), track: 'outbound' } }));
-    }
+    frames.forEach((frame, i) => {
+      setTimeout(() => {
+        ws.send(JSON.stringify({ event: 'media', streamSid: twilioStreamSid, media: { payload: frame.toString('base64') } }));
+      }, i * 20);
+    });
   };
 }
 
