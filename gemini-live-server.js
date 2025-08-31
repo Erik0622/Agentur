@@ -373,7 +373,10 @@ wss.on('connection', async (ws, req) => {
   // Für Twilio: outbound helper auf dem Socket bereitstellen
   if (isTwilio) {
     ws._twilioSendAudio = (base64PcmLE, mime) => {
-      if (!twilioStreamSid) return; // Noch kein Stream bereit
+      if (!twilioStreamSid) {
+        console.warn(`[${id}] ⚠️ _twilioSendAudio called but twilioStreamSid is not set.`);
+        return;
+      }
       const rate = parsePcmRateFromMime(mime);
       const pcmBytes = Buffer.from(base64PcmLE, 'base64');
       const pcm16 = bytesToInt16LE(pcmBytes);
@@ -381,7 +384,7 @@ wss.on('connection', async (ws, req) => {
       const frames = chunkBuffer(mulaw8k, 160);
       console.log(`[${id}] 📤 Sending ${frames.length} audio frames to Twilio stream ${twilioStreamSid}`);
       for (const frame of frames) {
-        ws.send(JSON.stringify({ event: 'media', streamSid: twilioStreamSid, media: { payload: frame.toString('base64'), track: 'outbound' } }));
+        ws.send(JSON.stringify({ event: 'media', streamSid: twilioStreamSid, media: { payload: frame.toString('base64') } }));
       }
     };
   }
@@ -410,8 +413,13 @@ wss.on('connection', async (ws, req) => {
                 console.log(`[${id}] 📞 Twilio call started, streamSid:`, m.start?.streamSid || m.streamSid);
                 recording = true;
                 twilioStreamSid = m.start?.streamSid || m.streamSid || twilioStreamSid;
-                // Sende session_ready an Twilio (falls noch nicht gesendet)
-                // Keine JSON-Messages an Twilio zurücksenden (Twilio akzeptiert nur eigene Events)
+                if (session) {
+                  console.log(`[${id}] 💬 Sending initial greeting to Gemini to generate audio response.`);
+                  session.sendClientContent({
+                    turns: [{ role: 'user', parts: [{ text: 'Sag "Hallo und herzlich willkommen."' }] }],
+                    turnComplete: true
+                  });
+                }
                 break;
                 
               case 'media':
