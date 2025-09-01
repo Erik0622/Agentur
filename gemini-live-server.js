@@ -114,6 +114,13 @@ if (!KEY) {
   process.exit(1);
 }
 console.log('[BOOT] ✅ API-Key gefunden:', KEY ? `${KEY.slice(0,8)}...${KEY.slice(-4)}` : 'NONE');
+console.log('[BOOT] ⚙️ Audio settings:', {
+  DIAG_TESTTONE_MS,
+  DIAG_LOOPBACK_MS,
+  TURN_END_SILENCE_MS,
+  VAD_RMS_THRESHOLD,
+  TWILIO_AGGREGATE_MS
+});
 
 // Allgemeiner System‑Prompt (Deutsch, B2B, Voice Agents mit Funktionsaufrufen)
 const SYSTEM_PROMPT = [
@@ -135,9 +142,9 @@ const SYSTEM_PROMPT = [
 
 const DIAG_LOOPBACK_MS = parseInt(process.env.TWILIO_LOOPBACK_MS || '0', 10); // 0=aus
 const DIAG_TESTTONE_MS = parseInt(process.env.TWILIO_TESTTONE_MS || '0', 10); // 0=aus
-const AGGREGATE_MS = parseInt(process.env.TWILIO_AGGREGATE_MS || '300', 10); // min. 300ms pro Outbound-Chunk
-const TURN_END_SILENCE_MS = parseInt(process.env.TURN_END_SILENCE_MS || '700', 10); // Stille-Dauer bis Turn-Ende
-const VAD_RMS_THRESHOLD = parseInt(process.env.VAD_RMS_THRESHOLD || '600', 10); // ~0..32767
+const TWILIO_AGGREGATE_MS = parseInt(process.env.TWILIO_AGGREGATE_MS || '300', 10); // min. 300ms pro Outbound-Chunk
+const TURN_END_SILENCE_MS = parseInt(process.env.TURN_END_SILENCE_MS || '500', 10); // Stille-Dauer bis Turn-Ende
+const VAD_RMS_THRESHOLD = parseInt(process.env.VAD_RMS_THRESHOLD || '450', 10); // ~0..32767
 // First-Turn-Guard entfernt – VAD/Turn-Handling übernimmt Steuerung
 
 function generateMuLawTone(durationMs, freqHz = 1000, sampleRate = 8000) {
@@ -366,7 +373,7 @@ function attachTwilioHelpers(ws, id, getTwilioStreamSid) {
     if (!ws._pcmAgg || ws._pcmAgg.rate !== rate) ws._pcmAgg = { buf: Buffer.alloc(0), rate };
     const bytes = Buffer.from(b64, 'base64');
     ws._pcmAgg.buf = Buffer.concat([ws._pcmAgg.buf, bytes]);
-    const minBytes = Math.floor(rate * 2 * (AGGREGATE_MS / 1000));
+    const minBytes = Math.floor(rate * 2 * (TWILIO_AGGREGATE_MS / 1000));
     while (ws._pcmAgg.buf.length >= minBytes) {
       const chunk = ws._pcmAgg.buf.slice(0, minBytes);
       ws._pcmAgg.buf = ws._pcmAgg.buf.slice(minBytes);
