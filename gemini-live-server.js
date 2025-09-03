@@ -541,7 +541,11 @@ wss.on('connection', async (ws, req) => {
       try {
         if (!session) return;
         console.log(`[${id}] ⛳ Inaktivität erreicht – sende audioStreamEnd + turnComplete (chunks=${chunkCount})`);
-        session.sendRealtimeInput({ media: [], audioStreamEnd: true, turnComplete: true });
+        if (PIPELINE_BACKEND === 'pipecat' && ws._pipecatSocket?.readyState === 1) {
+          ws._pipecatSocket.send(JSON.stringify({ type: 'turn_end' }));
+        } else {
+          session.sendRealtimeInput({ media: [], audioStreamEnd: true, turnComplete: true });
+        }
         recording = false;
         chunkCount = 0;
       } catch (e) {
@@ -645,7 +649,11 @@ wss.on('connection', async (ws, req) => {
                         // Turn beenden
                         try {
                           ws._flushPcmAgg?.();
-                          session.sendRealtimeInput({ media: [], audioStreamEnd: true, turnComplete: true });
+                          if (PIPELINE_BACKEND === 'pipecat' && ws._pipecatSocket?.readyState === 1) {
+                            ws._pipecatSocket.send(JSON.stringify({ type: 'turn_end' }));
+                          } else {
+                            session.sendRealtimeInput({ media: [], audioStreamEnd: true, turnComplete: true });
+                          }
                           console.log(`[${id}] 🛑 VAD silence ${TURN_END_SILENCE_MS}ms → turnComplete`);
                         } catch (e) {
                           console.warn(`[${id}] ⚠️ turnComplete error:`, e?.message || e);
