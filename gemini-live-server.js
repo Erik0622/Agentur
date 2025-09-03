@@ -735,8 +735,13 @@ wss.on('connection', async (ws, req) => {
             bytesIn += buf.length;
             chunkCount += 1;
             console.log(`[${id}] 📤 → Gemini audio ${buf.length} bytes (b64) [chunk #${chunkCount}]`);
-            // Use 'media' array per @google/genai live API
-            session.sendRealtimeInput({ media: [{ data: m.data, mimeType: 'audio/pcm;rate=24000' }] });
+            // Route je nach Backend
+            if (PIPELINE_BACKEND === 'pipecat' && ws._pipecatSocket?.readyState === 1) {
+              ws._pipecatSocket.send(JSON.stringify({ type: 'audio_in', data: m.data, mimeType: 'audio/pcm;rate=24000' }));
+            } else {
+              // Use 'media' array per @google/genai live API
+              session.sendRealtimeInput({ media: [{ data: m.data, mimeType: 'audio/pcm;rate=24000' }] });
+            }
             scheduleTurnEnd();
             return;
           }
@@ -767,19 +772,28 @@ wss.on('connection', async (ws, req) => {
       // Binär-Frames: rohes Int16-PCM little-endian @ 16kHz
       if (Buffer.isBuffer(raw)) {
         console.log(`[${id}] 📦 bin> true ${raw.length}`);
+        // Twilio akzeptiert nur JSON-Protokoll. Falls Twilio, ignoriere Binär.
+        if (ws._isTwilio) return;
         if (!recording || !session) return;
         bytesIn += raw.length;
         chunkCount += 1;
         const b64 = raw.toString('base64');
-        // Use 'media' array per @google/genai live API
-        session.sendRealtimeInput({ media: [{ data: b64, mimeType: 'audio/pcm;rate=24000' }] });
+        if (PIPELINE_BACKEND === 'pipecat' && ws._pipecatSocket?.readyState === 1) {
+          ws._pipecatSocket.send(JSON.stringify({ type: 'audio_in', data: b64, mimeType: 'audio/pcm;rate=24000' }));
+        } else {
+          // Use 'media' array per @google/genai live API
+          session.sendRealtimeInput({ media: [{ data: b64, mimeType: 'audio/pcm;rate=24000' }] });
+        }
         console.log(`[${id}] 📤 → Gemini audio ${Math.max(0, raw.length - (raw.length - 1364))} bytes (bin) [chunk #${chunkCount}]`);
         scheduleTurnEnd();
         return;
       }
     } catch (e) {
       console.error(`[${id}] 🧨 onmessage error`, e);
-      ws.send(JSON.stringify({ type: 'server_error', where: 'onmessage', detail: String(e?.message || e) }));
+      // Sende niemals Nicht-Twilio-JSON an Twilio-WS (vermeidet 31951)
+      if (!ws._isTwilio) {
+        try { ws.send(JSON.stringify({ type: 'server_error', where: 'onmessage', detail: String(e?.message || e) })); } catch {}
+      }
     }
   });
 
