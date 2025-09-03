@@ -541,8 +541,12 @@ wss.on('connection', async (ws, req) => {
       try {
         if (!session) return;
         console.log(`[${id}] ⛳ Inaktivität erreicht – sende audioStreamEnd + turnComplete (chunks=${chunkCount})`);
-        if (PIPELINE_BACKEND === 'pipecat' && ws._pipecatSocket?.readyState === 1) {
-          ws._pipecatSocket.send(JSON.stringify({ type: 'turn_end' }));
+        if (PIPELINE_BACKEND === 'pipecat') {
+          if (ws._pipecatSocket?.readyState === 1) {
+            ws._pipecatSocket.send(JSON.stringify({ type: 'turn_end' }));
+          } else {
+            console.warn(`[${id}] ⚠️ turn_end skipped (Pipecat socket not ready)`);
+          }
         } else {
           session.sendRealtimeInput({ media: [], audioStreamEnd: true, turnComplete: true });
         }
@@ -649,8 +653,12 @@ wss.on('connection', async (ws, req) => {
                         // Turn beenden
                         try {
                           ws._flushPcmAgg?.();
-                          if (PIPELINE_BACKEND === 'pipecat' && ws._pipecatSocket?.readyState === 1) {
-                            ws._pipecatSocket.send(JSON.stringify({ type: 'turn_end' }));
+                          if (PIPELINE_BACKEND === 'pipecat') {
+                            if (ws._pipecatSocket?.readyState === 1) {
+                              ws._pipecatSocket.send(JSON.stringify({ type: 'turn_end' }));
+                            } else {
+                              console.warn(`[${id}] ⚠️ turn_end skipped (Pipecat socket not ready)`);
+                            }
                           } else {
                             session.sendRealtimeInput({ media: [], audioStreamEnd: true, turnComplete: true });
                           }
