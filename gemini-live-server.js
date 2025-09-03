@@ -401,8 +401,15 @@ function attachTwilioHelpers(ws, id, getTwilioStreamSid) {
   ws._outboundTimer = setInterval(() => {
     try {
       const twilioStreamSid = getTwilioStreamSid();
-      if (!twilioStreamSid || ws.readyState !== 1) return;
-      if (ws._outboundQueue.length === 0) { ws._outboundBurstActive = false; return; }
+      // Sende nur, wenn der Stream wirklich gestartet wurde
+      if (!twilioStreamSid || !ws._twilioStarted || ws.readyState !== 1) return;
+      if (ws._outboundQueue.length === 0) {
+        if (ws._outboundBurstActive) {
+          // Burst ist zu Ende – optional Mark-Ende schicken (nicht zwingend)
+        }
+        ws._outboundBurstActive = false;
+        return;
+      }
       const frame = ws._outboundQueue.shift();
       ws.send(JSON.stringify({ event: 'media', streamSid: twilioStreamSid, media: { payload: frame.toString('base64') } }));
     } catch {}
@@ -410,7 +417,7 @@ function attachTwilioHelpers(ws, id, getTwilioStreamSid) {
 
   ws._twilioSendAudio = (base64PcmLE, mime) => {
     const twilioStreamSid = getTwilioStreamSid();
-    if (!twilioStreamSid) {
+    if (!twilioStreamSid || !ws._twilioStarted) {
       console.warn(`[${id}] ⚠️ _twilioSendAudio called but twilioStreamSid is not set.`);
       return;
     }
@@ -491,15 +498,7 @@ wss.on('connection', async (ws, req) => {
             attachTwilioHelpers(ws, id, getTwilioStreamSid); // Helfer hier erstellen!
             console.log(`[${id}] 🔄 Socket als Twilio-Stream erkannt`);
             // Da oft kein 'start' Event kommt, hier die Begrüßung auslösen
-            if (session) {
-              console.log(`[${id}] 💬 Sending initial greeting to Gemini after dynamic detection.`);
-              session.sendClientContent({
-                turns: [{ role: 'user', parts: [{ text: 'Sag "Hallo und herzlich willkommen."' }] }],
-                turnComplete: true
-              });
-            } else {
-              console.warn(`[${id}] ⚠️ Twilio detected, but no Gemini session available to send greeting.`);
-            }
+            // Wichtig: Begrüßung NICHT mehr sofort senden – erst nach 'start'
           }
 
           // ===== Twilio Media Stream Handling =====
@@ -519,7 +518,14 @@ wss.on('connection', async (ws, req) => {
                 console.log(`[${id}] 📞 Twilio call started, streamSid:`, m.start?.streamSid || m.streamSid);
                 recording = true;
                 twilioStreamSid = m.start?.streamSid || m.streamSid || twilioStreamSid;
-                // Begrüßung wird jetzt oben ausgelöst, um Fälle ohne 'start' abzudecken
+                ws._twilioStarted = true; // Ab jetzt darf Outbound gesendet werden
+                // Optional: Begrüßung NACH Start senden (vermeidet Outbound vor Start)
+                try {
+                  session?.sendClientContent({
+                    turns: [{ role: 'user', parts: [{ text: 'Sag "Hallo und herzlich willkommen."' }] }],
+                    turnComplete: true
+                  });
+                } catch {}
                 break;
                 
               case 'media':
