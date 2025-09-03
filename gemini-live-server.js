@@ -113,6 +113,14 @@ if (!KEY) {
 } else {
   console.log('[BOOT] ✅ API-Key gefunden:', `${KEY.slice(0,8)}...${KEY.slice(-4)}`);
 }
+
+// Diagnose-/Audio-Parameter (müssen vor Logging definiert sein)
+const DIAG_LOOPBACK_MS = parseInt(process.env.TWILIO_LOOPBACK_MS || '0', 10); // 0=aus
+const DIAG_TESTTONE_MS = parseInt(process.env.TWILIO_TESTTONE_MS || '0', 10); // 0=aus
+const TWILIO_AGGREGATE_MS = parseInt(process.env.TWILIO_AGGREGATE_MS || '300', 10); // min. 300ms pro Outbound-Chunk
+const TURN_END_SILENCE_MS = parseInt(process.env.TURN_END_SILENCE_MS || '500', 10); // Stille-Dauer bis Turn-Ende
+const VAD_RMS_THRESHOLD = parseInt(process.env.VAD_RMS_THRESHOLD || '450', 10); // ~0..32767
+
 console.log('[BOOT] ⚙️ Audio settings:', {
   DIAG_TESTTONE_MS,
   DIAG_LOOPBACK_MS,
@@ -139,11 +147,6 @@ const SYSTEM_PROMPT = [
   '- Falls dir Informationen fehlen, frage nach oder gib transparent an, was du brauchst.'
 ].join('\n');
 
-const DIAG_LOOPBACK_MS = parseInt(process.env.TWILIO_LOOPBACK_MS || '0', 10); // 0=aus
-const DIAG_TESTTONE_MS = parseInt(process.env.TWILIO_TESTTONE_MS || '0', 10); // 0=aus
-const TWILIO_AGGREGATE_MS = parseInt(process.env.TWILIO_AGGREGATE_MS || '300', 10); // min. 300ms pro Outbound-Chunk
-const TURN_END_SILENCE_MS = parseInt(process.env.TURN_END_SILENCE_MS || '500', 10); // Stille-Dauer bis Turn-Ende
-const VAD_RMS_THRESHOLD = parseInt(process.env.VAD_RMS_THRESHOLD || '450', 10); // ~0..32767
 // First-Turn-Guard entfernt – VAD/Turn-Handling übernimmt Steuerung
 
 function generateMuLawTone(durationMs, freqHz = 1000, sampleRate = 8000) {
