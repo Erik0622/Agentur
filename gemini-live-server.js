@@ -239,6 +239,38 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('/health', (_req, res) => res.status(200).send('ok'));
+// Diagnose Pipecat-Verbindung
+app.get('/diag/pipecat', async (_req, res) => {
+  if (PIPELINE_BACKEND !== 'pipecat') return res.status(400).json({ ok: false, reason: 'PIPELINE_BACKEND!=pipecat' });
+  if (!PIPELINE_WS_URL) return res.status(400).json({ ok: false, reason: 'PIPELINE_WS_URL unset' });
+  try {
+    const url = PIPELINE_WS_URL;
+    const start = Date.now();
+    const sock = new WebSocket(url);
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { sock.terminate(); } catch {}
+      res.status(504).json({ ok: false, reason: 'timeout', ms: Date.now() - start });
+    }, 2000);
+    sock.on('open', () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { sock.close(); } catch {}
+      res.json({ ok: true, ms: Date.now() - start });
+    });
+    sock.on('error', (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      res.status(502).json({ ok: false, reason: String(e?.message || e) });
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, reason: String(e?.message || e) });
+  }
+});
 
 // --- WebSocket Server Setup ---
 const wss = new WebSocketServer({ server, perMessageDeflate: false }); // An den HTTP-Server binden
