@@ -108,12 +108,11 @@ function sendTwilioOutboundAudio(ws, streamSid, base64PcmLE, mime) {
 
 const PORT = process.env.PORT || 8080;
 const KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
-
 if (!KEY) {
-  console.error('[BOOT] ❌ Kein GOOGLE_API_KEY/GEMINI_API_KEY gesetzt!');
-  process.exit(1);
+  console.warn('[BOOT] ⚠️ Kein GOOGLE_API_KEY/GEMINI_API_KEY gesetzt. Server startet, aber Gemini ist deaktiviert.');
+} else {
+  console.log('[BOOT] ✅ API-Key gefunden:', `${KEY.slice(0,8)}...${KEY.slice(-4)}`);
 }
-console.log('[BOOT] ✅ API-Key gefunden:', KEY ? `${KEY.slice(0,8)}...${KEY.slice(-4)}` : 'NONE');
 console.log('[BOOT] ⚙️ Audio settings:', {
   DIAG_TESTTONE_MS,
   DIAG_LOOPBACK_MS,
@@ -239,10 +238,15 @@ const wss = new WebSocketServer({ server, perMessageDeflate: false }); // An den
 
 wss.on('listening', () => console.log(`🔗 WebSocket-Erweiterung für Server auf Port ${PORT} bereit.`));
 
-const ai = new GoogleGenAI({ apiKey: KEY });
+let ai = null;
+if (KEY) {
+  try { ai = new GoogleGenAI({ apiKey: KEY }); }
+  catch (e) { console.warn('[BOOT] ⚠️ GoogleGenAI init failed:', e?.message || e); }
+}
 
 async function openGeminiSession(ws, id) {
   try {
+    if (!ai) { console.warn(`[${id}] ⚠️ Kein Gemini-Client initialisiert (fehlender KEY).`); return null; }
     console.log(`[${id}] 🔧 Öffne Gemini Live session...`);
     const session = await ai.live.connect({
       model: 'gemini-2.5-flash-preview-native-audio-dialog',
@@ -709,4 +713,12 @@ wss.on('connection', async (ws, req) => {
 // --- Server starten ---
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Kombinierter HTTP/WebSocket Server läuft auf http://0.0.0.0:${PORT}`);
+});
+
+// Globale Error-Handler, damit die App nicht crash-t
+process.on('uncaughtException', (err) => {
+  console.error('uncaughtException:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('unhandledRejection:', reason);
 });
