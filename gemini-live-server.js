@@ -5,7 +5,7 @@ import express from 'express';
 import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 import { GoogleGenAI, Modality } from '@google/genai';
 
 // ===== Audio Helpers for Twilio Media Streams (PCM16 ↔ μ-law, Resample) =====
@@ -108,6 +108,9 @@ function sendTwilioOutboundAudio(ws, streamSid, base64PcmLE, mime) {
 
 const PORT = process.env.PORT || 8080;
 const KEY = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
+const PIPELINE_BACKEND = (process.env.PIPELINE_BACKEND || '').toLowerCase(); // e.g. 'pipecat'
+const PIPELINE_WS_URL = process.env.PIPELINE_WS_URL || process.env.PIPECAT_WS_URL || '';
+const PIPECAT_PCM_RATE = parseInt(process.env.PIPECAT_PCM_RATE || '24000', 10);
 if (!KEY) {
   console.warn('[BOOT] ⚠️ Kein GOOGLE_API_KEY/GEMINI_API_KEY gesetzt. Server startet, aber Gemini ist deaktiviert.');
 } else {
@@ -128,6 +131,7 @@ console.log('[BOOT] ⚙️ Audio settings:', {
   VAD_RMS_THRESHOLD,
   TWILIO_AGGREGATE_MS
 });
+console.log('[BOOT] 🧩 Pipeline:', { PIPELINE_BACKEND, PIPELINE_WS_URL: PIPELINE_WS_URL ? '(set)' : '(unset)' });
 
 // Allgemeiner System‑Prompt (Deutsch, B2B, Voice Agents mit Funktionsaufrufen)
 const SYSTEM_PROMPT = [
@@ -249,6 +253,10 @@ if (KEY) {
 
 async function openGeminiSession(ws, id) {
   try {
+    if (PIPELINE_BACKEND === 'pipecat') {
+      console.log(`[${id}] 🔧 Verwende Pipecat Pipeline Bridge über ${PIPELINE_WS_URL || '(local)'}`);
+      return { __pipecat: true }; // Dummy handle; Kommunikation erfolgt unten über _pipecatSocket
+    }
     if (!ai) { console.warn(`[${id}] ⚠️ Kein Gemini-Client initialisiert (fehlender KEY).`); return null; }
     console.log(`[${id}] 🔧 Öffne Gemini Live session...`);
     const session = await ai.live.connect({
@@ -462,6 +470,33 @@ wss.on('connection', async (ws, req) => {
 
   // Session sofort öffnen, damit der Client session_ready früh bekommt
   session = await openGeminiSession(ws, id);
+  if (PIPELINE_BACKEND === 'pipecat') {
+    // Stelle Bridge zu Pipecat WS her
+    try {
+      const targetUrl = PIPELINE_WS_URL || `ws://127.0.0.1:8765`; // Beispiel
+      console.log(`[${id}] 🔌 Connect Pipecat WS: ${targetUrl}`);
+      const pws = new WebSocket(targetUrl);
+      ws._pipecatSocket = pws;
+      pws.on('open', () => console.log(`[${id}] ✅ Pipecat connected`));
+      pws.on('error', (e) => console.warn(`[${id}] ⚠️ Pipecat error:`, e?.message || e));
+      pws.on('close', () => console.log(`[${id}] ⛔ Pipecat closed`));
+      // Antworten von Pipecat (Base64 PCM @ PIPECAT_PCM_RATE)
+      pws.on('message', (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg?.type === 'audio_out' && typeof msg?.data === 'string') {
+            if (ws._isTwilio) {
+              ws._twilioSendAudio?.(msg.data, `audio/pcm;rate=${PIPECAT_PCM_RATE}`);
+            } else {
+              ws.send(JSON.stringify({ type: 'audio_out', data: msg.data }));
+            }
+          }
+        } catch {}
+      });
+    } catch (e) {
+      console.warn(`[${id}] ⚠️ Pipecat init failed:`, e?.message || e);
+    }
+  }
 
   // Für Twilio: outbound helper auf dem Socket bereitstellen
   if (isTwilio) {
@@ -521,10 +556,14 @@ wss.on('connection', async (ws, req) => {
                 ws._twilioStarted = true; // Ab jetzt darf Outbound gesendet werden
                 // Optional: Begrüßung NACH Start senden (vermeidet Outbound vor Start)
                 try {
-                  session?.sendClientContent({
-                    turns: [{ role: 'user', parts: [{ text: 'Sag "Hallo und herzlich willkommen."' }] }],
-                    turnComplete: true
-                  });
+                  if (PIPELINE_BACKEND === 'pipecat' && ws._pipecatSocket?.readyState === 1) {
+                    ws._pipecatSocket.send(JSON.stringify({ type: 'say', text: 'Sag "Hallo und herzlich willkommen."' }));
+                  } else {
+                    session?.sendClientContent({
+                      turns: [{ role: 'user', parts: [{ text: 'Sag "Hallo und herzlich willkommen."' }] }],
+                      turnComplete: true
+                    });
+                  }
                 } catch {}
                 break;
                 
@@ -555,11 +594,16 @@ wss.on('connection', async (ws, req) => {
                     }
                     silenceFrames = 0;
                     // Hochsamplen und an Gemini senden (24kHz)
-                    const pcm16_24k = resamplePCM16(pcm16, 8000, 24000);
-                    const pcm16_24k_bytes = int16ToBytes(pcm16_24k);
+                    const outRate = PIPELINE_BACKEND === 'pipecat' ? PIPECAT_PCM_RATE : 24000;
+                    const pcm16_out = resamplePCM16(pcm16, 8000, outRate);
+                    const pcm16_out_bytes = int16ToBytes(pcm16_out);
                     bytesIn += ulawBuffer.length;
                     chunkCount++;
-                    session.sendRealtimeInput({ media: [{ data: Buffer.from(pcm16_24k_bytes).toString('base64'), mimeType: 'audio/pcm;rate=24000' }] });
+                    if (PIPELINE_BACKEND === 'pipecat' && ws._pipecatSocket?.readyState === 1) {
+                      ws._pipecatSocket.send(JSON.stringify({ type: 'audio_in', data: Buffer.from(pcm16_out_bytes).toString('base64'), mimeType: `audio/pcm;rate=${outRate}` }));
+                    } else {
+                      session.sendRealtimeInput({ media: [{ data: Buffer.from(pcm16_out_bytes).toString('base64'), mimeType: `audio/pcm;rate=${outRate}` }] });
+                    }
                     console.log(`[${id}] 📞 Twilio inbound audio chunk: ${ulawBuffer.length} bytes processed (avgAbs=${avgAbs|0})`);
                   } else {
                     // Stilleframe
