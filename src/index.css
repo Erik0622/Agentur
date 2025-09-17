@@ -24,4 +24,18 @@
   .shadow-glow {
     box-shadow: 0 0 20px rgba(59, 130, 246, 0.15);
   }
+  
+  /* Hero background from attachment: soft radial gradient */
+  .hero-bg {
+    background: radial-gradient(1200px 600px at 50% -10%, rgba(255,255,255,0.9), rgba(255,255,255,0.6) 30%, transparent 60%),
+                linear-gradient(135deg, #f7e7e9 0%, #eaf2ff 50%, #e8f7ff 100%);
+  }
+  
+  /* Section heading gradient (grey to black) */
+  .heading-gradient {
+    background: linear-gradient(180deg, #666 0%, #111 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
 } 

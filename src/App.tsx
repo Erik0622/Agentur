@@ -343,7 +343,7 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen hero-bg">
       {/* JSON-LD: Service & Breadcrumbs for SEO */}
       {(() => {
         const serviceJsonLd = {
@@ -373,72 +373,58 @@ function App() {
       })()}
       
       {/* Navigation */}
-      <nav className="fixed top-0 w-full bg-gray-600/30 backdrop-blur-md z-50 border-b border-gray-300/20">
+      <nav className="fixed top-0 w-full bg-white/60 backdrop-blur-md z-50 border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
-            <motion.div 
+            <motion.a 
+              href="/"
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
-              className="flex items-center space-x-2"
+              className="flex items-center space-x-3"
             >
-              <Bot className="h-8 w-8 text-blue-400" />
-              <span className="font-bold text-xl text-black">Vocaris AI</span>
-            </motion.div>
+              <img src="/logo-v.png" alt="Vocaris" className="h-8 w-8 rounded-sm" />
+              <span className="font-bold text-xl text-gray-900">Vocaris AI</span>
+            </motion.a>
             
-            <div className="hidden md:flex items-center space-x-8">
+            {/* Desktop: Button-based header */}
+            <div className="hidden md:flex items-center space-x-3">
+              <button
+                onClick={() => document.getElementById('preise-section')?.scrollIntoView({ behavior: 'smooth' })}
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-800 hover:bg-gray-50 font-medium"
+              >
+                Preise
+              </button>
               <button
                 onClick={() => document.getElementById('use-cases-section')?.scrollIntoView({ behavior: 'smooth' })}
-                className="text-black hover:text-gray-900 transition-colors font-medium"
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-800 hover:bg-gray-50 font-medium"
               >
                 Use Cases
               </button>
               <button
                 onClick={() => document.getElementById('demo-section')?.scrollIntoView({ behavior: 'smooth' })}
-                className="text-black hover:text-gray-900 transition-colors font-medium"
+                className="px-4 py-2 rounded-lg border border-gray-200 text-gray-800 hover:bg-gray-50 font-medium"
               >
-                Demo
+                Erfahren Sie mehr
               </button>
-              <button
-                onClick={() => document.getElementById('preise-section')?.scrollIntoView({ behavior: 'smooth' })}
-                className="text-black hover:text-gray-900 transition-colors font-medium"
-              >
-                Preise
-              </button>
-              <button
-                onClick={() => document.getElementById('faq-section')?.scrollIntoView({ behavior: 'smooth' })}
-                className="text-black hover:text-gray-900 transition-colors font-medium"
-              >
-                FAQ
-              </button>
-              <button
+              <motion.button
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
                 onClick={scrollToCalendar}
-                className="text-black hover:text-gray-900 transition-colors font-medium"
+                className="bg-blue-600 text-white px-5 py-2 rounded-lg font-semibold hover:bg-blue-700 transition-colors shadow-glow"
               >
-                Kontakt
-              </button>
-              <a href="/impressum.html" className="text-black hover:text-gray-900 transition-colors font-medium">Impressum</a>
-              <a href="/agb.html" className="text-black hover:text-gray-900 transition-colors font-medium">AGB</a>
-              <a href="/datenschutz.html" className="text-black hover:text-gray-900 transition-colors font-medium">Datenschutz</a>
+                Buchen Sie einen Termin
+              </motion.button>
             </div>
             
             {/* Mobile Menu Button */}
             <button
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-              className="md:hidden p-2 text-black hover:text-gray-900 transition-colors"
+              className="md:hidden p-2 text-gray-800 hover:text-gray-900 transition-colors"
             >
-              <Menu className="h-6 w-6 text-black" />
+              <Menu className="h-6 w-6" />
             </button>
-            
-            <motion.button
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={scrollToCalendar}
-              className="hidden md:block bg-blue-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors shadow-glow"
-            >
-              Kostenlos Termin buchen
-            </motion.button>
           </div>
         </div>
         
@@ -467,7 +453,7 @@ function App() {
                 }}
                 className="block w-full text-left py-3 px-4 text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
               >
-                Demo
+                Erfahren Sie mehr
               </button>
               <button
                 onClick={() => {
@@ -480,21 +466,12 @@ function App() {
               </button>
               <button
                 onClick={() => {
-                  document.getElementById('faq-section')?.scrollIntoView({ behavior: 'smooth' });
-                  setIsMobileMenuOpen(false);
-                }}
-                className="block w-full text-left py-3 px-4 text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
-              >
-                FAQ
-              </button>
-              <button
-                onClick={() => {
                   scrollToCalendar();
                   setIsMobileMenuOpen(false);
                 }}
                 className="block w-full text-left py-3 px-4 text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
               >
-                Kontakt
+                Termin buchen
               </button>
             </div>
           </motion.div>
@@ -509,21 +486,18 @@ function App() {
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.8 }}
-              className="text-3xl sm:text-4xl md:text-5xl lg:text-7xl font-bold text-gray-900 mb-4 md:mb-6"
+              className="heading-gradient text-3xl sm:text-4xl md:text-5xl lg:text-7xl font-extrabold mb-4 md:mb-6"
             >
-              Automatisieren Sie Ihren
-              <span className="gradient-text block">Kundenservice mit KI</span>
-              <span className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl block mt-2 md:mt-4">und sparen Sie 85% der Kosten</span>
+              Innovative Voice‑AI Lösungen für zukunftsorientierte Unternehmen
             </motion.h1>
             
             <motion.p 
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.8, delay: 0.2 }}
-              className="text-base sm:text-lg md:text-xl lg:text-2xl text-gray-600 mb-8 md:mb-12 max-w-4xl mx-auto px-2"
+              className="text-base sm:text-lg md:text-xl lg:text-2xl text-gray-700 mb-8 md:mb-12 max-w-4xl mx-auto px-2"
             >
-              Unser KI-Telefonsystem ist 24/7 erreichbar, führt automatisch Buchungen durch 
-              und spart Ihnen bis zu 85% der Kundenservice-Kosten
+              Konzentrieren Sie sich auf Ihr Wachstum – unser KI‑Empfang und Sales‑Agent übernimmt eingehende und ausgehende Anrufe.
             </motion.p>
             
             <motion.div 
@@ -537,11 +511,26 @@ function App() {
                 className="bg-primary-600 text-white px-4 sm:px-6 md:px-8 py-3 md:py-4 rounded-lg md:rounded-xl font-semibold text-sm sm:text-base md:text-lg hover:bg-primary-700 transition-colors shadow-glow flex items-center justify-center group"
               >
                 <Calendar className="mr-2 h-4 md:h-5 w-4 md:w-5" />
-                Kostenlos Beratungstermin buchen
+                Buchen Sie einen Termin
                 <ArrowRight className="ml-2 h-4 md:h-5 w-4 md:w-5 group-hover:translate-x-1 transition-transform" />
               </button>
-              <button className="border-2 border-gray-300 text-gray-700 px-4 sm:px-6 md:px-8 py-3 md:py-4 rounded-lg md:rounded-xl font-semibold text-sm sm:text-base md:text-lg hover:border-primary-600 hover:text-primary-600 transition-colors">
-                Live-Demo anfordern
+              <button
+                onClick={() => document.getElementById('preise-section')?.scrollIntoView({ behavior: 'smooth' })}
+                className="border-2 border-gray-300 text-gray-700 px-4 sm:px-6 md:px-8 py-3 md:py-4 rounded-lg md:rounded-xl font-semibold text-sm sm:text-base md:text-lg hover:border-primary-600 hover:text-primary-600 transition-colors"
+              >
+                Preise ansehen
+              </button>
+              <button
+                onClick={() => document.getElementById('use-cases-section')?.scrollIntoView({ behavior: 'smooth' })}
+                className="border-2 border-gray-300 text-gray-700 px-4 sm:px-6 md:px-8 py-3 md:py-4 rounded-lg md:rounded-xl font-semibold text-sm sm:text-base md:text-lg hover:border-primary-600 hover:text-primary-600 transition-colors"
+              >
+                Use Cases
+              </button>
+              <button
+                onClick={() => document.getElementById('demo-section')?.scrollIntoView({ behavior: 'smooth' })}
+                className="border-2 border-gray-300 text-gray-700 px-4 sm:px-6 md:px-8 py-3 md:py-4 rounded-lg md:rounded-xl font-semibold text-sm sm:text-base md:text-lg hover:border-primary-600 hover:text-primary-600 transition-colors"
+              >
+                Erfahren Sie mehr
               </button>
             </motion.div>
           </div>
@@ -560,7 +549,7 @@ function App() {
             viewport={{ once: true }}
             className="text-center mb-8 md:mb-16"
           >
-            <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-4 md:mb-6">
+            <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-4 md:mb-6 heading-gradient">
               Das Problem kennen Sie
             </h2>
             <p className="text-base sm:text-lg md:text-xl text-gray-600 max-w-3xl mx-auto px-2">
@@ -602,7 +591,7 @@ function App() {
             viewport={{ once: true }}
             className="text-center mb-6 md:mb-8 lg:mb-12"
           >
-            <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-3 md:mb-4 lg:mb-6">
+            <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-3 md:mb-4 lg:mb-6 heading-gradient">
               Erleben Sie unsere <span className="gradient-text">KI live</span>
             </h2>
             <p className="text-sm sm:text-base md:text-lg lg:text-xl text-gray-600 max-w-3xl mx-auto mb-6 md:mb-8 px-2">
@@ -762,7 +751,7 @@ function App() {
             viewport={{ once: true }}
             className="text-center mb-16"
           >
-            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
+            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6 heading-gradient">
               Rundum-sorglos <span className="gradient-text">Komplettservice</span>
             </h2>
             <p className="text-xl text-gray-600 max-w-4xl mx-auto">
@@ -869,7 +858,7 @@ function App() {
             viewport={{ once: true }}
             className="text-center mb-8 md:mb-12"
           >
-            <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-3 md:mb-4">Use Cases nach Branche</h2>
+            <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-3 md:mb-4 heading-gradient">Use Cases nach Branche</h2>
             <p className="text-sm sm:text-base md:text-lg text-gray-600 max-w-3xl mx-auto px-2">
               So setzen Unternehmen Vocaris AI gewinnbringend ein – von Kundenservice bis Terminmanagement.
             </p>
@@ -1064,7 +1053,7 @@ function App() {
             viewport={{ once: true }}
             className="text-center mb-16"
           >
-            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
+            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6 heading-gradient">
               Transparente <span className="gradient-text">Preise</span>
             </h2>
             <p className="text-xl text-gray-600 max-w-3xl mx-auto">
@@ -1307,7 +1296,7 @@ function App() {
             viewport={{ once: true }}
             className="text-center mb-16"
           >
-            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
+            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6 heading-gradient">
               Was unsere Kunden sagen
             </h2>
             <p className="text-xl text-gray-600 max-w-3xl mx-auto">
