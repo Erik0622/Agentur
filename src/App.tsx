@@ -1,7 +1,6 @@
 import { motion } from 'framer-motion'
-import { Phone, Clock, TrendingDown, Users, Bot, Star, CheckCircle, ArrowRight, Calendar, X, ChevronLeft, ChevronRight, Video, Monitor, Mic, Volume2, Loader, MessageCircle } from 'lucide-react'
-import { useState, useEffect, useRef } from 'react'
-import AudioVisualizer from './components/AudioVisualizer'
+import { Phone, Clock, TrendingDown, Users, Bot, Star, CheckCircle, ArrowRight, Calendar, X, ChevronLeft, ChevronRight, Video, Monitor, MessageCircle, Menu, Shield, Zap, Headphones, Brain, ChevronDown, ChevronUp } from 'lucide-react'
+import { useState, useEffect } from 'react'
 
 interface BookingData {
   name: string;
@@ -18,613 +17,85 @@ function App() {
   const [bookings, setBookings] = useState<BookingData[]>([]);
   const [selectedSlot, setSelectedSlot] = useState<{date: string, time: string} | null>(null);
   const [currentWeek, setCurrentWeek] = useState(new Date());
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     email: '',
     phone: '',
     meetingType: 'phone' as 'phone' | 'zoom' | 'teams'
   });
+  const [voiceSamples, setVoiceSamples] = useState<Array<{ name: string; file: string; description?: string; voiceId?: string }>>([]);
+  const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(null);
 
-  // Voice Agent State
-  const [isRecording] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [isPlayingResponse, setIsPlayingResponse] = useState(false);
-  const [isListening, setIsListening] = useState(false); // Kontinuierliches Zuhören
-  // Gesprächsmodus ist Standard – Klassikmodus entfernt
-  const [transcript, setTranscript] = useState('');
-  const [aiResponse, setAiResponse] = useState('');
-  const [wsConnected, setWsConnected] = useState(false);
-  const [voiceMetrics] = useState<any>(null);
-  const [audioLevel, setAudioLevel] = useState(0);
-  const [conversationHistory, setConversationHistory] = useState<Array<{user: string, ai: string, timestamp: Date}>>([]);
-  const [isSpeechDetected, setIsSpeechDetected] = useState(false);
-  const silenceCountRef = useRef(0);
-  const isListeningRef = useRef(false); // REF für aktuellen State
-  
-  // Stimmenauswahl entfernt – die Ausgabe erfolgt direkt aus der KI (Deutsch)
-  
-  // Legacy WebSocket ref (nicht mehr genutzt)
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const animationRef = useRef<number | null>(null);
-  
-  // Kontinuierliche Voice Detection Refs
-  const continuousStreamRef = useRef<MediaStream | null>(null);
-  // MediaRecorder wird im Live-Modus nicht mehr verwendet
-  const speechDetectionRef = useRef<boolean>(false);
-
-  // ===== LATENCY CONSTANTS & HELPERS ===== [F-LAT-0]
-const WS_URL =
-  (import.meta.env.VITE_WS_URL ?? process.env.NEXT_PUBLIC_WS_URL)
-  ?? ((typeof window !== 'undefined' && window.location.hostname !== 'localhost')
-        ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
-        : 'ws://localhost:8080');
-
-const OPUS_MIME = 'audio/webm;codecs=opus';
-// -------- Laufzeit-Schalter --------------------------------
-
-  // ===== PCM Streaming Nodes =====
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
-
-  // Helper für Base64-Konvertierung
-  function arrayBufferToBase64(buf: ArrayBuffer): string {
-    return btoa(String.fromCharCode(...new Uint8Array(buf)));
-  }
-
-  // Helper für 48kHz → 16kHz Downsampling
-  function float48kToInt16_16k(float32: Float32Array, inRate: number): Int16Array {
-    const ratio = inRate / 16000;
-    const outLen = Math.floor(float32.length / ratio);
-    const out = new Int16Array(outLen);
-    for (let i = 0; i < outLen; i++) {
-      const start = Math.floor(i * ratio);
-      const end = Math.floor((i + 1) * ratio);
-      let sum = 0, count = 0;
-      for (let j = start; j < end && j < float32.length; j++) {
-        sum += float32[j];
-        count++;
-      }
-      const sample = sum / (count || 1);
-      const s = Math.max(-1, Math.min(1, sample));
-      out[i] = (s < 0 ? s * 0x8000 : s * 0x7FFF) | 0;
-    }
-    return out;
-  }
-
-
-
-  // ===== Streaming Audio (MSE) – Refs & Helper =====  // [F0]
-  const audioRef = useRef<HTMLAudioElement>(null);
-  // MSE-Refs entfernt (nicht genutzt)
-  // const mediaSourceRef = useRef<MediaSource | null>(null);
-  // const sourceBufferRef = useRef<SourceBuffer | null>(null);
-  // const audioQueueRef = useRef<{ buffer: ArrayBuffer }[]>([]);
-  // const isAppendingRef = useRef(false);
-
-  
-  // Mindestaufnahmedauer nach VAD-Start, um zu kurze Clips ("hallo") zu vermeiden
-  const recordStartTsRef = useRef<number>(0);
-  const MIN_RECORDING_MS = 700;
-
-  const base64ToArrayBuffer = (base64: string) => {
-    const binaryString = window.atob(base64);
-    const len = binaryString.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-    }
-    return bytes.buffer;
-  };
-
-  // MSE Append noop
-  // const appendNextChunk = () => {};
-  
-  // MSE wird für die native Audioantwort nicht mehr benötigt (WAV Playback am Ende)
-  
-  // const endMseStream = () => {};
-
-  // ===== WebSocket Streaming (Low Latency) ===== [F-LAT-1]
-  const wsStreamRef = useRef<WebSocket | null>(null);
-  const wsConnectingRef = useRef<boolean>(false);
-
-  // ===== WebAudio-Ausgabe (für Streaming-Wiedergabe ohne MSE) =====
-  const playbackCursorRef = useRef<number>(0);
-
-  function ensureOutputAudioContext(): AudioContext {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new AudioContext();
-    }
-    // Nach User-Interaktion sicherstellen, dass Context läuft
-    if (audioContextRef.current.state === 'suspended') {
-      try { audioContextRef.current.resume(); } catch { /* no-op */ }
-    }
-    return audioContextRef.current;
-  }
-
-  function playPcmBase64ViaWebAudio(base64: string, sampleRate: number): void {
-    if (!base64) return;
-    const ac = ensureOutputAudioContext();
-    try {
-      const buf = base64ToArrayBuffer(base64);
-      const dv = new DataView(buf);
-      const frameCount = Math.floor(buf.byteLength / 2);
-      const audioBuffer = ac.createBuffer(1, frameCount, sampleRate);
-      const channel = audioBuffer.getChannelData(0);
-      for (let i = 0; i < frameCount; i++) {
-        const s = dv.getInt16(i * 2, true);
-        channel[i] = s / 32768;
-      }
-      const source = ac.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(ac.destination);
-      const startAt = Math.max(ac.currentTime, playbackCursorRef.current);
-      source.start(startAt);
-      playbackCursorRef.current = startAt + (frameCount / sampleRate);
-    } catch (e) {
-      console.error('WebAudio playback error:', e);
-    }
-  }
-
-  // ===== PCM Helper Functions =====
-  // Legacy Helper entfernt (nicht mehr benötigt)
-
-  // (entfernt) WAV-Erzeugung war ungenutzt und führte zu TS6133 im Build
-
-  // sendPCMFrame entfernt – Legacy (klassischer Modus)
-
-  const startWebSocketStream = async (): Promise<void> => {
-    // Bereits offen
-    if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-      return;
-    }
-    // Läuft bereits ein Verbindungsaufbau? -> auf "open" warten
-    if (wsStreamRef.current?.readyState === WebSocket.CONNECTING || wsConnectingRef.current) {
-      await new Promise<void>((resolve) => {
-        const existing = wsStreamRef.current!;
-        const handler = () => {
-          existing.removeEventListener?.('open', handler as any);
-          resolve();
-        };
-        // addEventListener ist verfügbar im Browser-WebSocket
-        try { existing.addEventListener?.('open', handler, { once: true } as any); } catch { /* no-op */ }
-        // Fallback: Polling falls addEventListener nicht verfügbar
-        const iv = window.setInterval(() => {
-          if (existing.readyState === WebSocket.OPEN) { window.clearInterval(iv); resolve(); }
-        }, 50);
-      });
-      return;
-    }
-
-    try {
-      console.log('🔗 Verbinde zu WebSocket Stream:', WS_URL);
-      wsConnectingRef.current = true;
-      const ws = new WebSocket(WS_URL);
-      ws.binaryType = 'arraybuffer'; // wichtig für Binary-Frames
-      wsStreamRef.current = ws;
-
-      // Promise, das auf Open wartet
-      const openPromise = new Promise<void>((resolve) => {
-        const onOpen = () => {
-          console.log('🔗 WebSocket Stream verbunden');
-          setWsConnected(true);
-          wsConnectingRef.current = false;
-          ws.removeEventListener?.('open', onOpen as any);
-          resolve();
-        };
-        try { ws.addEventListener?.('open', onOpen, { once: true } as any); } catch { /* no-op */ }
-      });
-
-      ws.onopen = () => {
-        // Falls addEventListener nicht feuert (ältere Browser)
-        console.log('🔗 WebSocket Stream verbunden');
-        setWsConnected(true);
-        wsConnectingRef.current = false;
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          console.log('📨 Stream Event:', data.type);
-          const payload = (data && (data.data ?? data)) as any;
-
-          switch (data.type) {
-            case 'audio_out':
-              {
-                const b64 = typeof data.data === 'string' ? data.data : (payload?.data || '');
-                if (!b64) break;
-                console.log(`📥 Audio response ${b64.length} chars (24 kHz PCM)`);
-                // Direkt via WebAudio streamen (lückenarm und zuverlässig)
-                playPcmBase64ViaWebAudio(b64, 24000);
-                setIsPlayingResponse(true);
-              }
-              break;
-            case 'turn_complete':
-              console.log('🔄 Turn complete');
-              setIsProcessing(false);
-              setIsPlayingResponse(false);
-              break;
-            case 'server_error':
-              console.error('❌ Server error:', payload?.detail || (data && (data.detail || data.where)) || data);
-              setIsProcessing(false);
-              break;
-            case 'error':
-              if ((payload?.message || data.message) === 'No speech detected.') {
-                setTranscript('Keine Sprache erkannt. Bitte sprechen Sie lauter.');
-                setAiResponse('');
-              } else {
-                throw new Error(payload?.message || data.message || 'Voice processing error');
-              }
-              break;
-          }
-        } catch (error) {
-          console.error('Stream message error:', error);
-        }
-      };
-
-      ws.onclose = () => {
-        console.log('🔌 WebSocket Stream getrennt');
-        setWsConnected(false);
-        wsStreamRef.current = null;
-        wsConnectingRef.current = false;
-      };
-
-      ws.onerror = (error) => {
-        console.error('WebSocket Stream Error:', error);
-        setWsConnected(false);
-        wsConnectingRef.current = false;
-      };
-
-      // Auf erfolgreiche Verbindung warten, bevor wir zurückkehren
-      await openPromise;
-
-    } catch (error) {
-      console.error('WebSocket Stream Setup Error:', error);
-      setWsConnected(false);
-      wsConnectingRef.current = false;
-    }
-  };
-
-  // Lade gespeicherte Termine aus localStorage
   useEffect(() => {
-    const savedBookings = localStorage.getItem('bookings');
-    if (savedBookings) {
-      setBookings(JSON.parse(savedBookings));
+    (async () => {
+      try {
+        const res = await fetch('/voice-samples/voice-config.json');
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data?.voices)) {
+            const niceNames: Record<string,string> = {
+              zephyr: 'Zephyr (warm & freundlich)',
+              puck: 'Puck (hell & agil)',
+              charon: 'Charon (ruhig & seriös)',
+              kore: 'Kore (klar & professionell)',
+              fenrir: 'Fenrir (kräftig & präsent)',
+              leda: 'Leda (sanft & natürlich)'
+            };
+            setVoiceSamples(
+              data.voices.map((v: any) => ({
+                ...v,
+                voiceId: (v.voiceName || v.voice || v.file?.match(/([a-z]+)\.(wav|mp3)$/)?.[1] || '').toLowerCase(),
+                name: niceNames[(v.voiceName || v.voice || v.file?.match(/([a-z]+)\.(wav|mp3)$/)?.[1] || '').toLowerCase()] || v.name
+              }))
+            );
+      return;
     }
+        }
+      } catch {}
+      // Fallback auf erwartete Dateien, falls JSON fehlt
+      const labels: Record<string,string> = {
+        zephyr: 'Zephyr (warm & freundlich)',
+        puck: 'Puck (hell & agil)',
+        charon: 'Charon (ruhig & seriös)',
+        kore: 'Kore (klar & professionell)',
+        fenrir: 'Fenrir (kräftig & präsent)',
+        leda: 'Leda (sanft & natürlich)'
+      };
+      const fallback = ["zephyr","puck","charon","kore","fenrir","leda"].map(n => ({
+        name: labels[n] || (n.charAt(0).toUpperCase() + n.slice(1)),
+        file: `/voice-samples/${n}.wav`,
+        description: 'KI‑Stimme',
+        voiceId: n
+      }));
+      setVoiceSamples(fallback);
+    })();
   }, []);
 
-  // WebSocket Verbindung für Voice Agent (verwendet dieselbe URL wie Audio-Streaming)
-  // Legacy-Connector entfernt (verhindert ungenutzte Variable)
 
-    useEffect(() => {
-  // WebSocket wird nur bei Bedarf durch startWebSocketStream() gestartet
-  return () => {
-    if (wsStreamRef.current) {
-      wsStreamRef.current.close();
-    }
-  };
-}, []);
-
-  // Audio Visualizer & Voice Activity Detection
-  const startAudioVisualization = (stream: MediaStream, isForVAD = false) => {
-    // Cleanup vorheriger AudioContext
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      audioContextRef.current.close();
-    }
-    if (animationRef.current) {
-      cancelAnimationFrame(animationRef.current);
-    }
-
-    audioContextRef.current = new AudioContext();
-    analyserRef.current = audioContextRef.current.createAnalyser();
-    const source = audioContextRef.current.createMediaStreamSource(stream);
-    source.connect(analyserRef.current);
-
-    analyserRef.current.fftSize = 256;
-    const bufferLength = analyserRef.current.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-
-    const SPEECH_THRESHOLD = 3; // Sensibel genug, reagiert schnell auf Sprache
-    const SILENCE_FRAMES_NEEDED = 24; // ~0.4 Sekunden bei 60fps
-
-    const updateAudioLevel = () => {
-      // FIX: Verwende das Ref für die Zustandsprüfung, um Timing-Probleme zu vermeiden
-      const isActive = isForVAD ? isListeningRef.current : isRecording;
-      
-      if (analyserRef.current && isActive && audioContextRef.current?.state === 'running') {
-        try {
-        analyserRef.current.getByteFrequencyData(dataArray);
-        const average = dataArray.reduce((a, b) => a + b) / bufferLength;
-          const audioLevel = average / 255 * 100;
-          setAudioLevel(audioLevel);
-
-          // Voice Activity Detection für kontinuierliches Gespräch
-          if (isForVAD && isListeningRef.current) { // FINAL FIX: Hier auch das Ref verwenden!
-            const wasSpeaking = speechDetectionRef.current;
-            const isSpeaking = audioLevel > SPEECH_THRESHOLD;
-            
-            // VERSTÄRKTES Debug-Logging für VAD - um Mikrofon-Problem zu finden
-            if (audioLevel > 0.1) { // Noch niedrigere Schwelle
-              console.log('🔍 [VAD] Audio Level:', audioLevel.toFixed(2), 'Threshold:', SPEECH_THRESHOLD, 'Speaking:', isSpeaking, 'Was Speaking:', wasSpeaking, 'isListening:', isListening);
-            }
-            
-            // KRITISCHES Debug - zeige auch wenn kein Audio (häufiger)
-            const debugCounter = Math.floor(Date.now() / 1000) % 5; // Alle 5 Sekunden
-            if (audioLevel === 0 && debugCounter === 0) {
-              console.log('⚠️ [VAD] KEIN AUDIO! Level:', audioLevel, 'isListening:', isListening, 'audioContext.state:', audioContextRef.current?.state);
-              console.log('🔍 [VAD] Stream tracks aktiv?', continuousStreamRef.current?.getTracks().map(t => ({label: t.label, enabled: t.enabled, readyState: t.readyState})));
-            }
-            
-            if (isSpeaking && !wasSpeaking) {
-              // Sprache erkannt - beginne Aufnahme
-              console.log('🎤 Sprache erkannt - starte Aufnahme (Level:', audioLevel.toFixed(1), ')');
-              speechDetectionRef.current = true;
-              setIsSpeechDetected(true);
-              silenceCountRef.current = 0;
-              recordStartTsRef.current = Date.now();
-              startContinuousRecording().catch(e => console.error('Fehler beim Starten der Aufnahme:', e));
-            } else if (!isSpeaking && wasSpeaking) {
-              // Schritt 1: Zähler hoch
-              silenceCountRef.current += 1;
-              
-              // Schritt 2: Timeout erreicht?
-              if (silenceCountRef.current >= SILENCE_FRAMES_NEEDED) {
-                // Mindestdauer prüfen
-                const elapsedMs = Date.now() - (recordStartTsRef.current || 0);
-                if (elapsedMs < MIN_RECORDING_MS) {
-                  // Noch nicht stoppen: kurze Phrasen wie "hallo" weiter mitschneiden
-                  return;
-                }
-                console.log('🔇 0,3 s Stille – stoppe Aufnahme');
-                speechDetectionRef.current = false;
-                setIsSpeechDetected(false);
-                silenceCountRef.current = 0;
-                stopContinuousRecording();
-              }
-            } else if (isSpeaking) {
-              // Sobald wieder Sprache: Zähler zurücksetzen
-              silenceCountRef.current = 0;
-            }
-          }
-
-        animationRef.current = requestAnimationFrame(updateAudioLevel);
-        } catch (error: unknown) {
-          console.error('Audio level update error:', error);
-          setAudioLevel(0);
-        }
-      } else {
-        // Debugging, warum die Schleife stoppt
-        if (!isActive) {
-          // Dieser Log ist normal wenn gestoppt wird
-        } else if (audioContextRef.current?.state !== 'running') {
-          console.warn('⚠️ VAD loop stopped because audio context is not running. State:', audioContextRef.current?.state);
-        }
-        setAudioLevel(0);
-      }
-    };
-
-    updateAudioLevel();
-  };
-
-  const stopAudioVisualization = () => {
-    // Animation stoppen
-    if (animationRef.current) {
-      cancelAnimationFrame(animationRef.current);
-      animationRef.current = null;
-    }
-    
-    // AudioContext sicher schließen
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      audioContextRef.current.close();
-    }
-    
-    setAudioLevel(0);
-  };
-
-  // Kontinuierliche Gespräch-Funktionen
-  const startConversationMode = async () => {
+  // Lade gespeicherte Termine aus localStorage
+  // API: Buchungen für aktuelle Woche laden
+  const formatYMD = (d: Date) => `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`;
+  const refreshWeekBookings = async (baseDate?: Date) => {
     try {
-      // Browser-Kompatibilität Check
-      if (!MediaRecorder.isTypeSupported(OPUS_MIME)) {
-        throw new Error('Browser unterstützt WebM/Opus nicht');
+      const base = baseDate || currentWeek;
+      const ws = getWeekStart(base);
+      const we = new Date(ws);
+      we.setDate(ws.getDate() + 6);
+      const from = formatYMD(ws);
+      const to = formatYMD(we);
+      const res = await fetch(`/api/bookings?from=${from}&to=${to}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) setBookings(data);
       }
-      
-      console.log('🎯 [APP] Starte Gesprächsmodus');
-      
-      // SCHRITT 1: Mikrofon-Berechtigung explizit prüfen
-      console.log('🔍 [APP] Prüfe Mikrofon-Berechtigung...');
-      const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-      console.log('🔍 [APP] Mikrofon-Berechtigung Status:', permissionStatus.state);
-      
-      if (permissionStatus.state === 'denied') {
-        throw new Error('Mikrofon-Zugriff wurde verweigert. Bitte erlauben Sie den Mikrofon-Zugriff in den Browser-Einstellungen.');
-      }
-      
-      // SCHRITT 2: Mikrofon-Stream anfordern (EXPLIZIT)
-      console.log('🎤 [APP] Fordere Mikrofon-Zugriff an...');
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 48000,
-          channelCount: 1
-        } 
-      });
-      
-      console.log('✅ [APP] Mikrofonzugriff erhalten:', stream.getTracks()[0]?.label);
-      console.log('🔍 [APP] Stream tracks:', stream.getTracks().length);
-      console.log('🔍 [APP] Audio track enabled:', stream.getAudioTracks()[0]?.enabled);
-      console.log('🔍 [APP] Audio track readyState:', stream.getAudioTracks()[0]?.readyState);
-
-      continuousStreamRef.current = stream;
-      console.log('🔍 [APP] Setting isListening to TRUE...');
-      setIsListening(true);
-      isListeningRef.current = true; // REF sofort setzen!
-      console.log('🔍 [APP] isListening after setState:', isListening, 'ref:', isListeningRef.current);
-      setTranscript('');
-      setAiResponse('');
-      
-      console.log('🔗 [APP] Starte WebSocket-Verbindung...');
-      // Stelle die WebSocket-Verbindung frühzeitig her, damit start_audio sofort senden kann
-      await startWebSocketStream();
-      console.log('✅ [APP] WebSocket-Verbindung hergestellt');
-      
-      // Voice Activity Detection starten
-      console.log('🎵 [APP] Starte Audio-Visualisierung und VAD...');
-      console.log('🔍 [APP] BEFORE startAudioVisualization - isListening:', isListening);
-      startAudioVisualization(stream, true);
-      console.log('🔍 [APP] AFTER startAudioVisualization - isListening:', isListening);
-
-      console.log('✅ [APP] Kontinuierlicher Gesprächsmodus aktiv - sprechen Sie jetzt!');
-      
-      // WICHTIG: Prüfe Zustand nach kurzer Zeit
-      setTimeout(() => {
-        console.log('🔍 [APP] Status check nach 500ms - isListening:', isListening, 'audioContext.state:', audioContextRef.current?.state);
-      }, 500);
-      
-    } catch (error: unknown) {
-      console.error('❌ [APP] Gesprächsmodus-Start fehlgeschlagen:', error);
-      
-      // Spezifische Fehlermeldungen für verschiedene Probleme
-      const err = error as Error;
-      if (err.name === 'NotAllowedError' || err.message?.includes('Permission denied')) {
-        alert('🎤 MIKROFON-ZUGRIFF VERWEIGERT!\n\nBitte:\n1. Klicken Sie auf das Schloss-Symbol in der Adressleiste\n2. Erlauben Sie "Mikrofon"\n3. Laden Sie die Seite neu (F5)\n4. Versuchen Sie es erneut');
-      } else if (err.name === 'NotFoundError') {
-        alert('🎤 KEIN MIKROFON GEFUNDEN!\n\nBitte überprüfen Sie:\n- Ist ein Mikrofon angeschlossen?\n- Funktioniert es in anderen Apps?');
-      } else if (err.name === 'NotReadableError') {
-        alert('🎤 MIKROFON WIRD BEREITS VERWENDET!\n\nBitte:\n- Schließen Sie andere Apps die das Mikrofon nutzen\n- Laden Sie die Seite neu (F5)');
-      } else {
-        alert(`❌ Gesprächsmodus-Fehler: ${err.message || 'Unbekannter Fehler'}\n\nBitte versuchen Sie:\n1. Seite neu laden (F5)\n2. Mikrofon-Berechtigung prüfen\n3. Andere Browser-Tabs schließen`);
-      }
-    }
+    } catch {}
   };
 
-  const stopConversationMode = () => {
-    console.log('⏹️ [APP] Stoppe Gesprächsmodus');
-    console.log('🔍 [APP] stopConversationMode called from:', new Error().stack?.split('\n')[2]?.trim());
-    
-    setIsListening(false);
-    isListeningRef.current = false; // REF sofort setzen!
-    setIsSpeechDetected(false);
-    silenceCountRef.current = 0;
-    speechDetectionRef.current = false;
-    
-    // Laufende PCM-Aufnahme stoppen (ScriptProcessor)
-    if (processorRef.current) {
-      try { processorRef.current.disconnect(); } catch {}
-      processorRef.current = null;
-    }
-    
-    // Stream stoppen
-    if (continuousStreamRef.current) {
-      continuousStreamRef.current.getTracks().forEach(track => track.stop());
-      continuousStreamRef.current = null;
-    }
-    
-    stopAudioVisualization();
-  };
+  useEffect(() => {
+    refreshWeekBookings();
+  }, [currentWeek]);
 
-  // ===== CONTINUOUS RECORDING (WebSocket Streaming) ===== [F-LAT-4]
-  const startContinuousRecording = async () => {
-    try {
-      console.log('🎬 Starte kontinuierliche Aufnahme...');
-      if (!continuousStreamRef.current) {
-        console.error('❌ Kein Stream verfügbar');
-        return;
-      }
-      
-      // Sende start_audio BEVOR Frames kommen
-      if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-        console.log('📤 Sende start_audio Signal an Gateway');
-        wsStreamRef.current.send(JSON.stringify({ type: 'start_audio' }));
-        
-        // Warte, bis Server meldet, dass Gemini live ist
-        const onSessionReady = (ev: MessageEvent) => {
-          try {
-            const m = JSON.parse(ev.data || '{}');
-            if (m.type === 'session_ready') {
-              console.log('✅ Gemini Session bereit - starte PCM-Streaming');
-              wsStreamRef.current?.removeEventListener('message', onSessionReady);
-              // Jetzt PCM-Streaming starten (direkt hier, ohne Rekursion)
-              startPCMStreaming();
-            }
-          } catch {}
-        };
-        wsStreamRef.current.addEventListener('message', onSessionReady);
-        return; // Warten auf session_ready
-      } else {
-        console.error('❌ WebSocket nicht bereit für start_audio Signal. Status:', wsStreamRef.current?.readyState);
-        return;
-      }
-    } catch (e) {
-      console.error('❌ Fehler in startContinuousRecording:', e);
-    }
-  };
-
-  const startPCMStreaming = () => {
-    try {
-      console.log('🔊 Starte PCM-Audio-Streaming...');
-      if (!continuousStreamRef.current) {
-        console.error('❌ Kein Stream verfügbar für PCM-Streaming');
-        return;
-      }
-
-      // PCM (16kHz) via ScriptProcessor senden
-      const ac = audioContextRef.current || new (window.AudioContext || (window as any).webkitAudioContext)();
-      audioContextRef.current = ac;
-      const source = ac.createMediaStreamSource(continuousStreamRef.current);
-      const bufferSize = 2048;
-      const processor = ac.createScriptProcessor(bufferSize, 1, 1);
-      processorRef.current = processor;
-
-      processor.onaudioprocess = (event) => {
-        if (!isListeningRef.current || wsStreamRef.current?.readyState !== WebSocket.OPEN) return;
-        const input = event.inputBuffer.getChannelData(0);
-        // Downsample von ac.sampleRate (~48kHz) auf 16kHz
-        const ratio = ac.sampleRate / 16000;
-        const outLength = Math.floor(input.length / ratio);
-        const down = new Float32Array(outLength);
-        for (let i = 0; i < outLength; i++) {
-          down[i] = input[Math.floor(i * ratio)] || 0;
-        }
-        const pcm16 = float48kToInt16_16k(input, ac.sampleRate);
-        // Base64 senden (robuster als Binary)
-        const arrayBuffer = new ArrayBuffer(pcm16.length * 2); // Explizit ArrayBuffer erstellen
-        const view = new DataView(arrayBuffer);
-        for (let i = 0; i < pcm16.length; i++) {
-          view.setInt16(i * 2, pcm16[i], true); // little-endian
-        }
-        const b64 = arrayBufferToBase64(arrayBuffer);
-        console.log(`📤 Audio chunk ${pcm16.length * 2} bytes → Base64 ${b64.length} chars`);
-        wsStreamRef.current!.send(JSON.stringify({ type: 'audio_chunk_b64', data: b64 }));
-      };
-
-      source.connect(processor);
-      processor.connect(ac.destination);
-      console.log('✅ PCM (16kHz) ScriptProcessor gestartet');
-    } catch (err: unknown) {
-      console.error('❌ Kontinuierliche Aufnahme-Start fehlgeschlagen:', err);
-    }
-  };
-
-  const stopContinuousRecording = () => {
-    console.log('🎬 Stoppe kontinuierliche PCM‑Aufnahme (VAD-Stille)...');
-    if (processorRef.current) {
-      try { processorRef.current.disconnect(); } catch {}
-      processorRef.current = null;
-    }
-    if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-      wsStreamRef.current.send(JSON.stringify({ type: 'stop_audio' }));
-    }
-  };
-
-  // Sanity-Test: Reine Text-Nachricht senden
-  const sendTextMessage = (text: string) => {
-    if (wsStreamRef.current?.readyState === WebSocket.OPEN) {
-      console.log(`💬 Sende Text-Nachricht: "${text}"`);
-      wsStreamRef.current.send(JSON.stringify({ type: 'say', text }));
-    }
-  };
 
 
 
@@ -641,7 +112,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
     }
   };
 
-  const handleBookingSubmit = (e: React.FormEvent) => {
+  const handleBookingSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     if (!formData.name || !formData.email || !selectedSlot) {
@@ -662,9 +133,33 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
       id: Date.now().toString()
     };
 
-    const updatedBookings = [...bookings, newBooking];
-    setBookings(updatedBookings);
-    localStorage.setItem('bookings', JSON.stringify(updatedBookings));
+    // An Backend senden (mit Konfliktprüfung)
+    try {
+      const resp = await fetch('/api/bookings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newBooking.name,
+          email: newBooking.email,
+          phone: newBooking.phone,
+          date: newBooking.date,
+          time: newBooking.time,
+          meetingType: newBooking.meetingType
+        })
+      });
+      if (resp.status === 409) {
+        alert('Leider wurde dieser Termin gerade belegt. Bitte wählen Sie einen anderen Slot.');
+        return;
+      }
+      if (!resp.ok) {
+        alert('Buchung fehlgeschlagen. Bitte versuchen Sie es erneut.');
+        return;
+      }
+      await refreshWeekBookings();
+    } catch {
+      alert('Netzwerkfehler. Bitte versuchen Sie es erneut.');
+      return;
+    }
     
     // Reset form
     setFormData({ name: '', email: '', phone: '', meetingType: 'phone' });
@@ -849,11 +344,36 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
 
   return (
     <div className="min-h-screen bg-white">
-      {/* Unsichtbares Audio-Element für die Wiedergabe */}
-      <audio ref={audioRef} style={{ display: 'none' }} playsInline />
+      {/* JSON-LD: Service & Breadcrumbs for SEO */}
+      {(() => {
+        const serviceJsonLd = {
+          "@context": "https://schema.org",
+          "@type": "Service",
+          serviceType: "Voice Agent (KI‑Telefonassistent)",
+          provider: { "@type": "Organization", name: "Vocaris Solutions", url: "https://vocaris-solutions.de/" },
+          areaServed: ["DE", "AT", "CH"],
+          audience: { "@type": "BusinessAudience", name: "B2B" },
+          offers: { "@type": "Offer", priceCurrency: "EUR", availability: "https://schema.org/InStock" }
+        };
+        const breadcrumbJsonLd = {
+          "@context": "https://schema.org",
+          "@type": "BreadcrumbList",
+          itemListElement: [
+            { "@type": "ListItem", position: 1, name: "Start", item: "https://vocaris-solutions.de/" },
+            { "@type": "ListItem", position: 2, name: "Use Cases", item: "https://vocaris-solutions.de/#use-cases-section" },
+            { "@type": "ListItem", position: 3, name: "Preise", item: "https://vocaris-solutions.de/#preise-section" }
+          ]
+        };
+        return (
+          <>
+            <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(serviceJsonLd) }} />
+            <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
+          </>
+        );
+      })()}
       
       {/* Navigation */}
-      <nav className="fixed top-0 w-full bg-white/80 backdrop-blur-md z-50 border-b border-gray-100">
+      <nav className="fixed top-0 w-full bg-gray-600/30 backdrop-blur-md z-50 border-b border-gray-300/20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             <motion.div 
@@ -861,36 +381,53 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               animate={{ opacity: 1, x: 0 }}
               className="flex items-center space-x-2"
             >
-              <Bot className="h-8 w-8 text-primary-600" />
-              <span className="font-bold text-xl text-gray-900">Vocaris AI</span>
+              <Bot className="h-8 w-8 text-blue-400" />
+              <span className="font-bold text-xl text-black">Vocaris AI</span>
             </motion.div>
             
             <div className="hidden md:flex items-center space-x-8">
               <button
                 onClick={() => document.getElementById('use-cases-section')?.scrollIntoView({ behavior: 'smooth' })}
-                className="text-gray-600 hover:text-primary-600 transition-colors font-medium"
+                className="text-black hover:text-gray-900 transition-colors font-medium"
               >
                 Use Cases
               </button>
               <button
                 onClick={() => document.getElementById('demo-section')?.scrollIntoView({ behavior: 'smooth' })}
-                className="text-gray-600 hover:text-primary-600 transition-colors font-medium"
+                className="text-black hover:text-gray-900 transition-colors font-medium"
               >
                 Demo
               </button>
               <button
                 onClick={() => document.getElementById('preise-section')?.scrollIntoView({ behavior: 'smooth' })}
-                className="text-gray-600 hover:text-primary-600 transition-colors font-medium"
+                className="text-black hover:text-gray-900 transition-colors font-medium"
               >
                 Preise
               </button>
               <button
+                onClick={() => document.getElementById('faq-section')?.scrollIntoView({ behavior: 'smooth' })}
+                className="text-black hover:text-gray-900 transition-colors font-medium"
+              >
+                FAQ
+              </button>
+              <button
                 onClick={scrollToCalendar}
-                className="text-gray-600 hover:text-primary-600 transition-colors font-medium"
+                className="text-black hover:text-gray-900 transition-colors font-medium"
               >
                 Kontakt
               </button>
+              <a href="/impressum.html" className="text-black hover:text-gray-900 transition-colors font-medium">Impressum</a>
+              <a href="/agb.html" className="text-black hover:text-gray-900 transition-colors font-medium">AGB</a>
+              <a href="/datenschutz.html" className="text-black hover:text-gray-900 transition-colors font-medium">Datenschutz</a>
             </div>
+            
+            {/* Mobile Menu Button */}
+            <button
+              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+              className="md:hidden p-2 text-black hover:text-gray-900 transition-colors"
+            >
+              <Menu className="h-6 w-6 text-black" />
+            </button>
             
             <motion.button
               initial={{ opacity: 0, x: 20 }}
@@ -898,34 +435,92 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               onClick={scrollToCalendar}
-              className="bg-primary-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-primary-700 transition-colors shadow-glow"
+              className="hidden md:block bg-blue-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors shadow-glow"
             >
               Kostenlos Termin buchen
             </motion.button>
           </div>
         </div>
+        
+        {/* Mobile Menu */}
+        {isMobileMenuOpen && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="md:hidden bg-white border-t border-gray-100 shadow-lg"
+          >
+            <div className="px-4 py-4 space-y-3">
+              <button
+                onClick={() => {
+                  document.getElementById('use-cases-section')?.scrollIntoView({ behavior: 'smooth' });
+                  setIsMobileMenuOpen(false);
+                }}
+                className="block w-full text-left py-3 px-4 text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
+              >
+                Use Cases
+              </button>
+              <button
+                onClick={() => {
+                  document.getElementById('demo-section')?.scrollIntoView({ behavior: 'smooth' });
+                  setIsMobileMenuOpen(false);
+                }}
+                className="block w-full text-left py-3 px-4 text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
+              >
+                Demo
+              </button>
+              <button
+                onClick={() => {
+                  document.getElementById('preise-section')?.scrollIntoView({ behavior: 'smooth' });
+                  setIsMobileMenuOpen(false);
+                }}
+                className="block w-full text-left py-3 px-4 text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
+              >
+                Preise
+              </button>
+              <button
+                onClick={() => {
+                  document.getElementById('faq-section')?.scrollIntoView({ behavior: 'smooth' });
+                  setIsMobileMenuOpen(false);
+                }}
+                className="block w-full text-left py-3 px-4 text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
+              >
+                FAQ
+              </button>
+              <button
+                onClick={() => {
+                  scrollToCalendar();
+                  setIsMobileMenuOpen(false);
+                }}
+                className="block w-full text-left py-3 px-4 text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
+              >
+                Kontakt
+              </button>
+            </div>
+          </motion.div>
+        )}
       </nav>
 
       {/* Hero Section */}
-      <section className="pt-24 pb-20 px-4 sm:px-6 lg:px-8">
+      <section className="pt-20 md:pt-24 pb-12 md:pb-20 px-4 sm:px-6 lg:px-8">
         <div className="max-w-7xl mx-auto">
           <div className="text-center">
             <motion.h1 
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.8 }}
-              className="text-5xl md:text-7xl font-bold text-gray-900 mb-6"
+              className="text-3xl sm:text-4xl md:text-5xl lg:text-7xl font-bold text-gray-900 mb-4 md:mb-6"
             >
               Automatisieren Sie Ihren
               <span className="gradient-text block">Kundenservice mit KI</span>
-              <span className="text-4xl md:text-5xl block mt-4">und sparen Sie 85% der Kosten</span>
+              <span className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl block mt-2 md:mt-4">und sparen Sie 85% der Kosten</span>
             </motion.h1>
             
             <motion.p 
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.8, delay: 0.2 }}
-              className="text-xl md:text-2xl text-gray-600 mb-12 max-w-4xl mx-auto"
+              className="text-base sm:text-lg md:text-xl lg:text-2xl text-gray-600 mb-8 md:mb-12 max-w-4xl mx-auto px-2"
             >
               Unser KI-Telefonsystem ist 24/7 erreichbar, führt automatisch Buchungen durch 
               und spart Ihnen bis zu 85% der Kundenservice-Kosten
@@ -935,17 +530,17 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.8, delay: 0.4 }}
-              className="flex flex-col sm:flex-row gap-4 justify-center"
+              className="flex flex-col sm:flex-row gap-3 md:gap-4 justify-center"
             >
               <button 
                 onClick={scrollToCalendar}
-                className="bg-primary-600 text-white px-8 py-4 rounded-xl font-semibold text-lg hover:bg-primary-700 transition-colors shadow-glow flex items-center justify-center group"
+                className="bg-primary-600 text-white px-4 sm:px-6 md:px-8 py-3 md:py-4 rounded-lg md:rounded-xl font-semibold text-sm sm:text-base md:text-lg hover:bg-primary-700 transition-colors shadow-glow flex items-center justify-center group"
               >
-                <Calendar className="mr-2 h-5 w-5" />
+                <Calendar className="mr-2 h-4 md:h-5 w-4 md:w-5" />
                 Kostenlos Beratungstermin buchen
-                <ArrowRight className="ml-2 h-5 w-5 group-hover:translate-x-1 transition-transform" />
+                <ArrowRight className="ml-2 h-4 md:h-5 w-4 md:w-5 group-hover:translate-x-1 transition-transform" />
               </button>
-              <button className="border-2 border-gray-300 text-gray-700 px-8 py-4 rounded-xl font-semibold text-lg hover:border-primary-600 hover:text-primary-600 transition-colors">
+              <button className="border-2 border-gray-300 text-gray-700 px-4 sm:px-6 md:px-8 py-3 md:py-4 rounded-lg md:rounded-xl font-semibold text-sm sm:text-base md:text-lg hover:border-primary-600 hover:text-primary-600 transition-colors">
                 Live-Demo anfordern
               </button>
             </motion.div>
@@ -956,24 +551,24 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
       </section>
 
       {/* Problem Section */}
-      <section className="py-20 bg-gray-50">
+      <section className="py-12 md:py-20 bg-gray-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <motion.div
             initial={{ opacity: 0 }}
             whileInView={{ opacity: 1 }}
             transition={{ duration: 0.8 }}
             viewport={{ once: true }}
-            className="text-center mb-16"
+            className="text-center mb-8 md:mb-16"
           >
-            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
+            <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-4 md:mb-6">
               Das Problem kennen Sie
             </h2>
-            <p className="text-xl text-gray-600 max-w-3xl mx-auto">
+            <p className="text-base sm:text-lg md:text-xl text-gray-600 max-w-3xl mx-auto px-2">
               Jeden Tag verlieren Unternehmen wertvolle Kunden, weil der Telefonservice überlastet ist
             </p>
           </motion.div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+          <div className="grid grid-cols-1 sm:grid-cols-1 lg:grid-cols-4 gap-4 md:gap-8">
             {[
               { icon: Phone, title: "Verpasste Anrufe", desc: "Besetzt oder niemand da", color: "text-red-500" },
               { icon: Clock, title: "Lange Wartezeiten", desc: "Kunden legen auf", color: "text-orange-500" },
@@ -986,15 +581,175 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
                 whileInView={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.6, delay: index * 0.1 }}
                 viewport={{ once: true }}
-                className="bg-white p-6 rounded-xl shadow-sm hover:shadow-md transition-shadow"
+                className="bg-white p-4 md:p-6 rounded-xl shadow-sm hover:shadow-md transition-shadow"
               >
-                <item.icon className={`h-12 w-12 ${item.color} mb-4`} />
-                <h3 className="font-semibold text-lg text-gray-900 mb-2">{item.title}</h3>
-                <p className="text-gray-600">{item.desc}</p>
+                <item.icon className={`h-8 md:h-12 w-8 md:w-12 ${item.color} mb-3 md:mb-4`} />
+                <h3 className="font-semibold text-base md:text-lg text-gray-900 mb-2">{item.title}</h3>
+                <p className="text-sm md:text-base text-gray-600">{item.desc}</p>
               </motion.div>
             ))}
           </div>
         </div>
+      </section>
+
+      {/* Demo Section */}
+      <section id="demo-section" className="py-10 md:py-16 lg:py-20 bg-gray-50">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <motion.div
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            transition={{ duration: 0.8 }}
+            viewport={{ once: true }}
+            className="text-center mb-6 md:mb-8 lg:mb-12"
+          >
+            <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-3 md:mb-4 lg:mb-6">
+              Erleben Sie unsere <span className="gradient-text">KI live</span>
+            </h2>
+            <p className="text-sm sm:text-base md:text-lg lg:text-xl text-gray-600 max-w-3xl mx-auto mb-6 md:mb-8 px-2">
+              Testen Sie jetzt unseren Voice-Agent und erleben Sie, wie natürlich und effizient KI-basierter Kundenservice funktioniert
+            </p>
+
+            {/* Test Telefonnummer */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: 0.2 }}
+              viewport={{ once: true }}
+              className="bg-white p-4 md:p-6 rounded-xl md:rounded-2xl shadow-lg max-w-sm md:max-w-md mx-auto mb-8 md:mb-12"
+            >
+              <div className="flex items-center justify-center mb-3 md:mb-4">
+                <Phone className="h-6 md:h-8 w-6 md:w-8 text-primary-600 mr-2 md:mr-3" />
+                    <div>
+                  <h3 className="text-lg md:text-xl font-bold text-gray-900">Test Voice Agent</h3>
+                  <p className="text-xs md:text-sm text-gray-600">Rufen Sie an und testen Sie live</p>
+                    </div>
+                  </div>
+              <div className="text-center">
+                <a 
+                  href="tel:+18624538419" 
+                  className="text-xl md:text-3xl font-bold text-primary-600 hover:text-primary-700 transition-colors block"
+                >
+                  +1 862 453-8419
+                </a>
+                <p className="text-xs md:text-sm text-gray-500 mt-2">
+                  24/7 verfügbar · Kostenloser Test
+                </p>
+                    </div>
+            </motion.div>
+            
+            {/* Voice Agent Metriken */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: 0.4 }}
+              viewport={{ once: true }}
+              className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6 mb-8 md:mb-12"
+            >
+              <div className="bg-white p-3 md:p-6 rounded-lg md:rounded-xl shadow-sm border border-gray-200 text-center">
+                <div className="text-xl md:text-3xl font-bold text-blue-600 mb-1 md:mb-2">24+</div>
+                <div className="text-xs md:text-sm font-medium text-gray-900 mb-1">Sprachen</div>
+                <div className="text-xs text-gray-600 hidden md:block">Automatische Erkennung</div>
+                  </div>
+              <div className="bg-white p-3 md:p-6 rounded-lg md:rounded-xl shadow-sm border border-gray-200 text-center">
+                <div className="text-xl md:text-3xl font-bold text-blue-600 mb-1 md:mb-2">30+</div>
+                <div className="text-xs md:text-sm font-medium text-gray-900 mb-1">Stimmen</div>
+                <div className="text-xs text-gray-600 hidden md:block">Verfügbare Varianten</div>
+                    </div>
+              <div className="bg-white p-3 md:p-6 rounded-lg md:rounded-xl shadow-sm border border-gray-200 text-center">
+                <div className="text-xl md:text-3xl font-bold text-blue-600 mb-1 md:mb-2">&lt;300ms</div>
+                <div className="text-xs md:text-sm font-medium text-gray-900 mb-1">Latenz</div>
+                <div className="text-xs text-gray-600 hidden md:block">Ultraschnelle Antworten</div>
+                  </div>
+              <div className="bg-white p-3 md:p-6 rounded-lg md:rounded-xl shadow-sm border border-gray-200 text-center">
+                <div className="text-xl md:text-3xl font-bold text-blue-600 mb-1 md:mb-2">99.9%</div>
+                <div className="text-xs md:text-sm font-medium text-gray-900 mb-1">Qualität</div>
+                <div className="text-xs text-gray-600 hidden md:block">Natürlichste Stimme</div>
+              </div>
+            </motion.div>
+
+            {/* Technologie Features - Professionell */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: 0.6 }}
+              viewport={{ once: true }}
+              className="bg-white border border-gray-200 p-6 md:p-8 rounded-xl shadow-lg max-w-5xl mx-auto"
+            >
+              <h4 className="text-xl md:text-2xl font-bold text-gray-900 mb-6 text-center">Enterprise-Grade Technologie</h4>
+              
+              {/* Kernfeatures */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+                <div className="text-center">
+                  <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center mx-auto mb-3">
+                    <Zap className="h-6 w-6 text-blue-600" />
+                </div>
+                  <h5 className="font-semibold text-gray-900 mb-1">Native Audio-Verarbeitung</h5>
+                  <p className="text-sm text-gray-600">Echtzeit-Streaming ohne Latenz</p>
+                  </div>
+                <div className="text-center">
+                  <div className="w-12 h-12 bg-gray-50 rounded-xl flex items-center justify-center mx-auto mb-3">
+                    <Brain className="h-6 w-6 text-gray-700" />
+                  </div>
+                  <h5 className="font-semibold text-gray-900 mb-1">Multimodale Intelligenz</h5>
+                  <p className="text-sm text-gray-600">Neueste KI-Generation</p>
+                </div>
+                <div className="text-center">
+                  <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center mx-auto mb-3">
+                    <MessageCircle className="h-6 w-6 text-blue-600" />
+                  </div>
+                  <h5 className="font-semibold text-gray-900 mb-1">Kontextbewusstes Gespräch</h5>
+                  <p className="text-sm text-gray-600">Mehrere Turns & Gedächtnis</p>
+                  </div>
+                <div className="text-center">
+                  <div className="w-12 h-12 bg-gray-50 rounded-xl flex items-center justify-center mx-auto mb-3">
+                    <Headphones className="h-6 w-6 text-gray-700" />
+                  </div>
+                  <h5 className="font-semibold text-gray-900 mb-1">Emotionale Nuancen</h5>
+                  <p className="text-sm text-gray-600">Natürliche Intonation</p>
+                </div>
+              </div>
+
+              {/* Sicherheit kompakt */}
+              <div className="border-t border-gray-200 pt-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                  <div className="flex items-center text-gray-700">
+                    <Shield className="h-4 w-4 text-blue-600 mr-3" />
+                    <span>DSGVO-konforme Verarbeitung</span>
+                  </div>
+                  <div className="flex items-center text-gray-700">
+                    <Shield className="h-4 w-4 text-blue-600 mr-3" />
+                    <span>End-to-End Verschlüsselung</span>
+                  </div>
+                  <div className="flex items-center text-gray-700">
+                    <Shield className="h-4 w-4 text-blue-600 mr-3" />
+                    <span>Enterprise-Sicherheitsstandards</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Voice Samples (nur anzeigen, wenn vorhanden) */}
+              {voiceSamples.length > 0 && (
+                <div className="mt-6 border-t border-gray-200 pt-6">
+                  <h5 className="text-lg font-semibold text-gray-900 mb-4 text-center">Stimmen-Portfolio</h5>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                    {voiceSamples.slice(0,6).map((v, i) => {
+                      const isWav = v.file?.endsWith('.wav');
+                      const audioType = isWav ? 'audio/wav' : 'audio/mpeg';
+                      return (
+                        <div key={i} className="bg-gray-50 rounded-lg border border-gray-200 p-4 text-center">
+                          <div className="text-sm font-medium text-gray-900 mb-2 truncate">{v.name}</div>
+                          <audio controls preload="none" className="w-full h-10">
+                            <source src={v.file} type={audioType} />
+                          </audio>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </motion.div>
+            </motion.div>
+          </div>
       </section>
 
       {/* Service Excellence Section */}
@@ -1008,139 +763,120 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
             className="text-center mb-16"
           >
             <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
-              Rundum-sorglos <span className="gradient-text">Service</span>
+              Rundum-sorglos <span className="gradient-text">Komplettservice</span>
             </h2>
             <p className="text-xl text-gray-600 max-w-4xl mx-auto">
-              Null Aufwand für Sie – wir übernehmen alles von der Telefonnummer bis zum 24/7 Support
+              Von der ersten Beratung bis zum laufenden Betrieb – wir begleiten Sie bei jedem Schritt
             </p>
           </motion.div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 mb-16">
-            {/* Service & Support */}
-            <motion.div
-              initial={{ opacity: 0, x: -50 }}
-              whileInView={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.8 }}
-              viewport={{ once: true }}
-              className="space-y-8"
-            >
-              <div className="bg-gradient-to-br from-green-50 to-emerald-50 p-8 rounded-2xl border border-green-100">
-                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-6">
-                  <CheckCircle className="h-8 w-8 text-green-600" />
+          {/* Service-Schritte kompakt (mobile tighter) */}
+          <div className="max-w-6xl mx-auto">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 md:gap-6">
+              {[
+                {
+                  step: "1",
+                  title: "Individuelle Beratung",
+                  desc: "Wir analysieren Ihre Prozesse und nehmen Ihre Wünsche auf. Der Kunde entscheidet über alle Details.",
+                  icon: Users
+                },
+                {
+                  step: "2",
+                  title: "Voice Agent Entwicklung",
+                  desc: "Maßgeschneiderte Entwicklung mit individuellen Gesprächsabläufen und Integrationen.",
+                  icon: Bot
+                },
+                {
+                  step: "3",
+                  title: "Telefonnummer & Setup",
+                  desc: "Kostenfreie Bereitstellung und Konfiguration Ihrer geschäftlichen Rufnummer.",
+                  icon: Phone
+                },
+                {
+                  step: "4",
+                  title: "API-Integration",
+                  desc: "Nahtlose Anbindung an Ihre bestehenden Systeme für automatische Workflows.",
+                  icon: CheckCircle
+                },
+                {
+                  step: "5",
+                  title: "Go-Live & Support",
+                  desc: "Nach Tests geht Ihr Voice Agent live. 24/7 Premium Support inklusive.",
+                  icon: Star
+                }
+              ].map((item, index) => (
+                <motion.div
+                  key={index}
+                  initial={{ opacity: 0, y: 30 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.6, delay: index * 0.1 }}
+                  viewport={{ once: true }}
+                  className="bg-white p-4 md:p-6 rounded-lg md:rounded-xl shadow-sm border border-gray-100 text-center hover:shadow-md transition-shadow"
+                >
+                  <div className="w-10 h-10 md:w-12 md:h-12 rounded-xl bg-gray-100 flex items-center justify-center mx-auto mb-3 md:mb-4">
+                    <item.icon className="h-5 w-5 md:h-6 md:w-6 text-gray-700" />
+                  </div>
+                  <div className="inline-flex items-center justify-center w-6 h-6 md:w-8 md:h-8 rounded-full bg-blue-600 text-white text-sm md:text-base font-bold mb-2 md:mb-3">
+                    {item.step}
+                  </div>
+                  <h3 className="text-base md:text-lg font-bold text-gray-900 mb-2 md:mb-3">{item.title}</h3>
+                  <p className="text-xs md:text-sm text-gray-600">{item.desc}</p>
+                </motion.div>
+              ))}
+                  </div>
                 </div>
-                <h3 className="text-2xl font-bold text-gray-900 mb-6">Komplettservice ohne Aufwand</h3>
-                <div className="space-y-4">
-                  <div className="flex items-start">
-                    <div className="w-3 h-3 bg-green-500 rounded-full mt-2 mr-4 flex-shrink-0"></div>
-                    <div>
-                      <div className="font-semibold text-gray-900">Telefonnummer-Bereitstellung</div>
-                      <div className="text-gray-600 text-sm">Wir besorgen und konfigurieren Ihre geschäftliche Rufnummer</div>
-                    </div>
-                  </div>
-                  <div className="flex items-start">
-                    <div className="w-3 h-3 bg-green-500 rounded-full mt-2 mr-4 flex-shrink-0"></div>
-                    <div>
-                      <div className="font-semibold text-gray-900">Keine Einrichtungskosten</div>
-                      <div className="text-gray-600 text-sm">Setup, Konfiguration und Testphase kostenfrei</div>
-                    </div>
-                  </div>
-                  <div className="flex items-start">
-                    <div className="w-3 h-3 bg-green-500 rounded-full mt-2 mr-4 flex-shrink-0"></div>
-                    <div>
-                      <div className="font-semibold text-gray-900">24/7 Premium Support</div>
-                      <div className="text-gray-600 text-sm">Unser Expertenteam steht Ihnen rund um die Uhr zur Verfügung</div>
-                    </div>
-                  </div>
-                  <div className="flex items-start">
-                    <div className="w-3 h-3 bg-green-500 rounded-full mt-2 mr-4 flex-shrink-0"></div>
-                    <div>
-                      <div className="font-semibold text-gray-900">Individuelle API-Integration</div>
-                      <div className="text-gray-600 text-sm">Maßgeschneiderte Anbindung an Ihre bestehenden Systeme</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
 
-            {/* Performance & Technologie */}
-            <motion.div
-              initial={{ opacity: 0, x: 50 }}
-              whileInView={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.8 }}
-              viewport={{ once: true }}
-              className="space-y-8"
-            >
-              <div className="bg-gradient-to-br from-blue-50 to-indigo-50 p-8 rounded-2xl border border-blue-100">
-                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-6">
-                  <Bot className="h-8 w-8 text-blue-600" />
-                </div>
-                <h3 className="text-2xl font-bold text-gray-900 mb-6">Premium Performance</h3>
-                <div className="grid grid-cols-2 gap-6 mb-6">
-                  <div className="text-center p-4 bg-white rounded-xl shadow-sm">
-                    <div className="text-2xl font-bold text-blue-600">&lt; 500ms</div>
-                    <div className="text-sm text-gray-600">Antwortzeit</div>
-                  </div>
-                  <div className="text-center p-4 bg-white rounded-xl shadow-sm">
-                    <div className="text-2xl font-bold text-green-600">99.9%</div>
-                    <div className="text-sm text-gray-600">Uptime</div>
-                  </div>
-                </div>
-                <div className="space-y-3">
-                  <div className="flex items-center">
-                    <div className="w-2 h-2 bg-blue-500 rounded-full mr-3"></div>
-                    <span className="text-gray-700">Unbegrenzte parallele Gespräche</span>
-                  </div>
-                  <div className="flex items-center">
-                    <div className="w-2 h-2 bg-blue-500 rounded-full mr-3"></div>
-                    <span className="text-gray-700">Qualitativ hochwertigste KI-Stimmen</span>
-                  </div>
-                  <div className="flex items-center">
-                    <div className="w-2 h-2 bg-blue-500 rounded-full mr-3"></div>
-                    <span className="text-gray-700">Failover-Systeme für maximale Ausfallsicherheit</span>
-                  </div>
-                </div>
+          {/* Service Highlights */}
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.8, delay: 0.6 }}
+            viewport={{ once: true }}
+            className="mt-16 grid grid-cols-1 md:grid-cols-3 gap-8"
+          >
+            <div className="bg-white p-6 rounded-xl border border-gray-200 text-center shadow-sm">
+              <div className="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center mx-auto mb-4">
+                <CheckCircle className="h-6 w-6 text-blue-600" />
               </div>
-
-              {/* Datenschutz */}
-              <div className="bg-gradient-to-br from-purple-50 to-violet-50 p-6 rounded-xl border border-purple-100">
-                <h4 className="font-bold text-gray-900 mb-3">Datenschutz & Sicherheit</h4>
-                <div className="space-y-2 text-sm text-gray-700">
-                  <div className="flex items-center">
-                    <div className="w-2 h-2 bg-purple-500 rounded-full mr-3"></div>
-                    <span>Google Live API Standards - höchste Sicherheit</span>
-                  </div>
-                  <div className="flex items-center">
-                    <div className="w-2 h-2 bg-purple-500 rounded-full mr-3"></div>
-                    <span>DSGVO-konforme Datenverarbeitung</span>
-                  </div>
-                  <div className="flex items-center">
-                    <div className="w-2 h-2 bg-purple-500 rounded-full mr-3"></div>
-                    <span>End-to-End Verschlüsselung aller Gespräche</span>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
+              <h4 className="font-bold text-gray-900 mb-2">Keine Einrichtungskosten</h4>
+              <p className="text-sm text-gray-600">Setup, Konfiguration und Testphase vollständig kostenfrei</p>
           </div>
+            <div className="bg-white p-6 rounded-xl border border-gray-200 text-center shadow-sm">
+              <div className="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center mx-auto mb-4">
+                <Clock className="h-6 w-6 text-blue-600" />
+              </div>
+              <h4 className="font-bold text-gray-900 mb-2">24/7 Premium Support</h4>
+              <p className="text-sm text-gray-600">Expertenteam steht Ihnen rund um die Uhr zur Verfügung</p>
+            </div>
+              <div className="bg-white p-6 rounded-xl border border-gray-200 text-center shadow-sm">
+                <div className="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center mx-auto mb-4">
+                  <ArrowRight className="h-6 w-6 text-blue-600" />
+                </div>
+                <h4 className="font-bold text-gray-900 mb-2">unter 1 Woche</h4>
+                <p className="text-sm text-gray-600">Von der Beratung bis zum Go-Live in unter 1 Woche</p>
+              </div>
+          </motion.div>
         </div>
       </section>
 
       {/* Use Cases Section */}
-      <section id="use-cases-section" className="py-20">
+      <section id="use-cases-section" className="py-10 md:py-20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <motion.div
             initial={{ opacity: 0 }}
             whileInView={{ opacity: 1 }}
             transition={{ duration: 0.8 }}
             viewport={{ once: true }}
-            className="text-center mb-12"
+            className="text-center mb-8 md:mb-12"
           >
-            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">Use Cases nach Branche</h2>
-            <p className="text-lg text-gray-600 max-w-3xl mx-auto">
+            <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-3 md:mb-4">Use Cases nach Branche</h2>
+            <p className="text-sm sm:text-base md:text-lg text-gray-600 max-w-3xl mx-auto px-2">
               So setzen Unternehmen Vocaris AI gewinnbringend ein – von Kundenservice bis Terminmanagement.
             </p>
           </motion.div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+          {/* Mobile: 3-stöckiges Karussell, Desktop: Grid */}
+          <div className="hidden md:grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
             {[
               { 
                 title: "Kundenservice", 
@@ -1230,20 +966,88 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
                 whileInView={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.6, delay: idx * 0.05 }}
                 viewport={{ once: true }}
-                className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100"
+                  className="bg-white p-4 md:p-6 rounded-xl md:rounded-2xl shadow-sm border border-gray-100"
               >
-                <h3 className="text-xl font-bold text-gray-900 mb-4">{uc.title}</h3>
-                <ul className="space-y-2 mb-4">
+                  <h3 className="text-lg md:text-xl font-bold text-gray-900 mb-3 md:mb-4">{uc.title}</h3>
+                  <ul className="space-y-2 mb-3 md:mb-4">
                   {uc.items.map((it, i) => (
                     <li key={i} className="flex items-start">
-                      <CheckCircle className="h-4 w-4 text-green-500 mr-2 mt-0.5" />
-                      <span className="text-gray-700 text-sm">{it}</span>
+                        <CheckCircle className="h-3 md:h-4 w-3 md:w-4 text-green-500 mr-2 mt-0.5 flex-shrink-0" />
+                        <span className="text-gray-700 text-xs md:text-sm">{it}</span>
                     </li>
                   ))}
                 </ul>
-                <div className="text-sm text-gray-500">{uc.kpi}</div>
+                  <div className="text-xs md:text-sm text-gray-500">{uc.kpi}</div>
               </motion.div>
             ))}
+          </div>
+
+          {/* Mobile Use Cases - 3 Stockwerke Karussell */}
+          <div className="md:hidden space-y-3 overflow-hidden">
+            {(() => {
+              const useCaseRows = [
+                [
+                  { title: "Kundenservice", items: ["Anrufe entgegennehmen", "FAQ beantworten", "Weiterleitung"], kpi: "24/7 erreichbar" },
+                  { title: "Reservierungen", items: ["Tisch/Termin buchen", "Bestätigungen senden", "Stornierungen"], kpi: "+30% Buchungen" },
+                  { title: "Leads", items: ["Kontakt erfassen", "Qualifikation", "Rückruf ansetzen"], kpi: "+40% Conversion" }
+                ],
+                [
+                  { title: "E-Commerce", items: ["Bestellungen aufnehmen", "Versandstatus", "Rückgaben"], kpi: "+25% Umsatz" },
+                  { title: "Healthcare", items: ["Termine koordinieren", "Erinnerungen", "Notfälle"], kpi: "-40% Ausfälle" },
+                  { title: "Immobilien", items: ["Besichtigungen", "Anfragen", "Dokumentation"], kpi: "Mehr Leads" }
+                ],
+                [
+                  { title: "Finanzen", items: ["Kontoservice", "Beratung", "Zahlungserinnerungen"], kpi: "Sicher & schnell" },
+                  { title: "Handwerk", items: ["Notrufe priorisieren", "Terminplanung", "Kostenvoranschläge"], kpi: "Bessere Auslastung" },
+                  { title: "Rechtsanwälte", items: ["Mandantenanfragen", "Erstberatung", "Terminkoordination"], kpi: "Professionell" }
+                ]
+              ];
+
+              return useCaseRows.map((rowData, rowIndex) => (
+                <div
+                  key={rowIndex}
+                  className="relative overflow-hidden"
+                  style={{ '--marquee-duration': '30s' } as React.CSSProperties}
+                >
+                  <div className={`flex ${rowIndex === 1 ? 'animate-marquee-reverse' : 'animate-marquee'}`}>
+                    {/* Erste Instanz */}
+                    <div className="flex shrink-0 gap-4 pr-4">
+                      {rowData.map((uc, idx) => (
+                        <div key={`${rowIndex}-${idx}`} className="bg-white p-3 rounded-xl shadow-sm border border-gray-100 w-64 shrink-0">
+                          <h3 className="text-sm font-bold text-gray-900 mb-2">{uc.title}</h3>
+                          <ul className="space-y-1 mb-2">
+                            {uc.items.map((item, i) => (
+                              <li key={i} className="flex items-start">
+                                <CheckCircle className="h-3 w-3 text-green-500 mr-2 mt-0.5 shrink-0" />
+                                <span className="text-gray-700 text-xs leading-tight">{item}</span>
+                              </li>
+                            ))}
+                          </ul>
+                          <div className="text-xs text-gray-500 font-medium">{uc.kpi}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {/* Zweite Instanz für nahtlose Schleife */}
+                    <div className="flex shrink-0 gap-4 pr-4">
+                      {rowData.map((uc, idx) => (
+                        <div key={`${rowIndex}-dup-${idx}`} className="bg-white p-3 rounded-xl shadow-sm border border-gray-100 w-64 shrink-0">
+                          <h3 className="text-sm font-bold text-gray-900 mb-2">{uc.title}</h3>
+                          <ul className="space-y-1 mb-2">
+                            {uc.items.map((item, i) => (
+                              <li key={i} className="flex items-start">
+                                <CheckCircle className="h-3 w-3 text-green-500 mr-2 mt-0.5 shrink-0" />
+                                <span className="text-gray-700 text-xs leading-tight">{item}</span>
+                              </li>
+                            ))}
+                          </ul>
+                          <div className="text-xs text-gray-500 font-medium">{uc.kpi}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ));
+            })()}
           </div>
 
 
@@ -1438,12 +1242,12 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
             viewport={{ once: true }}
             className="text-center mb-16"
           >
-            <h2 className="text-4xl md:text-5xl font-bold text-white mb-6">
+            <h2 className="text-2xl sm:text-3xl md:text-5xl font-bold text-white mb-4 md:mb-6">
               Ihre Vorteile auf einen Blick
             </h2>
           </motion.div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+          <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-8">
             {[
               { 
                 title: "Kosteneinsparung", 
@@ -1484,9 +1288,9 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
                 viewport={{ once: true }}
                 className="bg-white/10 backdrop-blur-sm p-6 rounded-xl border border-white/20"
               >
-                <div className="text-3xl font-bold text-accent-500 mb-2">{benefit.value}</div>
-                <h3 className="text-xl font-semibold text-white mb-2">{benefit.title}</h3>
-                <p className="text-primary-100">{benefit.desc}</p>
+                <div className="text-2xl sm:text-3xl font-bold text-accent-500 mb-1 sm:mb-2">{benefit.value}</div>
+                <h3 className="text-sm sm:text-base md:text-xl font-semibold text-white mb-1 sm:mb-2">{benefit.title}</h3>
+                <p className="text-xs sm:text-sm text-primary-100">{benefit.desc}</p>
               </motion.div>
             ))}
           </div>
@@ -1494,7 +1298,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
       </section>
 
       {/* Testimonials */}
-      <section className="py-20">
+      <section className="py-20 bg-gray-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <motion.div
             initial={{ opacity: 0 }}
@@ -1506,357 +1310,232 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
             <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
               Was unsere Kunden sagen
             </h2>
-          </motion.div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            {[
-              {
-                name: "Maria Schmidt",
-                restaurant: "Ristorante Milano",
-                text: "Seit der KI-Einführung haben wir 40% mehr Reservierungen. Das System ist einfach fantastisch!",
-                rating: 5
-              },
-              {
-                name: "Thomas Müller", 
-                restaurant: "Gasthof zur Sonne",
-                text: "Endlich können wir uns auf das Kochen konzentrieren, während die KI perfekt unsere Anrufe managed.",
-                rating: 5
-              },
-              {
-                name: "Lisa Wagner",
-                restaurant: "Café Central",
-                text: "Die Investition hat sich bereits nach 2 Monaten amortisiert. Unglaubliche Kosteneinsparung!",
-                rating: 5
-              }
-            ].map((testimonial, index) => (
-              <motion.div
-                key={index}
-                initial={{ opacity: 0, y: 30 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.6, delay: index * 0.2 }}
-                viewport={{ once: true }}
-                className="bg-white p-6 rounded-xl shadow-lg hover:shadow-xl transition-shadow"
-              >
-                <div className="flex mb-4">
-                  {[...Array(testimonial.rating)].map((_, i) => (
-                    <Star key={i} className="h-5 w-5 text-yellow-400 fill-current" />
-                  ))}
-                </div>
-                <p className="text-gray-600 mb-4 italic">"{testimonial.text}"</p>
-                <div>
-                  <div className="font-semibold text-gray-900">{testimonial.name}</div>
-                  <div className="text-sm text-gray-500">{testimonial.restaurant}</div>
-                </div>
-              </motion.div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Demo Section */}
-      <section id="demo-section" className="py-12 sm:py-16 lg:py-20 bg-gradient-to-br from-primary-50 to-accent-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <motion.div
-            initial={{ opacity: 0 }}
-            whileInView={{ opacity: 1 }}
-            transition={{ duration: 0.8 }}
-            viewport={{ once: true }}
-            className="text-center mb-8 sm:mb-12 lg:mb-16"
-          >
-            <h2 className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-4 sm:mb-6">
-              Erleben Sie unsere <span className="gradient-text">KI live</span>
-            </h2>
-            <p className="text-base sm:text-lg lg:text-xl text-gray-600 max-w-3xl mx-auto">
-              Testen Sie jetzt unseren Voice-Agent und erleben Sie, wie natürlich und effizient KI-basierter Kundenservice funktioniert
+            <p className="text-xl text-gray-600 max-w-3xl mx-auto">
+              Unternehmen verschiedenster Branchen vertrauen bereits auf unsere Voice-Agent-Lösungen
             </p>
           </motion.div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-12 items-center">
-            <motion.div
-              initial={{ opacity: 0, x: -50 }}
-              whileInView={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.8 }}
-              viewport={{ once: true }}
-              className="bg-white p-4 sm:p-6 lg:p-8 rounded-2xl shadow-xl"
+          {/* Testimonials Carousel - Neu erstellt */}
+          <div className="relative overflow-hidden w-full">
+            <div 
+              className="flex animate-marquee"
+              style={{ '--marquee-duration': '40s' } as React.CSSProperties}
             >
-              <h3 className="text-xl sm:text-2xl font-bold text-gray-900 mb-4 sm:mb-6 text-center">
-                Individuelle Voice‑Agents für Unternehmen
-              </h3>
-               <p className="text-xs text-gray-500 text-center -mt-4 mb-4">Live‑Demo – natürlich auf Deutsch</p>
-              
-              <div className="space-y-4 sm:space-y-6">
-                {/* Audio Visualizer */}
-                <div className="flex flex-col items-center">
-                  <div className={`w-28 h-28 sm:w-36 sm:h-36 lg:w-40 lg:h-40 rounded-full flex items-center justify-center shadow-lg transition-all duration-300 ${
-                    isRecording 
-                      ? 'bg-gradient-to-br from-red-500 to-red-600 animate-pulse' 
-                      : isProcessing
-                      ? 'bg-gradient-to-br from-yellow-500 to-orange-500 animate-pulse'
-                      : isPlayingResponse
-                      ? 'bg-gradient-to-br from-green-500 to-green-600 animate-pulse'
-                      : wsConnected
-                      ? 'bg-gradient-to-br from-primary-500 to-accent-500'
-                      : 'bg-gradient-to-br from-gray-400 to-gray-500'
-                  }`}>
-                    {isProcessing ? (
-                      <Loader className="h-12 w-12 sm:h-16 sm:w-16 lg:h-20 lg:w-20 text-white animate-spin" />
-                    ) : isRecording ? (
-                      <Mic className="h-12 w-12 sm:h-16 sm:w-16 lg:h-20 lg:w-20 text-white animate-pulse" />
-                    ) : isPlayingResponse ? (
-                      <Volume2 className="h-12 w-12 sm:h-16 sm:w-16 lg:h-20 lg:w-20 text-white animate-pulse" />
-                    ) : (
-                      <Bot className="h-12 w-12 sm:h-16 sm:w-16 lg:h-20 lg:w-20 text-white" />
-                    )}
-                  </div>
-                  
-                  {/* Audio Wellen Visualisierung */}
-                  <div className="mt-4 sm:mt-6 w-full">
-                    <AudioVisualizer 
-                      isRecording={isRecording}
-                      isProcessing={isProcessing}
-                      isPlayingResponse={isPlayingResponse}
-                      audioLevel={audioLevel}
-                    />
-                  </div>
-
-                  {/* Status Text */}
-                  <div className="text-center mb-4 sm:mb-6 lg:mb-8">
-                    <div className={`text-lg sm:text-xl lg:text-2xl font-bold mb-2 ${
-                      isRecording || isListening
-                        ? 'text-red-600' 
-                        : isProcessing 
-                        ? 'text-orange-600'
-                        : isPlayingResponse
-                        ? 'text-green-600'
-                        : wsConnected
-                        ? 'text-primary-600'
-                        : 'text-gray-500'
-                    }`}>
-                      {isListening
-                        ? (isSpeechDetected ? 'Nehme auf...' : 'Höre zu...')
-                          : isProcessing 
-                            ? 'Denkt nach...'
-                            : isPlayingResponse
-                              ? 'Spricht...'
-                        : wsConnected
-                        ? 'Bereit für Gespräch'
-                        : 'Verbinde...'}
-                    </div>
-                    <div className="text-sm text-gray-500 mt-1">
-                      {isListening
-                        ? (isSpeechDetected ? 'Ihre Worte werden aufgenommen...' : 'Sprechen Sie einfach – ich höre automatisch zu')
-                          : isProcessing 
-                            ? 'KI verarbeitet Ihre Anfrage...'
-                            : isPlayingResponse
-                        ? 'KI‑Agent antwortet...'
-                        : wsConnected
-                        ? 'Klicken Sie „Gespräch starten" für die Live‑Demo'
-                        : 'Verbindung wird hergestellt...'}
-                    </div>
-                  </div>
+              {/* Erste vollständige Instanz der Testimonials */}
+              <div className="flex shrink-0 gap-6 pr-6">
+                {[
+                  {
+                    name: "Dr. Sarah Zimmermann",
+                    company: "Zahnarztpraxis Zimmermann",
+                    industry: "Healthcare",
+                    text: "Terminausfälle reduziert um 65%. Die automatischen Erinnerungen sind Gold wert.",
+                    rating: 5,
+                    metric: "-65% Ausfälle"
+                  },
+                  {
+                    name: "Michael Weber",
+                    company: "Weber Immobilien",
+                    industry: "Immobilien", 
+                    text: "Rund um die Uhr professionelle Bearbeitung. Conversion um 45% gestiegen.",
+                    rating: 5,
+                    metric: "+45% Conversion"
+                  },
+                  {
+                    name: "Lisa Hoffmann",
+                    company: "Ristorante Milano",
+                    industry: "Gastronomie",
+                    text: "40% mehr Reservierungen seit KI-Einführung. Nimmt uns viel Arbeit ab!",
+                    rating: 5,
+                    metric: "+40% Buchungen"
+                  },
+                  {
+                    name: "Thomas Schneider",
+                    company: "Kanzlei Schneider & Partner",
+                    industry: "Rechtsberatung",
+                    text: "Mandantenanfragen strukturiert erfasst. Spart täglich 4 Stunden Aufwand.",
+                    rating: 5,
+                    metric: "4h/Tag gespart"
+                  },
+                  {
+                    name: "Anna Klein",
+                    company: "Fitness First München",
+                    industry: "Fitness",
+                    text: "Mitgliederanfragen laufen automatisch. Team kann sich aufs Training konzentrieren.", 
+                    rating: 5,
+                    metric: "Vollautomatisch"
+                  },
+                  {
+                    name: "Robert Fischer",
+                    company: "Elektro Fischer GmbH",
+                    industry: "Handwerk",
+                    text: "Notfälle sofort priorisiert und weitergeleitet. Kundenservice auf neuem Level!",
+                    rating: 5,
+                    metric: "24/7 Service"
+                  },
+                  {
+                    name: "Julia Hartmann",
+                    company: "Boutique Elegance",
+                    industry: "Retail",
+                    text: "Kundenanfragen auch nachts bearbeitet. Umsatz um 30% gestiegen.",
+                    rating: 5,
+                    metric: "+30% Umsatz"
+                  },
+                  {
+                    name: "Mark Schulze",
+                    company: "AutoHaus Schulze",
+                    industry: "Automotive",
+                    text: "Werkstattermine automatisch koordiniert. Keine Doppelbuchungen mehr.",
+                    rating: 5,
+                    metric: "0% Konflikte"
+                  },
+                  {
+                    name: "Carmen Rodriguez",
+                    company: "Hotel Zentral",
+                    industry: "Hospitality",
+                    text: "Buchungsanfragen in 8 Sprachen bearbeitet. Internationale Gäste begeistert.",
+                    rating: 5,
+                    metric: "8 Sprachen"
+              }
+            ].map((testimonial, index) => (
+                  <div key={`testimonial-${index}`} className="bg-white p-4 md:p-6 rounded-xl shadow-lg border border-gray-100 w-80 md:w-96 shrink-0">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex">
+                  {[...Array(testimonial.rating)].map((_, i) => (
+                          <Star key={i} className="h-4 w-4 text-yellow-400 fill-current" />
+                  ))}
                 </div>
-                
-                {/* Stimmenauswahl entfernt */}
-                
-                {/* Voice Control Buttons */}
-                <div className="text-center">
-                  {/* Voice Control Button(s) – nur Gesprächsmodus */}
-                  {true ? (
-                    // Kontinuierlicher Gesprächsmodus
-                    <motion.button 
-                      onClick={() => {
-                        console.log('🔍 [APP] Button clicked - current isListening:', isListening, 'ref:', isListeningRef.current);
-                        if (isListeningRef.current) { // REF verwenden statt State!
-                          console.log('🔍 [APP] Calling stopConversationMode...');
-                          stopConversationMode();
-                        } else {
-                          console.log('🔍 [APP] Calling startConversationMode...');
-                          startConversationMode();
-                        }
-                      }}
-                      disabled={isProcessing}
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      className={`px-6 sm:px-8 lg:px-12 py-3 sm:py-4 rounded-xl sm:rounded-2xl font-bold text-base sm:text-lg lg:text-xl transition-all shadow-xl ${
-                        isListening 
-                          ? 'bg-gradient-to-r from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800' 
-                          : 'bg-gradient-to-r from-green-600 to-green-700 text-white hover:from-green-700 hover:to-green-800'
-                      }`}
-                    >
-                      {isListening 
-                        ? 'Gespräch beenden' 
-                        : 'Gespräch starten'
-                      }
-                    </motion.button>
-                  ) : null}
-                  
-                  {/* Status Indicators */}
-                  <div className="mt-3 sm:mt-4 space-y-2">
-                    {/* Voice Activity Indicator */}
-                    {isListening && (
-                      <div className="flex justify-center items-center space-x-2">
-                        <div className={`w-3 h-3 rounded-full ${isSpeechDetected ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}></div>
-                        <span className={`text-xs sm:text-sm font-medium ${isSpeechDetected ? 'text-red-600' : 'text-green-600'}`}>
-                          {isSpeechDetected ? 'Nehme auf...' : 'Höre zu...'}
-                        </span>
+                      <div className="text-xs font-medium text-primary-600 bg-primary-50 px-2 py-1 rounded">
+                        {testimonial.industry}
+                </div>
+          </div>
+                    <p className="text-gray-600 mb-3 text-sm leading-relaxed">
+                      "{testimonial.text}"
+                    </p>
+                    <div className="border-t border-gray-100 pt-3">
+                      <div className="flex items-center justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-gray-900 text-sm">{testimonial.name}</div>
+                          <div className="text-xs text-gray-500">{testimonial.company}</div>
+                  </div>
+                        <div className="text-right ml-3">
+                          <div className="text-sm font-bold text-green-600">{testimonial.metric}</div>
+                          <div className="text-xs text-gray-500">Erfolg</div>
+                  </div>
+                    </div>
+                    </div>
+                  </div>
+                ))}
+                </div>
+              {/* Zweite Instanz für nahtlose Schleife */}
+              <div className="flex shrink-0 gap-6 pr-6">
+                {[
+                  {
+                    name: "Dr. Sarah Zimmermann",
+                    company: "Zahnarztpraxis Zimmermann",
+                    industry: "Healthcare",
+                    text: "Terminausfälle reduziert um 65%. Die automatischen Erinnerungen sind Gold wert.",
+                    rating: 5,
+                    metric: "-65% Ausfälle"
+                  },
+                  {
+                    name: "Michael Weber",
+                    company: "Weber Immobilien",
+                    industry: "Immobilien", 
+                    text: "Rund um die Uhr professionelle Bearbeitung. Conversion um 45% gestiegen.",
+                    rating: 5,
+                    metric: "+45% Conversion"
+                  },
+                  {
+                    name: "Lisa Hoffmann",
+                    company: "Ristorante Milano",
+                    industry: "Gastronomie",
+                    text: "40% mehr Reservierungen seit KI-Einführung. Nimmt uns viel Arbeit ab!",
+                    rating: 5,
+                    metric: "+40% Buchungen"
+                  },
+                  {
+                    name: "Thomas Schneider",
+                    company: "Kanzlei Schneider & Partner",
+                    industry: "Rechtsberatung",
+                    text: "Mandantenanfragen strukturiert erfasst. Spart täglich 4 Stunden Aufwand.",
+                    rating: 5,
+                    metric: "4h/Tag gespart"
+                  },
+                  {
+                    name: "Anna Klein",
+                    company: "Fitness First München",
+                    industry: "Fitness",
+                    text: "Mitgliederanfragen laufen automatisch. Team kann sich aufs Training konzentrieren.", 
+                    rating: 5,
+                    metric: "Vollautomatisch"
+                  },
+                  {
+                    name: "Robert Fischer",
+                    company: "Elektro Fischer GmbH",
+                    industry: "Handwerk",
+                    text: "Notfälle sofort priorisiert und weitergeleitet. Kundenservice auf neuem Level!",
+                    rating: 5,
+                    metric: "24/7 Service"
+                  },
+                  {
+                    name: "Julia Hartmann",
+                    company: "Boutique Elegance",
+                    industry: "Retail",
+                    text: "Kundenanfragen auch nachts bearbeitet. Umsatz um 30% gestiegen.",
+                    rating: 5,
+                    metric: "+30% Umsatz"
+                  },
+                  {
+                    name: "Mark Schulze",
+                    company: "AutoHaus Schulze",
+                    industry: "Automotive",
+                    text: "Werkstattermine automatisch koordiniert. Keine Doppelbuchungen mehr.",
+                    rating: 5,
+                    metric: "0% Konflikte"
+                  },
+                  {
+                    name: "Carmen Rodriguez",
+                    company: "Hotel Zentral",
+                    industry: "Hospitality",
+                    text: "Buchungsanfragen in 8 Sprachen bearbeitet. Internationale Gäste begeistert.",
+                    rating: 5,
+                    metric: "8 Sprachen"
+                  }
+                ].map((testimonial, index) => (
+                  <div key={`testimonial-dup-${index}`} className="bg-white p-4 md:p-6 rounded-xl shadow-lg border border-gray-100 w-80 md:w-96 shrink-0">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex">
+                        {[...Array(testimonial.rating)].map((_, i) => (
+                          <Star key={i} className="h-4 w-4 text-yellow-400 fill-current" />
+                        ))}
                       </div>
-                    )}
-                  
-                  {/* Connection Status */}
-                    <div className="flex items-center justify-center text-xs sm:text-sm">
-                    <div className={`w-2 h-2 rounded-full mr-2 ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                    <span className={wsConnected ? 'text-green-600' : 'text-red-600'}>
-                      {wsConnected ? 'KI-Agent verbunden' : 'Verbindung unterbrochen'}
-                    </span>
+                      <div className="text-xs font-medium text-primary-600 bg-primary-50 px-2 py-1 rounded">
+                        {testimonial.industry}
                     </div>
                   </div>
+                    <p className="text-gray-600 mb-3 text-sm leading-relaxed">
+                      "{testimonial.text}"
+                    </p>
+                    <div className="border-t border-gray-100 pt-3">
+                      <div className="flex items-center justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-gray-900 text-sm">{testimonial.name}</div>
+                          <div className="text-xs text-gray-500">{testimonial.company}</div>
                 </div>
-              </div>
-              
-              <div className="mt-6 sm:mt-8 space-y-3 sm:space-y-4">
-                {/* Text-Test Button */}
-                <div className="mb-4">
-                  <button
-                    onClick={() => sendTextMessage('Sag bitte deutlich "Hallo, ich bin da"')}
-                    className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-                  >
-                    💬 Text-Test (ohne Audio)
-                  </button>
-                  <p className="text-xs text-gray-500 mt-1">
-                    Testet, ob die Gemini-Session funktioniert (nur Text)
-                  </p>
-                </div>
-
-                {/* Live Demo Chat */}
-                {(transcript || aiResponse) && (
-                  <div className="mt-8 p-6 bg-gray-50 rounded-xl">
-                    <h4 className="font-semibold text-gray-900 mb-4 flex items-center">
-                      <Volume2 className="h-5 w-5 mr-2" />
-                      {'Live Gespräch'}
-                    </h4>
-                    
-                    <div className="space-y-4">
-                      {/* Aktuelle Interaktion */}
-                      {transcript && (
-                        <div className="bg-blue-100 p-3 rounded-lg">
-                          <div className="text-sm font-medium text-blue-800 mb-1">Sie:</div>
-                          <div className="text-blue-700">{transcript}</div>
+                        <div className="text-right ml-3">
+                          <div className="text-sm font-bold text-green-600">{testimonial.metric}</div>
+                          <div className="text-xs text-gray-500">Erfolg</div>
                         </div>
-                      )}
-                      
-                      {aiResponse && (
-                        <div className="bg-green-100 p-3 rounded-lg">
-                          <div className="text-sm font-medium text-green-800 mb-1 flex items-center">
-                            <Bot className="h-4 w-4 mr-1" />
-                            KI-Agent:
                           </div>
-                          <div className="text-green-700">{aiResponse}</div>
-                        </div>
-                      )}
-                      
-                      {voiceMetrics && (
-                        <div className="text-xs text-gray-500 bg-white p-2 rounded border">
-                          <div className="grid grid-cols-2 gap-2">
-                            <div>STT: {voiceMetrics.sttLatency}ms</div>
-                            <div>LLM: {voiceMetrics.llmFirstToken}ms</div>
-                            <div>TTS: {voiceMetrics.ttsLatency}ms</div>
-                            <div>Gesamt: {voiceMetrics.totalLatency}ms</div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Konversations-Historie (nur im Gespräch-Modus) */}
-                {conversationHistory.length > 0 && (
-                  <div className="mt-8 p-6 bg-white border-2 border-green-200 rounded-xl">
-                    <h4 className="font-semibold text-gray-900 mb-4 flex items-center">
-                      <MessageCircle className="h-5 w-5 mr-2 text-green-600" />
-                      Gesprächsverlauf ({conversationHistory.length} Nachrichten)
-                    </h4>
-                    
-                    <div className="space-y-3 max-h-60 overflow-y-auto">
-                      {conversationHistory.map((exchange, index) => (
-                        <div key={index} className="border-l-4 border-gray-200 pl-4">
-                          <div className="text-xs text-gray-500 mb-1">
-                            {exchange.timestamp.toLocaleTimeString()}
-                          </div>
-                          <div className="bg-blue-50 p-2 rounded mb-2">
-                            <div className="text-sm font-medium text-blue-800">Sie:</div>
-                            <div className="text-blue-700 text-sm">{exchange.user}</div>
-                          </div>
-                          <div className="bg-green-50 p-2 rounded">
-                            <div className="text-sm font-medium text-green-800 flex items-center">
-                              <Bot className="h-3 w-3 mr-1" />
-                              KI-Agent:
-                            </div>
-                            <div className="text-green-700 text-sm">{exchange.ai}</div>
                           </div>
                         </div>
                       ))}
                     </div>
-                    
-                    {conversationHistory.length > 0 && (
-                      <div className="mt-4 pt-4 border-t border-gray-200">
-                        <button 
-                          onClick={() => setConversationHistory([])}
-                          className="text-sm text-red-600 hover:text-red-700 transition-colors"
-                        >
-                          Verlauf löschen
-                        </button>
                       </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, x: 50 }}
-              whileInView={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.8 }}
-              viewport={{ once: true }}
-              className="space-y-6 lg:space-y-8"
-            >
-
-
-              <div className="bg-white p-4 sm:p-6 rounded-xl shadow-lg">
-                <h4 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 sm:mb-4">
-                  Performance
-                </h4>
-                <div className="grid grid-cols-2 gap-3 sm:gap-4">
-                  <div className="text-center">
-                    <div className="text-xl sm:text-2xl font-bold text-green-600">~500ms</div>
-                    <div className="text-xs sm:text-sm text-gray-600">Antwortzeit</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-xl sm:text-2xl font-bold text-blue-600">99.9%</div>
-                    <div className="text-xs sm:text-sm text-gray-600">Verfügbarkeit</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-xl sm:text-2xl font-bold text-purple-600">~€0.02</div>
-                    <div className="text-xs sm:text-sm text-gray-600">pro Gespräch</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-xl sm:text-2xl font-bold text-orange-600">24/7</div>
-                    <div className="text-xs sm:text-sm text-gray-600">Betrieb</div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-gradient-to-r from-green-50 to-blue-50 p-6 rounded-xl border border-green-200">
-                <h4 className="text-lg font-bold text-green-800 mb-2">
-                  Demo-Ergebnis:
-                </h4>
-                <p className="text-green-700 text-sm">
-                  Nach der Demo sind 95% unserer Interessenten überzeugt von der Qualität und buchen unser System.
-                </p>
-              </div>
-            </motion.div>
           </div>
         </div>
       </section>
+
 
       {/* Calendar Section - NOW AFTER TESTIMONIALS */}
       <section id="calendar-section" className="py-20 bg-gray-50">
@@ -1913,8 +1592,75 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
         </div>
       </section>
 
-      {/* CTA Section */}
-      <section className="py-20 bg-gradient-to-r from-primary-600 to-accent-500">
+      {/* FAQ Section - SEO-optimiert & Expandable (VOR CTA) */}
+      <section id="faq-section" className="py-16 md:py-20 bg-gray-50">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+          <motion.div
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            transition={{ duration: 0.8 }}
+            viewport={{ once: true }}
+            className="text-center mb-12"
+          >
+            <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-gray-900 mb-4">Häufige Fragen</h2>
+            <p className="text-lg text-gray-600">Alles was Sie über Enterprise Voice Agents wissen müssen</p>
+          </motion.div>
+
+          <div className="space-y-4">
+            {[
+              { q: 'Was ist ein KI‑Voice Agent und wie funktioniert er?', a: 'Ein KI‑Voice Agent führt natürliche Telefongespräche, versteht Anliegen in Echtzeit und führt Prozesse über Schnittstellen aus (z. B. Terminbuchung, CRM‑Einträge, Weiterleitung). Er bleibt kontextbewusst über mehrere Gesprächsschritte und passt Tonfall sowie Sprechtempo an.' },
+              { q: 'Welche Vorteile bieten Voice Agents für Unternehmen?', a: '24/7‑Erreichbarkeit, konstant hohe Servicequalität, drastische Entlastung des Teams bei Routineanfragen, höhere Conversion durch sofortige Reaktion und messbare Prozessdaten. Typisch amortisiert sich die Investition in 2–3 Monaten.' },
+              { q: 'Welche Use‑Cases eignen sich für Voice Agents?', a: 'Terminvereinbarung und Erinnerungen, Hotline‑First‑Level, Lead‑Qualifizierung, Bestellannahme, Zahlungserinnerungen, Status‑Auskunft, Rückruforganisation, Eskalation an das richtige Team inkl. Gesprächskontext.' },
+              { q: 'Wie integrieren sich Voice Agents in bestehende Systeme?', a: 'Über Standard‑APIs und Webhooks in CRM, ERP und Ticketsysteme (z. B. Salesforce, HubSpot, Pipedrive, SAP). Daten fließen bidirektional, damit Kundenprofile aktuell sind und Ergebnisse automatisch dokumentiert werden.' },
+              { q: 'Sind Voice Agents DSGVO‑konform?', a: 'Ja. Verarbeitung innerhalb der EU, verschlüsselte Übertragung und Speicherung, Rollen‑/Rechtemanagement, Audit‑Logs und Auftragsverarbeitung. Datenflüsse sind transparent und revisionssicher.' },
+              { q: 'Wie natürlich klingt die Stimme?', a: 'Sehr natürlich: Intonation, Pausen und Nuancen sind auf Dialog optimiert. Mehr als 30 Stimmen und 24+ Sprachen stehen zur Verfügung; die Stimme bleibt über das Gespräch konsistent und empathisch.' },
+              { q: 'Wie schnell ist die Reaktionszeit?', a: 'Antwortlatenzen im Bereich <300 ms für ein flüssiges Gesprächserlebnis – deutlich schneller als herkömmliche IVR‑Systeme.' },
+              { q: 'Wie schnell ist ein Voice Agent einsatzbereit?', a: 'Standard‑Projekte starten in 1–2 Wochen. Mit tiefer Integration (CRM/ERP/Shop) planen wir 2–4 Wochen. Wir übernehmen Konzeption, Dialogdesign, Implementierung, Tests und Go‑Live.' },
+              { q: 'Brauchen wir technische Vorkenntnisse im Unternehmen?', a: 'Nein. Wir liefern eine schlüsselfertige Lösung mit Dashboard. Betrieb, Monitoring und Optimierung übernehmen wir; Ihr Team nutzt nur die Ergebnisse (z. B. Termine, Leads, Tickets).' },
+              { q: 'Unterstützen Voice Agents mehrere Sprachen?', a: 'Ja. 24+ Sprachen mit automatischer Erkennung. Ideal für internationale Kunden oder Regionen mit mehreren Sprachen.' },
+              { q: 'Können wir den Voice Agent später erweitern?', a: 'Ja, modular. Neue Funktionen, Workflows und Integrationen lassen sich jederzeit hinzufügen – ohne Vendor‑Lock‑in.' },
+              { q: 'Steigern Voice Agents Conversions oder Google‑Signale?', a: 'Ja. 24/7‑Service senkt Absprünge und erhöht Interaktion. Kunden berichten von 25–40% höheren Conversions, da Anfragen sofort bearbeitet werden und keine Wartezeiten entstehen.' }
+            ].map((item, idx) => (
+              <motion.div
+                key={idx}
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, delay: idx * 0.1 }}
+                viewport={{ once: true }}
+                className="bg-white border border-gray-200 rounded-xl overflow-hidden"
+              >
+                <button
+                  onClick={() => setOpenFaqIndex(openFaqIndex === idx ? null : idx)}
+                  className="w-full px-6 py-4 text-left flex items-center justify-between hover:bg-gray-50 transition-colors"
+                >
+                  <h3 className="text-sm md:text-base lg:text-lg font-semibold text-gray-900 pr-4">{item.q}</h3>
+                  <div className="flex-shrink-0">
+                    {openFaqIndex === idx ? (
+                      <ChevronUp className="h-5 w-5 text-blue-600" />
+                    ) : (
+                      <ChevronDown className="h-5 w-5 text-gray-400" />
+                    )}
+                  </div>
+                </button>
+                {openFaqIndex === idx && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.3 }}
+                    className="px-6 pb-4"
+                  >
+                    <p className="text-gray-700 text-xs md:text-sm lg:text-base leading-relaxed">{item.a}</p>
+                  </motion.div>
+                )}
+              </motion.div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* CTA Section (direkt unter FAQ) */}
+      <section className="py-20 bg-blue-600">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
           <motion.div
             initial={{ opacity: 0, y: 30 }}
@@ -1925,7 +1671,7 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
             <h2 className="text-4xl md:text-5xl font-bold text-white mb-6">
               Bereit für die Zukunft?
             </h2>
-            <p className="text-xl text-primary-100 mb-8">
+            <p className="text-xl text-blue-100 mb-8">
               Starten Sie noch heute und sichern Sie sich Ihren Wettbewerbsvorteil
             </p>
             
@@ -1951,8 +1697,10 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
         </div>
       </section>
 
+      {/* FAQ Section - Competitive & Expandable (entfernt, ersetzt durch neue Version oben) */}
+
       {/* Footer */}
-      <footer className="bg-gray-900 text-white py-12">
+      <footer className="bg-blue-600 text-white py-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center">
             <div className="flex items-center justify-center space-x-2 mb-4">
@@ -1965,6 +1713,11 @@ const OPUS_MIME = 'audio/webm;codecs=opus';
             <p className="text-gray-300 mb-8">
               Kontakt: <a href="mailto:info@vocaris-solutions.de" className="underline">info@vocaris-solutions.de</a>
             </p>
+            <div className="flex items-center justify-center space-x-6 mb-6 text-sm">
+              <a href="/impressum.html" className="underline">Impressum</a>
+              <a href="/agb.html" className="underline">AGB</a>
+              <a href="/datenschutz.html" className="underline">Datenschutz</a>
+            </div>
             <div className="border-t border-gray-700 pt-8">
               <p className="text-gray-500 text-sm">
                 © 2025 Vocaris AI. Alle Rechte vorbehalten.

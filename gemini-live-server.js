@@ -2,6 +2,9 @@
 // Behebt "Upgrade Required" Fehler durch Service von statischen Files via Express
 import 'dotenv/config';
 import express from 'express';
+import Database from 'better-sqlite3';
+import os from 'os';
+import fs from 'fs';
 import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -272,6 +275,100 @@ app.get('/diag/pipecat', async (_req, res) => {
   }
 });
 
+// --- Bookings API (SQLite) ---
+// Persistente DB: bevorzugt Volume unter /data; konfigurierbar via DB_PATH
+const defaultDbPath = process.env.DB_PATH || '/data/bookings.sqlite';
+try { fs.mkdirSync(require('path').dirname(defaultDbPath), { recursive: true }); } catch {}
+const db = new Database(defaultDbPath);
+db.pragma('journal_mode = WAL');
+db.exec(`
+CREATE TABLE IF NOT EXISTS bookings (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  phone TEXT,
+  meetingType TEXT NOT NULL,
+  date TEXT NOT NULL,
+  time TEXT NOT NULL,
+  createdAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bookings_date_time ON bookings(date, time);
+`);
+
+function isValidDate(yyyyMmDd) {
+  return typeof yyyyMmDd === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(yyyyMmDd);
+}
+function isValidTime(hhMm) {
+  return typeof hhMm === 'string' && /^\d{2}:\d{2}$/.test(hhMm);
+}
+
+app.get('/api/bookings', (req, res) => {
+  try {
+    const from = isValidDate(req.query.from) ? req.query.from : '0000-01-01';
+    const to = isValidDate(req.query.to) ? req.query.to : '9999-12-31';
+    const rows = db.prepare(
+      'SELECT id, name, email, phone, meetingType, date, time, createdAt FROM bookings WHERE date BETWEEN ? AND ? ORDER BY date, time'
+    ).all(from, to);
+    res.json(rows);
+  } catch (e) {
+    console.error('[API] /api/bookings GET error', e);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+app.post('/api/bookings', (req, res) => {
+  try {
+    // Optional shared secret for Voice Agent
+    const clientSecret = req.header('x-agent-secret');
+    const serverSecret = process.env.AGENT_SECRET;
+    if (clientSecret && serverSecret && clientSecret !== serverSecret) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+
+    const { name, email, phone, meetingType, date, time } = req.body || {};
+    if (!name || !email || !meetingType || !date || !time || !isValidDate(date) || !isValidTime(time)) {
+      return res.status(400).json({ error: 'invalid_payload' });
+    }
+
+    const taken = db.prepare('SELECT 1 FROM bookings WHERE date=? AND time=?').get(date, time);
+    if (taken) return res.status(409).json({ error: 'slot_taken' });
+
+    const id = Date.now().toString();
+    db.prepare(
+      'INSERT INTO bookings (id, name, email, phone, meetingType, date, time, createdAt) VALUES (?,?,?,?,?,?,?,?)'
+    ).run(id, String(name), String(email), phone ? String(phone) : null, String(meetingType), String(date), String(time), new Date().toISOString());
+
+    // Fire-and-forget SMS Notification via Twilio REST API (optional)
+    (async () => {
+      try {
+        const normalizeE164 = (s) => typeof s === 'string' ? s.replace(/[^\d+]/g, '') : s;
+        const to = normalizeE164(process.env.NOTIFY_SMS_TO);
+        const sid = process.env.TWILIO_ACCOUNT_SID;
+        const token = process.env.TWILIO_AUTH_TOKEN;
+        const from = normalizeE164(process.env.TWILIO_FROM || process.env.TWILIO_FROM_NUMBER); // Verified Twilio number
+        if (to && sid && token && from && /^\+\d{6,15}$/.test(to) && /^\+\d{6,15}$/.test(from)) {
+          const auth = Buffer.from(`${sid}:${token}`).toString('base64');
+          const body = new URLSearchParams({
+            To: to,
+            From: from,
+            Body: `Neue Buchung: ${name} (${email}${phone ? ", "+phone : ''}) • ${date} ${time} • Typ: ${meetingType}`
+          });
+          await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+            method: 'POST',
+            headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+            body
+          }).catch(() => {});
+        }
+      } catch {}
+    })();
+
+    res.json({ success: true, id });
+  } catch (e) {
+    console.error('[API] /api/bookings POST error', e);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
 // --- WebSocket Server Setup ---
 const wss = new WebSocketServer({ server, perMessageDeflate: false }); // An den HTTP-Server binden
 
@@ -316,7 +413,7 @@ async function openGeminiSession(ws, id) {
               if (ws._isTwilio) {
                 ws._twilioSendAudio?.(msg.data, 'audio/pcm;rate=24000');
               } else {
-                ws.send(JSON.stringify({ type: 'audio_out', data: msg.data }));
+              ws.send(JSON.stringify({ type: 'audio_out', data: msg.data }));
               }
             }
 
@@ -469,10 +566,10 @@ function attachTwilioHelpers(ws, id, getTwilioStreamSid) {
       ws._outboundBurstActive = true;
     }
     const rate = parsePcmRateFromMime(mime);
-    const pcmBytes = Buffer.from(base64PcmLE, 'base64');
-    const pcm16 = bytesToInt16LE(pcmBytes);
-    const mulaw8k = encodePCM16ToMuLaw8k(pcm16, rate);
-    const frames = chunkBuffer(mulaw8k, 160);
+      const pcmBytes = Buffer.from(base64PcmLE, 'base64');
+      const pcm16 = bytesToInt16LE(pcmBytes);
+      const mulaw8k = encodePCM16ToMuLaw8k(pcm16, rate);
+      const frames = chunkBuffer(mulaw8k, 160);
     console.log(`[${id}] 📤 Enqueue ${frames.length} frames to Twilio stream ${twilioStreamSid}`);
     for (const f of frames) ws._outboundQueue.push(f);
   };
@@ -635,13 +732,13 @@ wss.on('connection', async (ws, req) => {
                     silenceFrames = 0;
                     // Hochsamplen und an Gemini senden (24kHz)
                     const outRate = PIPELINE_BACKEND === 'pipecat' ? PIPECAT_PCM_RATE : 24000;
-                    const pcm16_out = resamplePCM16(pcm16, 8000, outRate);
+                  const pcm16_out = resamplePCM16(pcm16, 8000, outRate);
                     const pcm16_out_bytes = int16ToBytes(pcm16_out);
-                    bytesIn += ulawBuffer.length;
-                    chunkCount++;
-                    if (PIPELINE_BACKEND === 'pipecat' && ws._pipecatSocket?.readyState === 1) {
+                  bytesIn += ulawBuffer.length;
+                  chunkCount++;
+                  if (PIPELINE_BACKEND === 'pipecat' && ws._pipecatSocket?.readyState === 1) {
                       ws._pipecatSocket.send(JSON.stringify({ type: 'audio_in', data: Buffer.from(pcm16_out_bytes).toString('base64'), mimeType: `audio/pcm;rate=${outRate}` }));
-                    } else {
+                  } else {
                       session.sendRealtimeInput({ media: [{ data: Buffer.from(pcm16_out_bytes).toString('base64'), mimeType: `audio/pcm;rate=${outRate}` }] });
                     }
                     console.log(`[${id}] 📞 Twilio inbound audio chunk: ${ulawBuffer.length} bytes processed (avgAbs=${avgAbs|0})`);
@@ -656,7 +753,7 @@ wss.on('connection', async (ws, req) => {
                           if (PIPELINE_BACKEND === 'pipecat') {
                             if (ws._pipecatSocket?.readyState === 1) {
                               ws._pipecatSocket.send(JSON.stringify({ type: 'turn_end' }));
-                            } else {
+                          } else {
                               console.warn(`[${id}] ⚠️ turn_end skipped (Pipecat socket not ready)`);
                             }
                           } else {
